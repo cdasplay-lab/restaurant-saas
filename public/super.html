@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Admin Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  .nav-item { transition: all .2s; cursor: pointer; }
+  .nav-item:hover { background: rgba(139,92,246,.15); }
+  .nav-item.active { background: rgba(139,92,246,.25); border-right: 3px solid #8b5cf6; color: #c4b5fd; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+  .kpi-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; transition: transform .2s; }
+  .kpi-card:hover { transform: translateY(-2px); }
+  .badge { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+  .badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
+  .badge-yellow { background: rgba(234,179,8,.15); color: #facc15; }
+  .badge-red { background: rgba(239,68,68,.15); color: #f87171; }
+  .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
+  .badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; }
+  .badge-gray { background: rgba(148,163,184,.15); color: #94a3b8; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: .8rem; font-weight: 600; cursor: pointer; transition: all .15s; border: none; }
+  .btn-primary { background: #6d28d9; color: #fff; } .btn-primary:hover { background: #7c3aed; }
+  .btn-sm { padding: 4px 10px; font-size: .75rem; }
+  .btn-ghost { background: transparent; color: #94a3b8; } .btn-ghost:hover { background: #334155; color: #e2e8f0; }
+  .btn-danger { background: rgba(239,68,68,.15); color: #f87171; } .btn-danger:hover { background: rgba(239,68,68,.25); }
+  .btn-success { background: rgba(34,197,94,.15); color: #4ade80; } .btn-success:hover { background: rgba(34,197,94,.25); }
+  .table-row:hover { background: rgba(139,92,246,.05); }
+  input, select, textarea { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 8px 12px; font-size: .875rem; width: 100%; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #7c3aed; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-box { background: #1e293b; border: 1px solid #334155; border-radius: 16px; width: 100%; max-width: 680px; max-height: 90vh; overflow-y: auto; }
+  .section { display: none; } .section.active { display: block; }
+  .alert-item { border-left: 4px solid; padding: 12px 16px; border-radius: 0 8px 8px 0; margin-bottom: 8px; }
+  .alert-high { border-color: #ef4444; background: rgba(239,68,68,.08); }
+  .alert-medium { border-color: #f59e0b; background: rgba(245,158,11,.08); }
+  .alert-low { border-color: #3b82f6; background: rgba(59,130,246,.08); }
+  .health-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .health-ok { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+  .health-warn { background: #facc15; box-shadow: 0 0 6px #facc15; }
+  .health-err { background: #f87171; box-shadow: 0 0 6px #f87171; }
+</style>
+<script src="/config.js"></script>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+<!-- Sidebar -->
+<aside class="w-64 bg-[#0b1120] border-l border-slate-800 flex flex-col shrink-0">
+  <div class="p-5 border-b border-slate-800">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 bg-purple-700 rounded-xl flex items-center justify-center">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-white font-bold text-sm">Super Admin</div>
+        <div class="text-purple-400 text-xs" id="saName">—</div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+    <div class="nav-item active flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-200 text-sm" onclick="showSection('dashboard')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M3 12h18M3 17h18"/></svg>
+      لوحة التحكم
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('restaurants')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-2 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+      المطاعم
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('subscriptions')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+      الاشتراكات
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('analytics')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+      التحليلات
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('system')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+      النظام
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('conversations')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+      المحادثات
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('alerts')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+      التنبيهات
+      <span id="alertBadge" class="hidden bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center mr-auto">0</span>
+    </div>
+    <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('account')">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+      حسابي
+    </div>
+  </nav>
+
+  <div class="p-3 border-t border-slate-800">
+    <button onclick="logout()" class="w-full flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-red-400 text-sm rounded-lg hover:bg-red-500/10 transition">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+      تسجيل الخروج
+    </button>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="flex-1 overflow-y-auto">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-10 bg-[#0b1120]/90 backdrop-blur border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 id="pageTitle" class="text-white font-bold text-lg">لوحة التحكم</h1>
+      <p class="text-slate-500 text-xs mt-0.5" id="pageSubtitle">نظرة عامة على المنصة</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <button onclick="refresh()" class="btn btn-ghost btn-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        تحديث
+      </button>
+    </div>
+  </header>
+
+  <div class="p-6">
+
+    <!-- === DASHBOARD === -->
+    <section id="sec-dashboard" class="section active space-y-6">
+      <div id="kpiGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card p-4">
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">الاشتراكات المنتهية قريباً</h3>
+          <div id="expiringList" class="space-y-2"></div>
+        </div>
+        <div class="card p-4">
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">آخر المطاعم المضافة</h3>
+          <div id="recentRestaurants" class="space-y-2"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === RESTAURANTS === -->
+    <section id="sec-restaurants" class="section space-y-4">
+      <div class="flex items-center gap-3">
+        <input id="restSearch" type="text" placeholder="بحث باسم المطعم أو المالك..." oninput="filterRestaurants()" class="max-w-xs">
+        <select id="restFilter" onchange="filterRestaurants()" class="max-w-xs">
+          <option value="">جميع الحالات</option>
+          <option value="active">نشط</option>
+          <option value="trial">تجربة</option>
+          <option value="suspended">معلق</option>
+          <option value="expired">منتهي</option>
+          <option value="archived">مؤرشف</option>
+        </select>
+      </div>
+      <div class="card overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/50 text-slate-400 text-xs">
+            <tr>
+              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">المالك</th>
+              <th class="px-4 py-3 text-right">الخطة</th>
+              <th class="px-4 py-3 text-right">الحالة</th>
+              <th class="px-4 py-3 text-right">المتبقي</th>
+              <th class="px-4 py-3 text-right">الطلبات</th>
+              <th class="px-4 py-3 text-right">الإجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="restaurantsTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- === SUBSCRIPTIONS === -->
+    <section id="sec-subscriptions" class="section space-y-4">
+      <div class="flex gap-2 flex-wrap" id="subTabs">
+        <button class="btn btn-primary btn-sm" onclick="filterSubs('')" data-tab="all">الكل</button>
+        <button class="btn btn-ghost btn-sm" onclick="filterSubs('trial')" data-tab="trial">تجربة</button>
+        <button class="btn btn-ghost btn-sm" onclick="filterSubs('active')" data-tab="active">نشط</button>
+        <button class="btn btn-ghost btn-sm" onclick="filterSubs('expiring')" data-tab="expiring">ينتهي قريباً</button>
+        <button class="btn btn-ghost btn-sm" onclick="filterSubs('expired')" data-tab="expired">منتهي</button>
+      </div>
+      <div class="card overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/50 text-slate-400 text-xs">
+            <tr>
+              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">الخطة</th>
+              <th class="px-4 py-3 text-right">الحالة</th>
+              <th class="px-4 py-3 text-right">السعر</th>
+              <th class="px-4 py-3 text-right">تاريخ الانتهاء</th>
+              <th class="px-4 py-3 text-right">المتبقي</th>
+              <th class="px-4 py-3 text-right">إجراء</th>
+            </tr>
+          </thead>
+          <tbody id="subsTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- === ANALYTICS === -->
+    <section id="sec-analytics" class="section space-y-6">
+      <div class="card p-4">
+        <h3 class="text-slate-300 font-semibold mb-4 text-sm">نمو المطاعم شهرياً</h3>
+        <canvas id="growthChart" height="100"></canvas>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="card p-4">
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">توزيع الخطط</h3>
+          <canvas id="plansChart"></canvas>
+        </div>
+        <div class="card p-4 col-span-2">
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">أفضل المطاعم (بالطلبات)</h3>
+          <div id="topRestaurants" class="space-y-2"></div>
+        </div>
+      </div>
+      <div class="card p-4">
+        <h3 class="text-slate-300 font-semibold mb-4 text-sm">استخدام القنوات</h3>
+        <div id="channelUsage" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+      </div>
+    </section>
+
+    <!-- === SYSTEM === -->
+    <section id="sec-system" class="section space-y-6">
+      <div id="healthCards" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      <div class="card p-4">
+        <h3 class="text-slate-300 font-semibold mb-4 text-sm">إحصائيات الويب هوك</h3>
+        <div id="webhookStats" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+      </div>
+      <div class="card p-4">
+        <h3 class="text-slate-300 font-semibold mb-4 text-sm">سجل النشاطات الأخيرة</h3>
+        <div id="activityLog" class="space-y-2"></div>
+      </div>
+    </section>
+
+    <!-- === ALERTS === -->
+    <section id="sec-alerts" class="section space-y-4">
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 text-sm">التنبيهات النشطة:</span>
+        <span id="alertCount" class="badge badge-red">0</span>
+      </div>
+      <div id="alertsList"></div>
+    </section>
+
+    <!-- === CONVERSATIONS === -->
+    <section id="sec-conversations" class="section space-y-4">
+      <div class="flex items-center gap-3 flex-wrap">
+        <select id="convRestFilter" onchange="loadAllConversations()" class="max-w-xs text-sm">
+          <option value="">جميع المطاعم</option>
+        </select>
+        <select id="convStatusFilter" onchange="loadAllConversations()" class="max-w-xs text-sm">
+          <option value="">جميع الحالات</option>
+          <option value="open">مفتوحة</option>
+          <option value="closed">مغلقة</option>
+        </select>
+        <span class="text-slate-500 text-xs mr-auto" id="convTotal"></span>
+      </div>
+      <div class="card overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/50 text-slate-400 text-xs">
+            <tr>
+              <th class="px-4 py-3 text-right">العميل</th>
+              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">الحالة</th>
+              <th class="px-4 py-3 text-right">الرسائل</th>
+              <th class="px-4 py-3 text-right">آخر رسالة</th>
+              <th class="px-4 py-3 text-right">الوقت</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody id="convsTable"><tr><td colspan="7" class="text-center text-slate-500 py-8">جارٍ التحميل...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- === ACCOUNT === -->
+    <section id="sec-account" class="section space-y-4 max-w-lg">
+      <div class="card p-5 space-y-4">
+        <h3 class="text-white font-semibold">معلومات الحساب</h3>
+        <div class="space-y-1">
+          <p class="text-slate-400 text-xs">الاسم</p>
+          <p id="acName" class="text-white font-medium">—</p>
+        </div>
+        <div class="space-y-1">
+          <p class="text-slate-400 text-xs">البريد الإلكتروني</p>
+          <p id="acEmail" class="text-white font-medium">—</p>
+        </div>
+      </div>
+      <div class="card p-5 space-y-4">
+        <h3 class="text-white font-semibold">🔑 رمز الدعم (PIN)</h3>
+        <p class="text-slate-400 text-xs">يُستخدم للتحقق من هوية أصحاب المطاعم عند التواصل مع الدعم الفني. يمكنك إعطاء هذا الرمز للعميل ليؤكد هويته.</p>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1.5">رمز الدعم الحالي</label>
+          <div class="flex gap-2">
+            <input id="acPin" type="text" maxlength="20" placeholder="أدخل رمز الدعم..."
+              class="flex-1 text-sm">
+            <button onclick="savePIN()" class="btn btn-primary btn-sm">حفظ</button>
+          </div>
+          <p class="text-slate-500 text-xs mt-1">يُفضّل أن يكون رمزاً سهل التذكر ولكن لا تشاركه مع غير العملاء.</p>
+        </div>
+        <div id="pinDisplay" class="hidden bg-purple-500/10 border border-purple-500/20 rounded-lg px-4 py-3">
+          <p class="text-slate-400 text-xs mb-1">الرمز الحالي:</p>
+          <p id="pinValue" class="text-purple-300 font-bold text-lg tracking-widest"></p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- === MODAL: Conversation Messages === -->
+<div id="convMsgModal" class="modal-bg hidden">
+  <div class="modal-box p-5" style="max-width:680px">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-white font-bold" id="convMsgTitle">المحادثة</h2>
+      <button onclick="closeModal('convMsgModal')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div id="convMsgList" class="space-y-2 max-h-96 overflow-y-auto mb-4"></div>
+  </div>
+</div>
+
+<!-- === MODAL: Restaurant Detail === -->
+<div id="restModal" class="modal-bg hidden">
+  <div class="modal-box p-6">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold text-lg" id="restModalTitle">تفاصيل المطعم</h2>
+      <button onclick="closeModal('restModal')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div id="restModalContent"></div>
+  </div>
+</div>
+
+<!-- === MODAL: Edit Subscription === -->
+<div id="subModal" class="modal-bg hidden">
+  <div class="modal-box p-6">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold text-lg">تعديل الاشتراك</h2>
+      <button onclick="closeModal('subModal')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <form id="subForm" class="space-y-4" onsubmit="saveSub(event)">
+      <input type="hidden" id="subRid">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">الخطة</label>
+          <select id="subPlan">
+            <option value="trial">تجربة</option>
+            <option value="starter">Starter</option>
+            <option value="professional">Professional</option>
+            <option value="enterprise">Enterprise</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">الحالة</label>
+          <select id="subStatus">
+            <option value="trial">تجربة</option>
+            <option value="active">نشط</option>
+            <option value="expired">منتهي</option>
+            <option value="suspended">معلق</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">السعر (د.ع / شهر)</label>
+          <input type="number" id="subPrice" min="0" step="0.01">
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">تاريخ الانتهاء</label>
+          <input type="date" id="subEndDate">
+        </div>
+      </div>
+      <div>
+        <label class="block text-slate-400 text-xs mb-1">ملاحظات</label>
+        <textarea id="subNotes" rows="2"></textarea>
+      </div>
+      <div id="subError" class="hidden bg-red-500/20 text-red-300 rounded-lg px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 justify-end">
+        <button type="button" onclick="closeModal('subModal')" class="btn btn-ghost">إلغاء</button>
+        <button type="submit" class="btn btn-primary">حفظ</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- === MODAL: Update Restaurant === -->
+<div id="editRestModal" class="modal-bg hidden">
+  <div class="modal-box p-6">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold text-lg">تعديل المطعم</h2>
+      <button onclick="closeModal('editRestModal')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <form id="editRestForm" class="space-y-4" onsubmit="saveRest(event)">
+      <input type="hidden" id="editRid">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">الحالة</label>
+          <select id="editStatus">
+            <option value="active">نشط</option>
+            <option value="suspended">معلق</option>
+            <option value="trial">تجربة</option>
+            <option value="expired">منتهي</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">الخطة</label>
+          <select id="editPlan">
+            <option value="trial">تجربة</option>
+            <option value="starter">Starter</option>
+            <option value="professional">Professional</option>
+            <option value="enterprise">Enterprise</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="block text-slate-400 text-xs mb-1">ملاحظات داخلية</label>
+        <textarea id="editNotes" rows="3"></textarea>
+      </div>
+      <div id="editRestError" class="hidden bg-red-500/20 text-red-300 rounded-lg px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 justify-end">
+        <button type="button" onclick="closeModal('editRestModal')" class="btn btn-ghost">إلغاء</button>
+        <button type="submit" class="btn btn-primary">حفظ</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const API = window.API_BASE || '';
+let saToken = localStorage.getItem('sa_token');
+let allRestaurants = [];
+let allSubs = [];
+let subTabFilter = '';
+let growthChartInst = null;
+let plansChartInst = null;
+
+if (!saToken) window.location.href = '/super/login';
+
+const admin = JSON.parse(localStorage.getItem('sa_admin') || '{}');
+document.getElementById('saName').textContent = admin.name || admin.email || '—';
+
+function h(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+
+function api(path, opts = {}) {
+  return fetch(API + path, {
+    ...opts,
+    headers: { 'Authorization': 'Bearer ' + saToken, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  }).then(async r => {
+    if (r.status === 401 || r.status === 403) { logout(); throw new Error('غير مصرح'); }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'خطأ');
+    return d;
+  });
+}
+
+function logout() {
+  localStorage.removeItem('sa_token');
+  localStorage.removeItem('sa_admin');
+  window.location.href = '/super/login';
+}
+
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.classList.remove('active');
+    n.classList.add('text-slate-400');
+    n.classList.remove('text-slate-200');
+  });
+  document.getElementById('sec-' + name).classList.add('active');
+  const navEl = [...document.querySelectorAll('.nav-item')].find(n => n.getAttribute('onclick') === `showSection('${name}')`);
+  if (navEl) { navEl.classList.add('active', 'text-slate-200'); navEl.classList.remove('text-slate-400'); }
+
+  const titles = { dashboard: ['لوحة التحكم', 'نظرة عامة على المنصة'], restaurants: ['المطاعم', 'إدارة جميع المطاعم'], subscriptions: ['الاشتراكات', 'إدارة الاشتراكات والخطط'], analytics: ['التحليلات', 'إحصائيات المنصة'], system: ['النظام', 'صحة النظام والسجلات'], alerts: ['التنبيهات', 'التنبيهات النشطة'], conversations: ['المحادثات', 'جميع محادثات البوت'], account: ['حسابي', 'إعدادات الحساب ورمز الدعم'] };
+  const t = titles[name] || [name, ''];
+  document.getElementById('pageTitle').textContent = t[0];
+  document.getElementById('pageSubtitle').textContent = t[1];
+
+  loadSection(name);
+}
+
+function refresh() { loadSection(currentSection()); }
+
+function currentSection() {
+  const s = document.querySelector('.section.active');
+  return s ? s.id.replace('sec-', '') : 'dashboard';
+}
+
+function loadSection(name) {
+  if (name === 'dashboard') loadDashboard();
+  else if (name === 'restaurants') loadRestaurants();
+  else if (name === 'subscriptions') loadSubscriptions();
+  else if (name === 'analytics') loadAnalytics();
+  else if (name === 'system') loadSystem();
+  else if (name === 'alerts') loadAlerts();
+  else if (name === 'conversations') loadAllConversations();
+  else if (name === 'account') loadAccount();
+}
+
+// ---- DASHBOARD ----
+async function loadDashboard() {
+  try {
+    const d = await api('/api/super/dashboard');
+    // Support both nested and flat response shapes
+    const totalRest = (d.restaurants && d.restaurants.total != null) ? d.restaurants.total : (d.total_restaurants ?? 0);
+    const activeRest = (d.restaurants && d.restaurants.active != null) ? d.restaurants.active : (d.active_restaurants ?? 0);
+    const mrr = (d.revenue && d.revenue.mrr != null) ? d.revenue.mrr : (d.mrr ?? 0);
+    const arr = (d.revenue && d.revenue.arr != null) ? d.revenue.arr : (d.arr ?? 0);
+    const totalOrders = (d.orders && d.orders.total != null) ? d.orders.total : (d.total_orders ?? 0);
+    const totalConvs = (d.conversations && d.conversations.total != null) ? d.conversations.total : (d.total_conversations ?? 0);
+    const kpis = [
+      { label: 'إجمالي المطاعم', value: totalRest, icon: '🏪', color: 'indigo', sub: `${activeRest} نشط` },
+      { label: 'الدخل الشهري (MRR)', value: formatCurrency(mrr), icon: '💰', color: 'green', sub: `ARR: ${formatCurrency(arr)}` },
+      { label: 'إجمالي الطلبات', value: totalOrders, icon: '📦', color: 'blue', sub: `المحادثات: ${totalConvs}` },
+      { label: 'المستخدمون', value: d.total_users ?? 0, icon: '👥', color: 'purple', sub: `القنوات: ${d.active_channels ?? 0}` },
+    ];
+    const colorMap = { indigo: 'border-indigo-500/30 text-indigo-400', green: 'border-green-500/30 text-green-400', blue: 'border-blue-500/30 text-blue-400', purple: 'border-purple-500/30 text-purple-400' };
+    document.getElementById('kpiGrid').innerHTML = kpis.map(k => `
+      <div class="kpi-card p-4 border-t-2 ${colorMap[k.color]}">
+        <div class="flex items-start justify-between mb-2">
+          <span class="text-2xl">${k.icon}</span>
+          <span class="text-xs text-slate-500">${k.label}</span>
+        </div>
+        <div class="text-white text-2xl font-bold">${k.value}</div>
+        <div class="text-slate-500 text-xs mt-1">${k.sub}</div>
+      </div>`).join('');
+
+    // Expiring soon — show count or fetch from restaurants list
+    const expEl = document.getElementById('expiringList');
+    const expCount = typeof d.expiring_soon === 'number' ? d.expiring_soon : (d.expiring_soon || []).length;
+    if (expCount > 0) {
+      expEl.innerHTML = `<div class="text-center py-4">
+        <span class="text-3xl font-bold text-yellow-400">${expCount}</span>
+        <p class="text-slate-400 text-sm mt-1">اشتراك ينتهي خلال 7 أيام</p>
+        <button onclick="showSection('subscriptions');filterSubs('expiring')" class="btn btn-ghost btn-sm mt-2">عرض التفاصيل ←</button>
+      </div>`;
+    } else {
+      expEl.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">✅ لا توجد اشتراكات تنتهي قريباً</p>';
+    }
+
+    // Recent
+    const recEl = document.getElementById('recentRestaurants');
+    if (d.recent_restaurants && d.recent_restaurants.length) {
+      recEl.innerHTML = d.recent_restaurants.map(r => `
+        <div class="flex items-center justify-between py-2 border-b border-slate-700/50">
+          <div>
+            <div class="text-white text-sm">${h(r.name)}</div>
+            <div class="text-slate-500 text-xs">${r.created_at ? r.created_at.slice(0,10) : ''}</div>
+          </div>
+          ${statusBadge(r.status || 'trial')}
+        </div>`).join('');
+    } else {
+      recEl.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">لا توجد مطاعم حديثة</p>';
+    }
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- RESTAURANTS ----
+async function loadRestaurants() {
+  try {
+    const data = await api('/api/super/restaurants');
+    allRestaurants = data.restaurants || data;
+    renderRestaurants(allRestaurants);
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+function filterRestaurants() {
+  const q = document.getElementById('restSearch').value.toLowerCase();
+  const f = document.getElementById('restFilter').value;
+  let list = allRestaurants;
+  if (q) list = list.filter(r => (r.name+r.owner_email+r.owner_name).toLowerCase().includes(q));
+  if (f) list = list.filter(r => (r.status || 'active') === f);
+  renderRestaurants(list);
+}
+
+function renderRestaurants(list) {
+  const tbody = document.getElementById('restaurantsTable');
+  if (!list.length) { tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-slate-500">لا توجد نتائج</td></tr>`; return; }
+  tbody.innerHTML = list.map(r => `
+    <tr class="table-row border-b border-slate-800">
+      <td class="px-4 py-3">
+        <div class="text-white font-medium text-sm">${h(r.name)}</div>
+        <div class="text-slate-500 text-xs">${h(r.id.slice(0,8))}…</div>
+      </td>
+      <td class="px-4 py-3">
+        <div class="text-slate-300 text-sm">${h(r.owner_name || '—')}</div>
+        <div class="text-slate-500 text-xs">${h(r.owner_email || '—')}</div>
+      </td>
+      <td class="px-4 py-3">${planBadge(r.plan || 'trial')}</td>
+      <td class="px-4 py-3">${statusBadge(r.status || 'active')}</td>
+      <td class="px-4 py-3">
+        <span class="text-sm ${(r.days_remaining ?? 999) <= 7 ? 'text-red-400' : (r.days_remaining ?? 999) <= 30 ? 'text-yellow-400' : 'text-slate-300'}">
+          ${r.days_remaining != null ? r.days_remaining + ' يوم' : '—'}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-slate-300 text-sm">${r.total_orders ?? 0}</td>
+      <td class="px-4 py-3">
+        <div class="flex gap-1 flex-wrap">
+          <button onclick="viewRestaurant('${r.id}')" class="btn btn-ghost btn-sm" title="عرض">🔍</button>
+          <button onclick="openEditRest('${r.id}','${h(r.status||'active')}','${h(r.plan||'trial')}','${h(r.internal_notes||'')}')" class="btn btn-ghost btn-sm" title="تعديل">✏️</button>
+          <button onclick="openSub('${r.id}','${h(r.plan||'trial')}','${h(r.sub_status||r.status||'trial')}','${r.sub_price||0}','${r.sub_end||''}')" class="btn btn-ghost btn-sm" title="الاشتراك">💳</button>
+          <button onclick="impersonate('${r.id}')" class="btn btn-ghost btn-sm" title="دخول كمالك">🔑</button>
+          <button onclick="resetRestaurantData('${r.id}','${h(r.name)}')" class="btn btn-danger btn-sm" title="حذف البيانات التجريبية">🗑️</button>
+          <button onclick="archiveRest('${r.id}')" class="btn btn-danger btn-sm" title="أرشفة">📦</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+// ---- SUBSCRIPTIONS ----
+async function loadSubscriptions() {
+  try {
+    const data = await api('/api/super/subscriptions');
+    allSubs = data.subscriptions || data;
+    renderSubs(allSubs);
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+function filterSubs(tab) {
+  subTabFilter = tab;
+  document.querySelectorAll('#subTabs button').forEach(b => {
+    b.className = b.dataset.tab === (tab || 'all') ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  });
+  let list = allSubs;
+  if (tab === 'expiring') list = list.filter(s => s.days_remaining != null && s.days_remaining <= 30 && s.days_remaining >= 0 && s.status === 'active');
+  else if (tab) list = list.filter(s => s.status === tab);
+  renderSubs(list);
+}
+
+function renderSubs(list) {
+  const tbody = document.getElementById('subsTable');
+  if (!list.length) { tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-slate-500">لا توجد اشتراكات</td></tr>`; return; }
+  tbody.innerHTML = list.map(s => `
+    <tr class="table-row border-b border-slate-800">
+      <td class="px-4 py-3 text-white text-sm">${h(s.restaurant_name || s.restaurant_id.slice(0,8))}</td>
+      <td class="px-4 py-3">${planBadge(s.plan)}</td>
+      <td class="px-4 py-3">${statusBadge(s.status)}</td>
+      <td class="px-4 py-3 text-slate-300 text-sm">${s.price ? Math.round(s.price).toLocaleString('ar-IQ') + ' د.ع' : '—'}</td>
+      <td class="px-4 py-3 text-slate-400 text-xs">${s.end_date ? s.end_date.slice(0,10) : '—'}</td>
+      <td class="px-4 py-3">
+        <span class="text-sm ${(s.days_remaining ?? 999) <= 7 ? 'text-red-400' : (s.days_remaining ?? 999) <= 30 ? 'text-yellow-400' : 'text-slate-300'}">
+          ${s.days_remaining != null ? s.days_remaining + ' يوم' : '—'}
+        </span>
+      </td>
+      <td class="px-4 py-3">
+        <button onclick="openSub('${s.restaurant_id}','${s.plan}','${s.status}','${s.price||0}','${s.end_date||''}')" class="btn btn-ghost btn-sm">تعديل</button>
+      </td>
+    </tr>`).join('');
+}
+
+// ---- ANALYTICS ----
+async function loadAnalytics() {
+  try {
+    const d = await api('/api/super/analytics');
+
+    // Growth chart
+    if (growthChartInst) growthChartInst.destroy();
+    const gCtx = document.getElementById('growthChart').getContext('2d');
+    const growth = d.monthly_growth || d.monthly_new_restaurants || [];
+    growthChartInst = new Chart(gCtx, {
+      type: 'line',
+      data: {
+        labels: growth.map(g => g.month || g.label || ''),
+        datasets: [{ label: 'مطاعم جديدة', data: growth.map(g => g.count || g.new_restaurants || 0),
+          borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,.15)', tension: 0.4, fill: true }]
+      },
+      options: { responsive: true, plugins: { legend: { labels: { color: '#94a3b8' } } },
+        scales: { x: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }, y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } } } }
+    });
+
+    // Plan distribution
+    if (plansChartInst) plansChartInst.destroy();
+    const pCtx = document.getElementById('plansChart').getContext('2d');
+    const plans = d.plan_distribution || [];
+    plansChartInst = new Chart(pCtx, {
+      type: 'doughnut',
+      data: {
+        labels: plans.map(p => p.plan),
+        datasets: [{ data: plans.map(p => p.count), backgroundColor: ['#6d28d9','#2563eb','#059669','#d97706'] }]
+      },
+      options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
+    });
+
+    // Top restaurants
+    const top = d.top_restaurants || [];
+    document.getElementById('topRestaurants').innerHTML = top.length ? top.slice(0,8).map((r, i) => `
+      <div class="flex items-center gap-3 py-2 border-b border-slate-800">
+        <span class="text-slate-500 text-sm w-6">${i+1}</span>
+        <div class="flex-1">
+          <div class="text-white text-sm">${h(r.name)}</div>
+          <div class="text-slate-500 text-xs">${planBadge(r.plan || 'trial')}</div>
+        </div>
+        <span class="text-slate-300 text-sm">${r.total_orders || 0} طلب</span>
+      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد بيانات</p>';
+
+    // Channel usage
+    const ch = d.channel_usage || [];
+    const chIcons = { telegram: '✈️', instagram: '📷', whatsapp: '📱', website: '🌐' };
+    document.getElementById('channelUsage').innerHTML = ch.map(c => `
+      <div class="card p-3 text-center">
+        <div class="text-2xl mb-1">${chIcons[c.type] || '📡'}</div>
+        <div class="text-white font-bold">${c.count}</div>
+        <div class="text-slate-500 text-xs">${c.type}</div>
+      </div>`).join('');
+
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- SYSTEM ----
+async function loadSystem() {
+  try {
+    const d = await api('/api/super/system');
+    // Backend returns: {db:{status:..}, openai:{status:..}, backend:{status:..}, webhooks:{...}}
+    const dbStatus = (d.db || d.health?.database || {}).status || 'unknown';
+    const oaiStatus = (d.openai || {}).status === 'ok' ? 'ok' : (d.openai || {}).status === 'missing_key' ? 'warn' : 'unknown';
+    const apiStatus = (d.backend || {}).status || 'ok';
+    const wh = d.webhooks || {};
+    const whStatus = (wh.errors_24h || 0) > 0 ? 'warn' : 'ok';
+
+    const cards = [
+      { label: 'قاعدة البيانات', status: dbStatus, icon: '🗄️' },
+      { label: 'OpenAI', status: oaiStatus, icon: '🤖' },
+      { label: 'الخادم', status: apiStatus, icon: '⚡' },
+      { label: 'الويب هوك', status: whStatus, icon: '🔗' },
+    ];
+    document.getElementById('healthCards').innerHTML = cards.map(c => `
+      <div class="kpi-card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-2xl">${c.icon}</span>
+          <span class="health-dot ${c.status === 'ok' ? 'health-ok' : c.status === 'warn' ? 'health-warn' : 'health-err'}"></span>
+        </div>
+        <div class="text-white font-medium text-sm">${c.label}</div>
+        <div class="text-xs mt-1 ${c.status === 'ok' ? 'text-green-400' : c.status === 'warn' ? 'text-yellow-400' : 'text-red-400'}">
+          ${c.status === 'ok' ? 'يعمل بشكل طبيعي' : c.status === 'warn' ? 'تحذير' : 'خطأ'}
+        </div>
+      </div>`).join('');
+
+    // Webhook stats
+    const ws = d.webhooks || d.webhook_stats || {};
+    document.getElementById('webhookStats').innerHTML = [
+      { label: 'رسائل (24س)', val: ws.messages_24h || 0 },
+      { label: 'أخطاء (24س)', val: ws.errors_24h || 0 },
+      { label: 'الإجمالي', val: ws.total || ws.messages_24h || 0 },
+      { label: 'نشط', val: ws.active_channels || 0 },
+    ].map(s => `
+      <div class="card p-3 text-center">
+        <div class="text-white font-bold text-lg">${s.val}</div>
+        <div class="text-slate-500 text-xs">${s.label}</div>
+      </div>`).join('');
+
+    // Activity log
+    const logs = d.recent_logs || d.recent_activity || [];
+    document.getElementById('activityLog').innerHTML = logs.length ? logs.map(l => `
+      <div class="flex items-start gap-3 py-2 border-b border-slate-800">
+        <span class="text-purple-400 text-xs mt-0.5 shrink-0">${(l.created_at||'').slice(0,16)}</span>
+        <div>
+          <span class="text-slate-300 text-sm">${h(l.description || l.action)}</span>
+          ${l.admin_name ? `<span class="text-slate-500 text-xs mr-2">— ${h(l.admin_name)}</span>` : ''}
+        </div>
+      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد سجلات</p>';
+
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- ALERTS ----
+async function loadAlerts() {
+  try {
+    const d = await api('/api/super/alerts');
+    const alerts = d.alerts || [];
+    document.getElementById('alertCount').textContent = alerts.length;
+    // Update sidebar badge
+    const badge = document.getElementById('alertBadge');
+    if (alerts.length) { badge.textContent = alerts.length; badge.classList.remove('hidden'); }
+    else badge.classList.add('hidden');
+
+    if (!alerts.length) {
+      document.getElementById('alertsList').innerHTML = '<div class="text-center py-12 text-slate-500">✅ لا توجد تنبيهات نشطة</div>';
+      return;
+    }
+    document.getElementById('alertsList').innerHTML = alerts.map(a => `
+      <div class="alert-item alert-${a.level || 'medium'}">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="text-sm font-semibold text-slate-200">${h(a.title)}</div>
+            <div class="text-xs text-slate-400 mt-1">${h(a.message)}</div>
+          </div>
+          <span class="badge ${a.level === 'high' ? 'badge-red' : a.level === 'low' ? 'badge-blue' : 'badge-yellow'} shrink-0 mr-3">
+            ${a.level === 'high' ? 'عالي' : a.level === 'low' ? 'منخفض' : 'متوسط'}
+          </span>
+        </div>
+      </div>`).join('');
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- RESTAURANT DETAIL ----
+async function viewRestaurant(rid) {
+  document.getElementById('restModalContent').innerHTML = '<div class="text-center py-8 text-slate-400">جارٍ التحميل…</div>';
+  document.getElementById('restModal').classList.remove('hidden');
+  try {
+    const d = await api('/api/super/restaurants/' + rid);
+    const r = d.restaurant || d;
+    document.getElementById('restModalTitle').textContent = r.name;
+    document.getElementById('restModalContent').innerHTML = `
+      <div class="grid grid-cols-2 gap-4 mb-5">
+        <div class="card p-3">
+          <div class="text-slate-500 text-xs mb-1">المالك</div>
+          <div class="text-white text-sm">${h(r.owner_name || '—')}</div>
+          <div class="text-slate-400 text-xs">${h(r.owner_email || '—')}</div>
+        </div>
+        <div class="card p-3">
+          <div class="text-slate-500 text-xs mb-1">الحالة</div>
+          <div class="mt-1">${statusBadge(r.status || 'active')}</div>
+          <div class="mt-1">${planBadge(r.plan || 'trial')}</div>
+        </div>
+        <div class="card p-3">
+          <div class="text-slate-500 text-xs mb-3">الإحصائيات</div>
+          <div class="grid grid-cols-2 gap-2 text-center">
+            <div><div class="text-white font-bold">${r.total_orders || 0}</div><div class="text-slate-500 text-xs">طلبات</div></div>
+            <div><div class="text-white font-bold">${r.total_conversations || 0}</div><div class="text-slate-500 text-xs">محادثات</div></div>
+            <div><div class="text-white font-bold">${r.total_products || 0}</div><div class="text-slate-500 text-xs">منتجات</div></div>
+            <div><div class="text-white font-bold">${r.total_staff || 0}</div><div class="text-slate-500 text-xs">موظفين</div></div>
+          </div>
+        </div>
+        <div class="card p-3">
+          <div class="text-slate-500 text-xs mb-3">القنوات</div>
+          ${(r.channels || []).length ? r.channels.map(c => `
+            <div class="flex items-center gap-2 py-1">
+              <span class="health-dot ${c.is_active ? 'health-ok' : 'health-err'}"></span>
+              <span class="text-slate-300 text-xs">${c.type}</span>
+              <span class="text-slate-500 text-xs">${c.connection_status || ''}</span>
+            </div>`).join('') : '<div class="text-slate-500 text-xs">لا توجد قنوات</div>'}
+        </div>
+      </div>
+      ${r.internal_notes ? `<div class="card p-3 mb-4"><div class="text-slate-500 text-xs mb-1">ملاحظات داخلية</div><div class="text-slate-300 text-sm">${h(r.internal_notes)}</div></div>` : ''}
+      <div class="card p-3 mb-4">
+        <div class="text-slate-500 text-xs mb-2">النشاط الأخير</div>
+        ${(r.recent_activity || []).slice(0,5).map(a => `
+          <div class="flex items-center gap-2 py-1.5 border-b border-slate-800">
+            <span class="text-slate-500 text-xs">${(a.created_at||'').slice(0,16)}</span>
+            <span class="text-slate-300 text-xs">${h(a.content || a.description || a.action || '—').slice(0,80)}</span>
+          </div>`).join('') || '<div class="text-slate-500 text-xs">لا يوجد نشاط</div>'}
+      </div>
+      <div class="flex gap-2 justify-end flex-wrap">
+        <button onclick="impersonate('${r.id}')" class="btn btn-primary">🔑 دخول كمالك المطعم</button>
+        <button onclick="openEditRest('${r.id}','${r.status||'active'}','${r.plan||'trial'}','${h(r.internal_notes||'')}')" class="btn btn-ghost">✏️ تعديل</button>
+        <button onclick="resetRestaurantData('${r.id}','${h(r.name)}')" class="btn btn-danger">🗑️ حذف البيانات التجريبية</button>
+      </div>`;
+  } catch(e) {
+    document.getElementById('restModalContent').innerHTML = `<div class="text-red-400 text-center py-8">${e.message}</div>`;
+  }
+}
+
+// ---- IMPERSONATE ----
+async function impersonate(rid) {
+  try {
+    const d = await api('/api/super/restaurants/' + rid + '/impersonate', { method: 'POST' });
+    // Open the restaurant dashboard with the impersonation token
+    const url = '/app';
+    const win = window.open(url, '_blank');
+    // Store the token for the new tab
+    localStorage.setItem('impersonate_token_' + rid, d.token);
+    // Inject via sessionStorage trick — write to a known key then new tab reads it
+    const impUser = d.user || d.owner || {};
+    sessionStorage.setItem('imp_token', d.token);
+    sessionStorage.setItem('imp_user', JSON.stringify(impUser));
+    showToast('تم فتح لوحة المطعم في نافذة جديدة — الصلاحية تستمر ساعتين', 'success');
+    if (win) {
+      // Post the token to the new window once it loads
+      setTimeout(() => {
+        try { win.localStorage.setItem('token', d.token); win.localStorage.setItem('user', JSON.stringify(impUser)); } catch(e) {}
+      }, 1500);
+    }
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- EDIT RESTAURANT ----
+function openEditRest(rid, status, plan, notes) {
+  document.getElementById('editRid').value = rid;
+  document.getElementById('editStatus').value = status;
+  document.getElementById('editPlan').value = plan;
+  document.getElementById('editNotes').value = notes;
+  document.getElementById('editRestError').classList.add('hidden');
+  document.getElementById('editRestModal').classList.remove('hidden');
+}
+
+async function saveRest(e) {
+  e.preventDefault();
+  const rid = document.getElementById('editRid').value;
+  const errEl = document.getElementById('editRestError');
+  errEl.classList.add('hidden');
+  try {
+    await api('/api/super/restaurants/' + rid, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: document.getElementById('editStatus').value,
+        plan: document.getElementById('editPlan').value,
+        internal_notes: document.getElementById('editNotes').value,
+      })
+    });
+    closeModal('editRestModal');
+    closeModal('restModal');
+    showToast('تم تحديث المطعم', 'success');
+    loadRestaurants();
+  } catch(e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+// ---- ARCHIVE ----
+async function archiveRest(rid) {
+  if (!confirm('هل أنت متأكد من أرشفة هذا المطعم؟')) return;
+  try {
+    await api('/api/super/restaurants/' + rid, { method: 'DELETE' });
+    showToast('تمت الأرشفة', 'success');
+    loadRestaurants();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- SUBSCRIPTION MODAL ----
+function openSub(rid, plan, status, price, endDate) {
+  document.getElementById('subRid').value = rid;
+  document.getElementById('subPlan').value = plan;
+  document.getElementById('subStatus').value = status;
+  document.getElementById('subPrice').value = price;
+  document.getElementById('subEndDate').value = endDate ? endDate.slice(0,10) : '';
+  document.getElementById('subNotes').value = '';
+  document.getElementById('subError').classList.add('hidden');
+  document.getElementById('subModal').classList.remove('hidden');
+}
+
+async function saveSub(e) {
+  e.preventDefault();
+  const rid = document.getElementById('subRid').value;
+  const errEl = document.getElementById('subError');
+  errEl.classList.add('hidden');
+  try {
+    await api('/api/super/subscriptions/' + rid, {
+      method: 'PUT',
+      body: JSON.stringify({
+        plan: document.getElementById('subPlan').value,
+        status: document.getElementById('subStatus').value,
+        price: parseFloat(document.getElementById('subPrice').value) || 0,
+        end_date: document.getElementById('subEndDate').value,
+        notes: document.getElementById('subNotes').value,
+      })
+    });
+    closeModal('subModal');
+    showToast('تم تحديث الاشتراك', 'success');
+    if (currentSection() === 'subscriptions') loadSubscriptions();
+    else if (currentSection() === 'restaurants') loadRestaurants();
+  } catch(e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+// ---- HELPERS ----
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function statusBadge(s) {
+  const map = { active: 'badge-green', trial: 'badge-blue', suspended: 'badge-red', expired: 'badge-gray', archived: 'badge-gray' };
+  const labels = { active: 'نشط', trial: 'تجربة', suspended: 'معلق', expired: 'منتهي', archived: 'مؤرشف' };
+  return `<span class="badge ${map[s] || 'badge-gray'}">${labels[s] || s}</span>`;
+}
+
+function planBadge(p) {
+  const map = { trial: 'badge-gray', starter: 'badge-blue', professional: 'badge-purple', enterprise: 'badge-green' };
+  return `<span class="badge ${map[p] || 'badge-gray'}">${p}</span>`;
+}
+
+function formatCurrency(n) {
+  if (!n && n !== 0) return '—';
+  return Math.round(+n).toLocaleString('ar-IQ') + ' د.ع';
+}
+
+let _toastTimeout;
+function showToast(msg, type = 'info') {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;padding:12px 20px;border-radius:10px;font-size:.875rem;font-weight:600;transition:opacity .3s;white-space:nowrap;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = type === 'error' ? '#7f1d1d' : type === 'success' ? '#14532d' : '#1e3a5f';
+  el.style.color = type === 'error' ? '#fca5a5' : type === 'success' ? '#86efac' : '#93c5fd';
+  el.style.opacity = '1';
+  clearTimeout(_toastTimeout);
+  _toastTimeout = setTimeout(() => { el.style.opacity = '0'; }, 3500);
+}
+
+// ---- CONVERSATIONS ----
+async function loadAllConversations() {
+  const rid = document.getElementById('convRestFilter')?.value || '';
+  const status = document.getElementById('convStatusFilter')?.value || '';
+  try {
+    let url = '/api/super/conversations?limit=50';
+    if (rid) url += '&restaurant_id=' + encodeURIComponent(rid);
+    if (status) url += '&status=' + status;
+    const d = await api(url);
+    const items = d.items || [];
+    document.getElementById('convTotal').textContent = `${d.total || items.length} محادثة`;
+    const tbody = document.getElementById('convsTable');
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">لا توجد محادثات</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(c => `
+      <tr class="table-row border-t border-slate-800">
+        <td class="px-4 py-3">
+          <p class="text-white text-sm font-medium">${h(c.customer_name)}</p>
+          <p class="text-slate-500 text-xs">${h(c.customer_phone||'')}</p>
+        </td>
+        <td class="px-4 py-3 text-slate-300 text-sm">${h(c.restaurant_name)}</td>
+        <td class="px-4 py-3">
+          <span class="badge ${c.status==='open' ? 'badge-green' : 'badge-gray'}">${c.status==='open' ? 'مفتوحة' : 'مغلقة'}</span>
+          ${c.mode==='bot' ? '<span class="badge badge-purple mr-1">بوت</span>' : '<span class="badge badge-blue mr-1">موظف</span>'}
+        </td>
+        <td class="px-4 py-3 text-slate-400 text-sm">${c.msg_count||0}</td>
+        <td class="px-4 py-3 text-slate-400 text-xs max-w-xs truncate">${h((c.last_message||'').slice(0,60))}</td>
+        <td class="px-4 py-3 text-slate-500 text-xs">${fmtDate(c.updated_at)}</td>
+        <td class="px-4 py-3">
+          <button onclick="openConvMessages('${c.id}','${h(c.customer_name)}')" class="btn btn-ghost btn-sm">عرض</button>
+        </td>
+      </tr>`).join('');
+    // Populate restaurant filter
+    const sel = document.getElementById('convRestFilter');
+    if (sel && sel.options.length === 1) {
+      const rests = [...new Set(items.map(i => ({ id: i.restaurant_id, name: i.restaurant_name })).map(JSON.stringify))].map(JSON.parse);
+      rests.forEach(r => { const o = new Option(r.name, r.id); sel.add(o); });
+    }
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function openConvMessages(convId, custName) {
+  document.getElementById('convMsgTitle').textContent = 'محادثة: ' + custName;
+  document.getElementById('convMsgList').innerHTML = '<p class="text-slate-500 text-center py-6">جارٍ التحميل...</p>';
+  document.getElementById('convMsgModal').classList.remove('hidden');
+  try {
+    const d = await api('/api/super/conversations/' + convId + '/messages');
+    const msgs = d.messages || [];
+    if (!msgs.length) { document.getElementById('convMsgList').innerHTML = '<p class="text-slate-500 text-center py-6">لا توجد رسائل</p>'; return; }
+    document.getElementById('convMsgList').innerHTML = msgs.map(m => `
+      <div class="flex gap-2 ${m.role==='assistant' ? 'justify-end' : ''}">
+        <div class="max-w-sm px-3 py-2 rounded-xl text-sm ${m.role==='assistant' ? 'bg-purple-600/30 text-purple-100' : m.role==='user' ? 'bg-slate-700 text-slate-200' : 'bg-emerald-900/30 text-emerald-200'}">
+          <p class="text-xs text-slate-500 mb-1">${m.role==='assistant' ? '🤖 بوت' : m.role==='user' ? '👤 عميل' : '👔 موظف'} · ${fmtDate(m.created_at)}</p>
+          <p>${h(m.content)}</p>
+        </div>
+      </div>`).join('');
+  } catch(e) { document.getElementById('convMsgList').innerHTML = '<p class="text-red-400 text-center py-4">' + e.message + '</p>'; }
+}
+
+// ---- RESET DATA ----
+async function resetRestaurantData(rid, name) {
+  if (!confirm(`⚠️ هل أنت متأكد من حذف جميع البيانات التجريبية لمطعم "${name}"؟\n\nسيتم حذف: الطلبات، المحادثات، العملاء، سجل النشاط.\nلن يتم حذف: المطعم، المستخدمون، المنتجات، القنوات.`)) return;
+  try {
+    const d = await api('/api/super/restaurants/' + rid + '/reset-data', { method: 'POST' });
+    showToast(d.message || 'تم الحذف', 'success');
+    loadRestaurants();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ---- ACCOUNT ----
+async function loadAccount() {
+  try {
+    const d = await api('/api/super/auth/me');
+    document.getElementById('acName').textContent = d.name || '—';
+    document.getElementById('acEmail').textContent = d.email || '—';
+    if (d.support_pin) {
+      document.getElementById('acPin').value = d.support_pin;
+      document.getElementById('pinValue').textContent = d.support_pin;
+      document.getElementById('pinDisplay').classList.remove('hidden');
+    }
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function savePIN() {
+  const pin = document.getElementById('acPin').value.trim();
+  if (!pin) { showToast('أدخل رمز الدعم', 'error'); return; }
+  try {
+    await api('/api/super/auth/pin', { method: 'PATCH', body: JSON.stringify({ support_pin: pin }) });
+    document.getElementById('pinValue').textContent = pin;
+    document.getElementById('pinDisplay').classList.remove('hidden');
+    showToast('تم حفظ رمز الدعم ✅', 'success');
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+function fmtDate(dt) {
+  if (!dt) return '—';
+  try { return new Date(dt).toLocaleString('ar', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); } catch(e) { return dt; }
+}
+
+// Close modals on backdrop click
+document.querySelectorAll('.modal-bg').forEach(m => {
+  m.addEventListener('click', e => { if (e.target === m) m.classList.add('hidden'); });
+});
+
+// Initial load
+loadDashboard();
+// Load alerts badge silently
+api('/api/super/alerts').then(d => {
+  const alerts = d.alerts || [];
+  const badge = document.getElementById('alertBadge');
+  if (alerts.length) { badge.textContent = alerts.length; badge.classList.remove('hidden'); }
+}).catch(() => {});
+</script>
+</body>
+</html>

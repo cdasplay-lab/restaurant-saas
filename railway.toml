@@ -1,0 +1,18 @@
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[environment]
+# Set these in Railway dashboard:
+# JWT_SECRET = "your_strong_secret_here"
+# OPENAI_API_KEY = "sk-..."
+# BASE_URL = "https://yourapp.up.railway.app"
+# SESSION_HOURS = "24"
+# DB_PATH = "/data/restaurant.db"  (if using volume)
+# DATABASE_URL = "postgresql://..."  (if using Railway Postgres plugin)

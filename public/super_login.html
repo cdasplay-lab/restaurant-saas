@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Admin — منصة المطعم</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); }
+  .card { backdrop-filter: blur(10px); }
+  input:focus { outline: none; }
+</style>
+<script src="/config.js"></script>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+<div class="card bg-white/5 border border-purple-500/30 rounded-2xl p-8 w-full max-w-md shadow-2xl">
+  <!-- Logo -->
+  <div class="text-center mb-8">
+    <div class="inline-flex items-center justify-center w-16 h-16 bg-purple-700 rounded-2xl mb-4">
+      <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+      </svg>
+    </div>
+    <h1 class="text-white text-2xl font-bold">Super Admin</h1>
+    <p class="text-purple-300 text-sm mt-1">لوحة إدارة المنصة</p>
+  </div>
+
+  <!-- Form -->
+  <form id="loginForm" class="space-y-4">
+    <div>
+      <label class="block text-slate-300 text-sm mb-2">البريد الإلكتروني</label>
+      <input id="email" type="email"
+        class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
+               focus:border-purple-500 focus:bg-white/15 transition placeholder-slate-500"
+        placeholder="superadmin@platform.com" required>
+    </div>
+    <div>
+      <label class="block text-slate-300 text-sm mb-2">كلمة المرور</label>
+      <input id="password" type="password"
+        class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
+               focus:border-purple-500 focus:bg-white/15 transition placeholder-slate-500"
+        placeholder="••••••••" required>
+    </div>
+
+    <div id="error" class="hidden bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl px-4 py-3 text-sm"></div>
+
+    <button type="submit" id="submitBtn"
+      class="w-full bg-purple-700 hover:bg-purple-600 text-white font-semibold rounded-xl py-3
+             transition flex items-center justify-center gap-2 mt-6">
+      <span id="btnText">دخول</span>
+      <span id="btnSpinner" class="hidden">
+        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+      </span>
+    </button>
+  </form>
+
+  <div class="mt-6 text-center">
+    <p class="text-slate-600 text-xs">وصول مقيد — للإدارة العليا فقط</p>
+  </div>
+</div>
+
+<script>
+  if (localStorage.getItem('sa_token')) {
+    window.location.href = '/super';
+  }
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('submitBtn');
+    const errEl = document.getElementById('error');
+    btn.disabled = true;
+    document.getElementById('btnText').textContent = 'جارٍ التحقق...';
+    document.getElementById('btnSpinner').classList.remove('hidden');
+    errEl.classList.add('hidden');
+
+    try {
+      const res = await fetch((window.API_BASE || '') + '/api/super/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: document.getElementById('email').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'فشل تسجيل الدخول');
+      localStorage.setItem('sa_token', data.token);
+      localStorage.setItem('sa_admin', JSON.stringify(data.admin));
+      window.location.href = '/super';
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+      btn.disabled = false;
+      document.getElementById('btnText').textContent = 'دخول';
+      document.getElementById('btnSpinner').classList.add('hidden');
+    }
+  });
+</script>
+</body>
+</html>

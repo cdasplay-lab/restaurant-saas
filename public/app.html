@@ -1,0 +1,2881 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة التحكم</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+  :root { --sidebar-w: 240px; }
+  #sidebar { width: var(--sidebar-w); }
+  #main { margin-right: var(--sidebar-w); }
+  .nav-item { transition: all .15s; }
+  .nav-item.active { background: rgba(99,102,241,.2); color: #818cf8; }
+  .nav-item:not(.active):hover { background: rgba(255,255,255,.05); }
+  .section { display: none; }
+  .section.active { display: block; }
+  .badge { display: inline-flex; align-items: center; justify-content: center;
+           padding: 2px 8px; border-radius: 9999px; font-size: .7rem; font-weight: 600; }
+  .toast { transition: all .3s; }
+  #toastContainer { position: fixed; bottom: 1.5rem; left: 1.5rem; z-index: 9999;
+                    display: flex; flex-direction: column; gap: .5rem; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7);
+                   z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .chat-bubble { max-width: 75%; padding: .6rem 1rem; border-radius: 1rem; word-break: break-word; }
+  .chat-bubble.customer { background: #1e293b; color: #e2e8f0; border-bottom-right-radius: .25rem; }
+  .chat-bubble.bot { background: #312e81; color: #c7d2fe; border-bottom-left-radius: .25rem; }
+  .chat-bubble.staff { background: #064e3b; color: #a7f3d0; border-bottom-left-radius: .25rem; }
+  input, select, textarea { outline: none; }
+  .spinner { border: 3px solid rgba(99,102,241,.2); border-top-color: #6366f1;
+             border-radius: 50%; width: 32px; height: 32px; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 99px; }
+
+  /* ── THEME TRANSITION ──────────────────────────── */
+  *, *::before, *::after {
+    transition: background-color .22s ease, border-color .18s ease,
+                color .18s ease, box-shadow .22s ease;
+  }
+  /* exclude transforms/opacity from blanket transition */
+  .spinner, .toast, .nav-item, button, a, input, select, textarea {
+    transition: background-color .22s ease, border-color .18s ease,
+                color .18s ease, box-shadow .22s ease,
+                opacity .2s ease, transform .15s ease;
+  }
+
+  /* ── LIGHT MODE ─────────────────────────────────── */
+  html.light { color-scheme: light; }
+
+  /* Body / page background */
+  html.light body                       { background-color: #eef2ff !important; color: #1e293b; }
+  html.light #main                      { background-color: #eef2ff; }
+
+  /* Sidebar — stays DARK (indigo-branded) */
+  html.light #sidebar                   { background: linear-gradient(175deg,#1e1b4b 0%,#312e81 100%) !important; border-color: transparent !important; }
+  html.light #sidebar .border-slate-800 { border-color: rgba(255,255,255,.09) !important; }
+  html.light #sidebar .text-white       { color: #ffffff !important; }
+  html.light #sidebar .text-slate-400   { color: #a5b4fc !important; }
+  html.light #sidebar .text-slate-500   { color: rgba(165,180,252,.55) !important; }
+  html.light #sidebar .text-slate-200   { color: #e0e7ff !important; }
+  html.light #sidebar .bg-indigo-600    { background-color: rgba(255,255,255,.18) !important; }
+  html.light .nav-item                  { color: #a5b4fc !important; }
+  html.light .nav-item.active           { background: rgba(255,255,255,.15) !important; color: #ffffff !important; }
+  html.light .nav-item:not(.active):hover { background: rgba(255,255,255,.08) !important; }
+
+  /* Header */
+  html.light header                     { background-color: #ffffff !important; border-color: #dde4f5 !important; box-shadow: 0 1px 12px rgba(99,102,241,.09); }
+  html.light #pageTitle                 { color: #0f172a !important; }
+  html.light #currentTime               { color: #64748b !important; }
+
+  /* Cards & panels */
+  html.light .bg-slate-950              { background-color: #f1f5ff !important; }
+  html.light .bg-slate-900              { background-color: #f1f5ff !important; }
+  html.light .bg-slate-900\/50          { background-color: rgba(241,245,255,.85) !important; }
+  html.light .bg-slate-800              { background-color: #ffffff !important; box-shadow: 0 2px 10px rgba(99,102,241,.07); }
+  html.light .bg-slate-800\/50          { background-color: rgba(255,255,255,.85) !important; }
+  html.light .bg-slate-700              { background-color: #f4f6ff !important; }
+  html.light .bg-slate-700\/30          { background-color: rgba(238,242,255,.5) !important; }
+  html.light .bg-slate-600              { background-color: #e8edf8 !important; }
+
+  /* Borders */
+  html.light .border-slate-800          { border-color: #dde4f5 !important; }
+  html.light .border-slate-700          { border-color: #e2e8f8 !important; }
+  html.light .border-slate-700\/50      { border-color: rgba(221,228,245,.5) !important; }
+  html.light .border-slate-600          { border-color: #c7d2ee !important; }
+  html.light .border-slate-500          { border-color: #94a3b8 !important; }
+
+  /* Text */
+  html.light .text-white                { color: #0f172a !important; }
+  html.light .text-slate-200            { color: #1e293b !important; }
+  html.light .text-slate-300            { color: #334155 !important; }
+  html.light .text-slate-400            { color: #475569 !important; }
+  html.light .text-slate-500            { color: #64748b !important; }
+
+  /* Inputs */
+  html.light input:not([type=checkbox]):not([type=radio]),
+  html.light select,
+  html.light textarea                   { background-color: #f8f9ff !important; border-color: #dde4f5 !important; color: #0f172a !important; }
+  html.light input::placeholder,
+  html.light textarea::placeholder      { color: #94a3b8 !important; }
+
+  /* Tables */
+  html.light tbody tr                   { border-color: #f1f5ff !important; }
+  html.light tbody tr:hover             { background-color: rgba(99,102,241,.03) !important; }
+  html.light thead tr                   { background-color: rgba(238,242,255,.8) !important; }
+  html.light th                         { color: #64748b !important; }
+  html.light td                         { color: #334155; }
+
+  /* Modal & overlays */
+  html.light #modal.modal-overlay       { background: rgba(15,23,42,.55) !important; }
+  html.light #modalBox                  { background-color: #ffffff !important; border-color: #dde4f5 !important; }
+  html.light #notifPanel                { background-color: #ffffff !important; border-color: #dde4f5 !important; }
+
+  /* Chat bubbles */
+  html.light .chat-bubble.customer      { background: #f1f5ff; color: #1e293b; }
+  html.light .chat-bubble.bot           { background: #ede9fe; color: #4c1d95; }
+  html.light .chat-bubble.staff         { background: #dcfce7; color: #14532d; }
+
+  /* Accent colors keep vivid */
+  html.light .text-indigo-400           { color: #4f46e5 !important; }
+  html.light .text-green-400            { color: #16a34a !important; }
+  html.light .text-yellow-400           { color: #d97706 !important; }
+  html.light .text-red-400              { color: #dc2626 !important; }
+  html.light .text-blue-400             { color: #2563eb !important; }
+  html.light .text-purple-400           { color: #9333ea !important; }
+  html.light .text-emerald-400          { color: #059669 !important; }
+  html.light .text-orange-400           { color: #ea580c !important; }
+  html.light .text-cyan-400             { color: #0891b2 !important; }
+
+  html.light .bg-indigo-500\/20         { background-color: rgba(99,102,241,.1) !important; }
+  html.light .bg-green-500\/20          { background-color: rgba(34,197,94,.1) !important; }
+  html.light .bg-yellow-500\/20         { background-color: rgba(234,179,8,.1) !important; }
+  html.light .bg-red-500\/20            { background-color: rgba(239,68,68,.1) !important; }
+  html.light .bg-blue-500\/20           { background-color: rgba(59,130,246,.1) !important; }
+  html.light .bg-purple-500\/20         { background-color: rgba(168,85,247,.1) !important; }
+  html.light .bg-emerald-900\/20        { background-color: rgba(6,78,59,.06) !important; }
+  html.light .bg-red-500\/10            { background-color: rgba(239,68,68,.08) !important; }
+  html.light .bg-yellow-500\/10         { background-color: rgba(234,179,8,.08) !important; }
+  html.light .bg-indigo-600\/10         { background-color: rgba(79,70,229,.08) !important; }
+
+  /* Scrollbar light */
+  html.light ::-webkit-scrollbar-thumb  { background: #c7d2ee; }
+
+  /* Theme toggle button */
+  .theme-toggle {
+    display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 10px;
+    cursor: pointer; transition: all .2s;
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.12);
+    color: #a5b4fc; font-size: 15px;
+  }
+  .theme-toggle:hover { background: rgba(255,255,255,.15); color: #ffffff; }
+  html.light .theme-toggle-header {
+    background: #f4f6ff; border-color: #dde4f5; color: #4f46e5;
+  }
+  html.light .theme-toggle-header:hover { background: #e8edf8; }
+</style>
+<script src="/config.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-200">
+
+<!-- ── SIDEBAR ──────────────────────────────────────────────── -->
+<aside id="sidebar" class="fixed top-0 right-0 h-full bg-slate-950 border-l border-slate-800 flex flex-col z-50">
+  <div class="px-5 py-5 border-b border-slate-800">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-lg">🍽️</div>
+      <div>
+        <p id="sideRestName" class="text-white font-semibold text-sm leading-tight">المطعم</p>
+        <p id="sidePlan" class="text-slate-500 text-xs">professional</p>
+      </div>
+    </div>
+  </div>
+
+  <nav class="flex-1 overflow-y-auto py-3 px-2">
+    <div class="space-y-0.5">
+      <a href="#dashboard"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-chart-pie w-4 text-center"></i> لوحة التحكم
+      </a>
+      <a href="#orders"        class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-bag-shopping w-4 text-center"></i> الطلبات
+        <span id="badgePending" class="mr-auto badge bg-yellow-500/20 text-yellow-400 hidden">0</span>
+      </a>
+      <a href="#conversations" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-comments w-4 text-center"></i> المحادثات
+        <span id="badgeChats" class="mr-auto badge bg-indigo-500/20 text-indigo-400 hidden">0</span>
+      </a>
+      <a href="#products"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-utensils w-4 text-center"></i> المنتجات
+      </a>
+      <a href="#customers"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-users w-4 text-center"></i> العملاء
+      </a>
+      <a href="#team" id="navTeam" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-user-tie w-4 text-center"></i> الفريق
+      </a>
+      <a href="#analytics"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-chart-line w-4 text-center"></i> التحليلات
+      </a>
+      <a href="#channels"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-satellite-dish w-4 text-center"></i> القنوات
+      </a>
+      <a href="#activity"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-clock-rotate-left w-4 text-center"></i> سجل النشاط
+      </a>
+      <a href="#settings"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-gear w-4 text-center"></i> الإعدادات
+      </a>
+    </div>
+  </nav>
+
+  <div class="p-3 border-t border-slate-800">
+    <!-- Theme toggle row -->
+    <div class="flex items-center justify-between px-2 py-2 mb-1">
+      <span class="text-slate-500 text-xs">المظهر</span>
+      <button id="themeToggleSidebar" onclick="toggleTheme()" class="theme-toggle" title="تبديل المظهر">
+        <i id="themeIconSidebar" class="fa-solid fa-sun"></i>
+      </button>
+    </div>
+    <!-- User row -->
+    <div class="flex items-center gap-3 px-2 py-2">
+      <div class="w-7 h-7 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold" id="userInitial">أ</div>
+      <div class="flex-1 min-w-0">
+        <p id="userName" class="text-white text-xs font-medium truncate">المدير</p>
+        <p id="userEmail" class="text-slate-500 text-xs truncate">admin@restaurant.com</p>
+      </div>
+      <button onclick="logout()" class="text-slate-500 hover:text-red-400 transition text-sm" title="تسجيل الخروج">
+        <i class="fa-solid fa-right-from-bracket"></i>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── MAIN ─────────────────────────────────────────────────── -->
+<main id="main" class="min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-slate-950 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
+    <h2 id="pageTitle" class="text-white font-semibold text-lg">لوحة التحكم</h2>
+    <div class="flex items-center gap-3">
+      <div id="headerUrgent" class="hidden flex items-center gap-1.5 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-1.5">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span id="urgentCount">0</span> محادثة عاجلة
+      </div>
+      <span class="text-slate-500 text-xs" id="currentTime"></span>
+      <!-- Theme toggle header -->
+      <button onclick="toggleTheme()" class="theme-toggle theme-toggle-header" title="تبديل المظهر">
+        <i id="themeIconHeader" class="fa-solid fa-moon"></i>
+      </button>
+    <!-- Notification Bell -->
+    <div class="relative">
+      <button onclick="toggleNotifPanel()" class="relative text-slate-400 hover:text-white transition p-2">
+        <i class="fa-solid fa-bell text-lg"></i>
+        <span id="notifBadge" class="hidden absolute -top-0.5 -left-0.5 w-4 h-4 bg-red-500 rounded-full text-white text-[10px] flex items-center justify-center font-bold"></span>
+      </button>
+      <!-- Dropdown -->
+      <div id="notifPanel" class="hidden absolute left-0 top-12 w-80 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+          <p class="text-white font-semibold text-sm">الإشعارات</p>
+          <button onclick="markAllRead()" class="text-indigo-400 hover:text-indigo-300 text-xs">تحديد الكل كمقروء</button>
+        </div>
+        <div id="notifList" class="max-h-80 overflow-y-auto">
+          <p class="text-slate-500 text-xs text-center py-6">لا توجد إشعارات</p>
+        </div>
+      </div>
+    </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="p-6">
+
+    <!-- ═══ DASHBOARD ═══ -->
+    <section id="sec-dashboard" class="section">
+      <div id="dashLoading" class="flex justify-center py-16"><div class="spinner"></div></div>
+      <div id="dashContent" class="hidden">
+        <!-- KPI cards -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-bag-shopping text-indigo-400"></i></div>
+              <span class="text-slate-500 text-xs">إجمالي</span>
+            </div>
+            <p id="kpiOrders" class="text-2xl font-bold text-white">—</p>
+            <p class="text-slate-500 text-xs mt-1">إجمالي الطلبات</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-10 h-10 bg-green-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-saudi-riyal text-green-400"></i></div>
+              <span class="text-slate-500 text-xs">اليوم</span>
+            </div>
+            <p id="kpiRevenue" class="text-2xl font-bold text-white">—</p>
+            <p class="text-slate-500 text-xs mt-1">إيرادات اليوم</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-10 h-10 bg-blue-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-comments text-blue-400"></i></div>
+              <span class="text-slate-500 text-xs">مفتوحة</span>
+            </div>
+            <p id="kpiChats" class="text-2xl font-bold text-white">—</p>
+            <p class="text-slate-500 text-xs mt-1">المحادثات المفتوحة</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-10 h-10 bg-purple-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-users text-purple-400"></i></div>
+              <span class="text-slate-500 text-xs">مسجلون</span>
+            </div>
+            <p id="kpiCustomers" class="text-2xl font-bold text-white">—</p>
+            <p class="text-slate-500 text-xs mt-1">إجمالي العملاء</p>
+          </div>
+        </div>
+
+        <!-- Charts row -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+          <div class="lg:col-span-2 bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">الإيرادات الأسبوعية</p>
+            <canvas id="weeklyChart" height="120"></canvas>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">توزيع القنوات</p>
+            <canvas id="channelChart" height="160"></canvas>
+          </div>
+        </div>
+
+        <!-- Bottom row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <!-- Recent orders -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">آخر الطلبات</p>
+            <div id="recentOrders" class="space-y-2"></div>
+          </div>
+          <!-- Top products -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">أكثر المنتجات طلباً</p>
+            <div id="topProducts" class="space-y-2"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ ORDERS ═══ -->
+    <section id="sec-orders" class="section">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div class="flex flex-wrap gap-2" id="statusTabs">
+          <button onclick="filterOrders('all')" data-status="all" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">الكل</button>
+          <button onclick="filterOrders('pending')" data-status="pending" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">معلق</button>
+          <button onclick="filterOrders('confirmed')" data-status="confirmed" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">مؤكد</button>
+          <button onclick="filterOrders('preparing')" data-status="preparing" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">قيد التحضير</button>
+          <button onclick="filterOrders('on_way')" data-status="on_way" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">في الطريق</button>
+          <button onclick="filterOrders('delivered')" data-status="delivered" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">تم التسليم</button>
+          <button onclick="filterOrders('cancelled')" data-status="cancelled" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">ملغي</button>
+        </div>
+        <div class="flex gap-2">
+          <select id="channelFilter" onchange="loadOrders()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2">
+            <option value="">كل القنوات</option>
+            <option value="telegram">Telegram</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="instagram">Instagram</option>
+            <option value="facebook">Facebook</option>
+          </select>
+          <input id="ordersSearch" type="text" placeholder="بحث..." onkeyup="loadOrders()"
+            class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2 w-40 focus:border-indigo-500">
+        </div>
+      </div>
+
+      <div id="ordersLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="ordersEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-bag-shopping text-4xl mb-3"></i>
+        <p>لا توجد طلبات</p>
+      </div>
+      <div id="ordersTable" class="hidden bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-900/50">
+            <tr class="text-slate-500 text-xs">
+              <th class="text-right px-4 py-3">رقم الطلب</th>
+              <th class="text-right px-4 py-3">العميل</th>
+              <th class="text-right px-4 py-3">القناة</th>
+              <th class="text-right px-4 py-3">النوع</th>
+              <th class="text-right px-4 py-3">المبلغ</th>
+              <th class="text-right px-4 py-3">الحالة</th>
+              <th class="text-right px-4 py-3">التاريخ</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody id="ordersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ CONVERSATIONS ═══ -->
+    <section id="sec-conversations" class="section">
+      <div class="flex gap-4 h-[calc(100vh-140px)]">
+        <!-- List -->
+        <div class="w-80 flex-shrink-0 bg-slate-800 rounded-2xl border border-slate-700 flex flex-col">
+          <div class="p-3 border-b border-slate-700 flex gap-2">
+            <button onclick="filterConvs('all')" id="convTab-all" class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600 text-white font-medium">الكل</button>
+            <button onclick="filterConvs('open')" id="convTab-open" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">مفتوح</button>
+            <button onclick="filterConvs('urgent')" id="convTab-urgent" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">عاجل</button>
+          </div>
+          <div id="convList" class="flex-1 overflow-y-auto p-2 space-y-1"></div>
+        </div>
+        <!-- Chat -->
+        <div id="chatPanel" class="flex-1 bg-slate-800 rounded-2xl border border-slate-700 flex flex-col">
+          <div id="chatEmpty" class="flex-1 flex flex-col items-center justify-center text-slate-600">
+            <i class="fa-solid fa-comments text-5xl mb-3"></i>
+            <p>اختر محادثة من القائمة</p>
+          </div>
+          <div id="chatActive" class="hidden flex-col h-full">
+            <!-- Chat header -->
+            <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-semibold text-sm" id="chatAvatar">أ</div>
+                <div>
+                  <p id="chatName" class="text-white font-semibold text-sm"></p>
+                  <p id="chatPlatform" class="text-slate-500 text-xs"></p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <button onclick="createOrderFromConv()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600/20 border border-green-500/50 text-green-300 hover:bg-green-600/40 transition">
+                  <i class="fa-solid fa-cart-plus ml-1"></i>طلب
+                </button>
+                <button id="urgentBtn" onclick="toggleUrgent()" class="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-600 text-slate-400 hover:border-red-500 hover:text-red-400 transition">
+                  <i class="fa-solid fa-triangle-exclamation ml-1"></i>عاجل
+                </button>
+                <button id="modeBtn" onclick="toggleMode()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/20 border border-indigo-500/50 text-indigo-300 hover:bg-indigo-600/40 transition">
+                  <span id="modeBtnText">بوت</span>
+                </button>
+                <button id="closeConvBtn" onclick="closeConversation()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-400 hover:bg-slate-600 transition">إغلاق</button>
+              </div>
+            </div>
+            <!-- Messages -->
+            <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+            <!-- Input -->
+            <div class="p-3 border-t border-slate-700 flex gap-2">
+              <input id="chatInput" type="text" placeholder="اكتب رسالتك..."
+                onkeydown="if(event.key==='Enter')sendMessage()"
+                class="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
+              <button onclick="sendAiReply()" title="رد ذكي" class="bg-purple-600/20 border border-purple-500/50 text-purple-300 px-3 rounded-xl hover:bg-purple-600/40 transition">
+                <i class="fa-solid fa-robot"></i>
+              </button>
+              <button onclick="sendMessage()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 rounded-xl transition">
+                <i class="fa-solid fa-paper-plane"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ PRODUCTS ═══ -->
+    <section id="sec-products" class="section">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div class="flex gap-2 flex-wrap" id="catTabs"></div>
+        <div class="flex gap-2">
+          <input id="prodSearch" type="text" placeholder="بحث..." onkeyup="renderProducts()"
+            class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2 w-40 focus:border-indigo-500">
+          <button onclick="openMenuImport()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5" title="رفع منيو كامل وتحويله تلقائياً إلى منتجات">
+            <i class="fa-solid fa-file-arrow-up"></i> رفع منيو
+          </button>
+          <button onclick="openProductModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
+            <i class="fa-solid fa-plus"></i> منتج جديد
+          </button>
+        </div>
+      </div>
+
+      <div id="prodsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="prodsEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-utensils text-4xl mb-3"></i><p>لا توجد منتجات</p>
+      </div>
+      <div id="prodsGrid" class="hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+    </section>
+
+    <!-- ═══ CUSTOMERS ═══ -->
+    <section id="sec-customers" class="section">
+      <div class="flex items-center justify-between mb-5">
+        <input id="custSearch" type="text" placeholder="بحث بالاسم أو الجوال..." onkeyup="loadCustomers()"
+          class="bg-slate-700 border border-slate-600 text-slate-300 text-sm rounded-lg px-4 py-2 w-64 focus:border-indigo-500">
+        <span id="custCount" class="text-slate-500 text-sm"></span>
+      </div>
+
+      <div id="custsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="custsEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-users text-4xl mb-3"></i><p>لا يوجد عملاء</p>
+      </div>
+      <div id="custsTable" class="hidden bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-900/50">
+            <tr class="text-slate-500 text-xs">
+              <th class="text-right px-4 py-3">العميل</th>
+              <th class="text-right px-4 py-3">الجوال</th>
+              <th class="text-right px-4 py-3">القناة</th>
+              <th class="text-right px-4 py-3">VIP</th>
+              <th class="text-right px-4 py-3">الطلبات</th>
+              <th class="text-right px-4 py-3">الإنفاق</th>
+              <th class="text-right px-4 py-3">آخر ظهور</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody id="custsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ ANALYTICS ═══ -->
+    <section id="sec-analytics" class="section">
+      <div id="analyticsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="analyticsContent" class="hidden">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 text-center">
+            <p id="aKpiRevenue" class="text-2xl font-bold text-green-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">إجمالي الإيرادات</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 text-center">
+            <p id="aKpiOrders" class="text-2xl font-bold text-indigo-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">إجمالي الطلبات</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 text-center">
+            <p id="aKpiCustomers" class="text-2xl font-bold text-purple-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">العملاء</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 text-center">
+            <p id="aKpiProducts" class="text-2xl font-bold text-yellow-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">المنتجات</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+          <div class="lg:col-span-2 bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">الإيرادات الأسبوعية</p>
+            <canvas id="analyticsWeeklyChart" height="130"></canvas>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">القنوات</p>
+            <canvas id="analyticsChannelChart" height="180"></canvas>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">أفضل المنتجات</p>
+            <canvas id="analyticsTopProdsChart" height="160"></canvas>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">أفضل العملاء</p>
+            <div id="analyticsTopCusts" class="space-y-3"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ CHANNELS ═══ -->
+    <section id="sec-channels" class="section">
+      <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
+    </section>
+
+    <!-- ═══ SETTINGS ═══ -->
+    <section id="sec-settings" class="section">
+      <div id="settingsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="settingsContent" class="hidden max-w-2xl">
+        <!-- Tabs -->
+        <div class="flex gap-1 bg-slate-800 rounded-xl p-1 mb-6 border border-slate-700 w-fit flex-wrap">
+          <button onclick="showSettingsTab('restaurant')" id="stab-restaurant" class="settings-tab px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 text-white">🏪 المطعم</button>
+          <button onclick="showSettingsTab('ai')" id="stab-ai" class="settings-tab px-4 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-white">🤖 الذكاء الاصطناعي</button>
+          <button onclick="showSettingsTab('security')" id="stab-security" class="settings-tab px-4 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-white">🔐 الأمان</button>
+          <button onclick="showSettingsTab('billing')" id="stab-billing" class="settings-tab px-4 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-white">💳 الفاتورة</button>
+        </div>
+
+        <!-- Restaurant tab -->
+        <div id="stab-content-restaurant" class="settings-tab-content space-y-4">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+            <h3 class="text-white font-semibold">🏪 بيانات المطعم</h3>
+            <div class="grid grid-cols-1 gap-4">
+              <div><label class="text-slate-400 text-xs mb-1.5 block">اسم المطعم</label>
+                <input id="sRestName" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+              <div><label class="text-slate-400 text-xs mb-1.5 block">الوصف</label>
+                <textarea id="sRestDesc" rows="2" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea></div>
+              <div><label class="text-slate-400 text-xs mb-1.5 block">رقم الهاتف</label>
+                <input id="sRestPhone" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+              <div><label class="text-slate-400 text-xs mb-1.5 block">العنوان</label>
+                <input id="sRestAddress" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+            </div>
+            <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
+          </div>
+          <!-- Working Hours -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+            <h3 class="text-white font-semibold">🕐 أوقات العمل</h3>
+            <div id="workingHoursGrid" class="space-y-2"></div>
+            <button onclick="saveWorkingHours()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ أوقات العمل</button>
+          </div>
+        </div>
+
+        <!-- AI Settings tab (merged bot + bot config) -->
+        <div id="stab-content-ai" class="settings-tab-content hidden space-y-4">
+          <!-- Basic bot settings -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+            <div class="flex items-center justify-between">
+              <h3 class="text-white font-semibold">🤖 إعدادات الذكاء الاصطناعي</h3>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <span class="text-slate-400 text-xs">تفعيل البوت</span>
+                <div class="relative">
+                  <input type="checkbox" id="sBotEnabled" class="sr-only peer">
+                  <div class="w-10 h-5 bg-slate-700 rounded-full peer peer-checked:bg-indigo-600 transition"></div>
+                  <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
+                </div>
+              </label>
+            </div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">اسم المساعد الذكي</label>
+              <input id="sBotName" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">شخصية المساعد</label>
+              <select id="sBotPersonality" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+                <option value="friendly">ودي ومرح 😊</option>
+                <option value="professional">احترافي ورسمي 👔</option>
+                <option value="casual">غير رسمي 💬</option>
+              </select></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">لغة الردود</label>
+              <select id="sBotLanguage" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+                <option value="ar">العربية</option>
+                <option value="en">English</option>
+                <option value="ar-en">عربي + إنجليزي</option>
+              </select></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">رسالة الترحيب</label>
+              <textarea id="sBotWelcome" rows="2" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea></div>
+            <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ</button>
+          </div>
+          <!-- Advanced bot config -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+            <h3 class="text-white font-semibold">⚙️ إعدادات متقدمة</h3>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">System Prompt — تعليمات شخصية البوت</label>
+              <textarea id="bcSystemPrompt" rows="5" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none font-mono"></textarea></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">Sales Prompt — تعليمات تحسين المبيعات</label>
+              <textarea id="bcSalesPrompt" rows="3" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">كلمات التصعيد (مفصولة بفاصلة)</label>
+              <input id="bcEscalationKw" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500" placeholder="مدير, شكوى, استرداد..."></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">رسالة التحويل للموظف</label>
+              <input id="bcFallback" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">الحد الأقصى لردود البوت</label>
+              <input id="bcMaxTurns" type="number" min="3" max="50" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+            <div class="grid grid-cols-3 gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="bcAutoHandoff" class="w-4 h-4 rounded accent-indigo-600">
+                <span class="text-slate-400 text-sm">تحويل تلقائي</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="bcOrderExtract" class="w-4 h-4 rounded accent-indigo-600">
+                <span class="text-slate-400 text-sm">استخراج طلبات</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="bcMemory" class="w-4 h-4 rounded accent-indigo-600">
+                <span class="text-slate-400 text-sm">ذاكرة العملاء</span>
+              </label>
+            </div>
+            <button onclick="saveBotConfig()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ الإعدادات المتقدمة</button>
+          </div>
+        </div>
+
+        <!-- Security tab -->
+        <div id="stab-content-security" class="settings-tab-content hidden space-y-4">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+            <h3 class="text-white font-semibold">إعدادات الأمان</h3>
+            <div class="flex items-center justify-between py-2">
+              <div>
+                <p class="text-white text-sm">التحقق بخطوتين (2FA)</p>
+                <p class="text-slate-500 text-xs">طبقة حماية إضافية لحسابك</p>
+              </div>
+              <label class="flex items-center cursor-pointer">
+                <div class="relative">
+                  <input type="checkbox" id="s2fa" class="sr-only peer">
+                  <div class="w-10 h-5 bg-slate-700 rounded-full peer peer-checked:bg-indigo-600 transition"></div>
+                  <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
+                </div>
+              </label>
+            </div>
+            <div><label class="text-slate-400 text-xs mb-1.5 block">انتهاء الجلسة (ساعة)</label>
+              <input id="sSessionTimeout" type="number" min="1" max="720"
+                class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+            <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">حفظ التغييرات</button>
+          </div>
+        </div>
+
+        <!-- Billing tab -->
+        <div id="stab-content-billing" class="settings-tab-content hidden">
+          <div class="bg-slate-800 rounded-2xl p-8 border border-slate-700 text-center">
+            <div class="w-16 h-16 bg-yellow-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <i class="fa-solid fa-credit-card text-yellow-400 text-2xl"></i>
+            </div>
+            <h3 class="text-white font-semibold text-lg mb-2">💳 الفاتورة والاشتراك</h3>
+            <p class="text-slate-500 text-sm">قريباً — إدارة الاشتراك والفواتير</p>
+            <div class="mt-4 inline-block bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs px-4 py-2 rounded-xl">
+              الخطة الحالية: Professional
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ TEAM ═══ -->
+    <section id="sec-team" class="section">
+      <div class="flex items-center justify-between mb-5">
+        <p class="text-slate-400 text-sm" id="teamCount"></p>
+        <button id="addStaffBtn" onclick="openAddStaffModal()"
+          class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
+          <i class="fa-solid fa-plus"></i> إضافة موظف
+        </button>
+      </div>
+      <div id="teamLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="teamEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-user-tie text-4xl mb-3"></i><p>لا يوجد موظفون</p>
+      </div>
+      <div id="teamTable" class="hidden bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-900/50">
+            <tr class="text-slate-500 text-xs">
+              <th class="text-right px-4 py-3">الاسم</th>
+              <th class="text-right px-4 py-3">البريد الإلكتروني</th>
+              <th class="text-right px-4 py-3">الدور</th>
+              <th class="text-right px-4 py-3">آخر دخول</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody id="teamBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ ACTIVITY ═══ -->
+    <section id="sec-activity" class="section">
+      <div class="flex items-center justify-between mb-5">
+        <div class="flex gap-2">
+          <select id="activityFilter" onchange="loadActivity()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2">
+            <option value="">كل الأنشطة</option>
+            <option value="order_created">طلب جديد</option>
+            <option value="order_status_changed">تغيير حالة طلب</option>
+            <option value="order_cancelled">إلغاء طلب</option>
+            <option value="conversation_mode_changed">تغيير وضع محادثة</option>
+            <option value="channel_updated">تحديث قناة</option>
+            <option value="staff_added">إضافة موظف</option>
+            <option value="staff_removed">حذف موظف</option>
+            <option value="login">تسجيل دخول</option>
+          </select>
+        </div>
+        <button onclick="loadActivity()" class="text-indigo-400 hover:text-indigo-300 text-xs flex items-center gap-1">
+          <i class="fa-solid fa-rotate-right"></i> تحديث
+        </button>
+      </div>
+      <div id="activityLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="activityEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-clock-rotate-left text-4xl mb-3"></i><p>لا يوجد سجل نشاط</p>
+      </div>
+      <div id="activityList" class="hidden space-y-2"></div>
+      <div id="activityMore" class="hidden text-center pt-4">
+        <button onclick="loadActivityMore()" class="text-indigo-400 hover:text-indigo-300 text-sm">تحميل المزيد</button>
+      </div>
+    </section>
+
+  </div><!-- /content -->
+</main>
+
+<!-- ── TOAST CONTAINER ───────────────────────────────────────── -->
+<div id="toastContainer"></div>
+
+<!-- ── MODAL ────────────────────────────────────────────────── -->
+<div id="modal" class="hidden modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div id="modalBox" class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 shadow-2xl"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+// ── Theme ─────────────────────────────────────────────────────
+(function initTheme() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  if (saved === 'light') document.documentElement.classList.add('light');
+})();
+
+function toggleTheme() {
+  const isLight = document.documentElement.classList.toggle('light');
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  _updateThemeIcons(isLight);
+  // Redraw charts to match new theme
+  if (S && S.charts) {
+    setTimeout(() => {
+      Object.values(S.charts).forEach(c => { try { c.update(); } catch(e){} });
+    }, 250);
+  }
+}
+
+function _updateThemeIcons(isLight) {
+  const moonClass = 'fa-moon', sunClass = 'fa-sun';
+  ['themeIconSidebar','themeIconHeader'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (isLight) {
+      el.classList.remove(sunClass); el.classList.add(moonClass);
+    } else {
+      el.classList.remove(moonClass); el.classList.add(sunClass);
+    }
+  });
+  // Sidebar toggle background
+  const sb = document.getElementById('themeToggleSidebar');
+  if (sb) sb.style.background = isLight ? 'rgba(255,255,255,.18)' : '';
+}
+
+// Init icons after DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+  _updateThemeIcons(document.documentElement.classList.contains('light'));
+});
+
+// ── State ─────────────────────────────────────────────────────
+const S = {
+  token: localStorage.getItem('token'),
+  user: JSON.parse(localStorage.getItem('user') || 'null'),
+  orders: [], products: [], customers: [], convs: [],
+  orderStatus: 'all',
+  convFilter: 'all',
+  activeConv: null,
+  prodCategory: 'all',
+  charts: {},
+};
+
+// ── API ───────────────────────────────────────────────────────
+const api = {
+  async req(method, url, data) {
+    const opts = {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${S.token}` },
+    };
+    if (data) opts.body = JSON.stringify(data);
+    const r = await fetch((window.API_BASE || '') + url, opts);
+    if (r.status === 401) { logout(); return; }
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || `HTTP ${r.status}`);
+    }
+    return r.json();
+  },
+  get: (u) => api.req('GET', u),
+  post: (u, d) => api.req('POST', u, d),
+  put: (u, d) => api.req('PUT', u, d),
+  patch: (u, d) => api.req('PATCH', u, d),
+  del: (u) => api.req('DELETE', u),
+};
+
+// ── Utils ─────────────────────────────────────────────────────
+function cur(n) { return `${Math.round(+n||0).toLocaleString('ar-IQ')} د.ع`; }
+function dt(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleDateString('ar-SA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function statusBadge(s) {
+  const map = {
+    pending:   ['bg-yellow-500/20 text-yellow-400',  'معلق'],
+    confirmed: ['bg-blue-500/20 text-blue-400',      'مؤكد'],
+    preparing: ['bg-orange-500/20 text-orange-400',  'قيد التحضير'],
+    on_way:    ['bg-purple-500/20 text-purple-400',  'في الطريق'],
+    delivered: ['bg-green-500/20 text-green-400',    'تم التسليم'],
+    cancelled: ['bg-red-500/20 text-red-400',        'ملغي'],
+  };
+  const [cls, label] = map[s] || ['bg-slate-700 text-slate-300', s];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+function channelIcon(c) {
+  const icons = { telegram: '📱', whatsapp: '💬', instagram: '📸', facebook: '👤' };
+  return icons[c] || '🌐';
+}
+function platformBadge(p) {
+  const colors = { telegram: 'text-blue-400', whatsapp: 'text-green-400', instagram: 'text-pink-400', facebook: 'text-blue-500' };
+  return `<span class="${colors[p]||'text-slate-400'} text-xs">${channelIcon(p)} ${p}</span>`;
+}
+
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  const colors = { success: 'bg-green-600', error: 'bg-red-600', info: 'bg-indigo-600', warning: 'bg-yellow-600' };
+  el.className = `toast ${colors[type]||'bg-slate-700'} text-white text-sm px-4 py-3 rounded-xl shadow-lg max-w-xs`;
+  el.textContent = msg;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+function openModal(html) {
+  document.getElementById('modalBox').innerHTML = html;
+  document.getElementById('modal').classList.remove('hidden');
+}
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+}
+
+function loading(id, state) {
+  const loadEl = document.getElementById(id + 'Loading');
+  if (loadEl) loadEl.classList.toggle('hidden', !state);
+}
+
+// ── Auth ──────────────────────────────────────────────────────
+function logout() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  window.location.href = '/';
+}
+
+function updateClock() {
+  document.getElementById('currentTime').textContent =
+    new Date().toLocaleTimeString('ar-SA');
+}
+
+// ── Router ────────────────────────────────────────────────────
+const PAGES = {
+  dashboard:     { title: 'لوحة التحكم',   load: loadDashboard },
+  orders:        { title: 'الطلبات',        load: loadOrders },
+  conversations: { title: 'المحادثات',      load: loadConversations },
+  products:      { title: 'المنتجات',       load: loadProducts },
+  customers:     { title: 'العملاء',        load: loadCustomers },
+  team:          { title: 'الفريق',         load: loadTeam },
+  analytics:     { title: 'التحليلات',      load: loadAnalytics },
+  channels:      { title: 'القنوات',        load: loadChannels },
+  activity:      { title: 'سجل النشاط',    load: loadActivity },
+  settings:      { title: 'الإعدادات',      load: loadSettings },
+};
+
+function navigate(page) {
+  if (!PAGES[page]) page = 'dashboard';
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById(`sec-${page}`).classList.add('active');
+  document.querySelector(`a[href="#${page}"]`).classList.add('active');
+  document.getElementById('pageTitle').textContent = PAGES[page].title;
+  PAGES[page].load();
+}
+
+window.addEventListener('hashchange', () => {
+  const page = location.hash.replace('#', '') || 'dashboard';
+  navigate(page);
+});
+
+// ── Dashboard ─────────────────────────────────────────────────
+async function loadDashboard() {
+  document.getElementById('dashLoading').classList.remove('hidden');
+  document.getElementById('dashContent').classList.add('hidden');
+  try {
+    const [sum, weekly, channels, top] = await Promise.all([
+      api.get('/api/analytics/summary'),
+      api.get('/api/analytics/weekly-revenue'),
+      api.get('/api/analytics/channel-breakdown'),
+      api.get('/api/analytics/top-products'),
+    ]);
+
+    document.getElementById('kpiOrders').textContent = sum.total_orders;
+    document.getElementById('kpiRevenue').textContent = cur(sum.today_revenue);
+    document.getElementById('kpiChats').textContent = sum.open_chats;
+    document.getElementById('kpiCustomers').textContent = sum.total_customers;
+
+    // Badges
+    const pb = document.getElementById('badgePending');
+    if (sum.pending_orders > 0) { pb.textContent = sum.pending_orders; pb.classList.remove('hidden'); }
+    const cb = document.getElementById('badgeChats');
+    if (sum.open_chats > 0) { cb.textContent = sum.open_chats; cb.classList.remove('hidden'); }
+    if (sum.urgent_chats > 0) {
+      document.getElementById('headerUrgent').classList.remove('hidden');
+      document.getElementById('urgentCount').textContent = sum.urgent_chats;
+    }
+
+    // Weekly chart
+    renderWeeklyChart('weeklyChart', weekly);
+    // Channel chart
+    renderChannelChart('channelChart', channels);
+
+    // Recent orders
+    const ro = document.getElementById('recentOrders');
+    ro.innerHTML = sum.recent_orders.length ? sum.recent_orders.map(o => `
+      <div class="flex items-center justify-between py-2 border-b border-slate-700/50 last:border-0">
+        <div>
+          <p class="text-white text-sm font-medium">${o.customer_name}</p>
+          <p class="text-slate-500 text-xs">${channelIcon(o.channel)} ${o.channel}</p>
+        </div>
+        <div class="text-right">
+          <p class="text-green-400 text-sm font-semibold">${cur(o.total)}</p>
+          ${statusBadge(o.status)}
+        </div>
+      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات</p>';
+
+    // Top products
+    const tp = document.getElementById('topProducts');
+    tp.innerHTML = top.map((p, i) => `
+      <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
+        <span class="text-slate-600 text-xs font-bold w-5">${i+1}</span>
+        <span class="text-lg">${p.icon}</span>
+        <div class="flex-1">
+          <p class="text-white text-sm font-medium">${p.name}</p>
+          <p class="text-slate-500 text-xs">${p.order_count} طلب</p>
+        </div>
+        <p class="text-green-400 text-sm">${cur(p.price)}</p>
+      </div>`).join('');
+
+    document.getElementById('dashLoading').classList.add('hidden');
+    document.getElementById('dashContent').classList.remove('hidden');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function _chartTheme() {
+  const light = document.documentElement.classList.contains('light');
+  return {
+    tickColor:  light ? '#64748b' : '#94a3b8',
+    gridColor:  light ? '#e8edf8' : '#1e293b',
+    legendColor: light ? '#475569' : '#94a3b8',
+    borderColor: light ? '#f1f5ff' : '#1e293b',
+  };
+}
+
+function renderWeeklyChart(canvasId, data) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (S.charts[canvasId]) S.charts[canvasId].destroy();
+  const t = _chartTheme();
+  S.charts[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => new Date(d.date).toLocaleDateString('ar-SA', { weekday: 'short' })),
+      datasets: [{ label: 'الإيرادات', data: data.map(d => d.revenue),
+        backgroundColor: 'rgba(99,102,241,0.5)', borderColor: '#6366f1',
+        borderWidth: 2, borderRadius: 6 }],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } },
+      scales: { x: { ticks: { color: t.tickColor }, grid: { color: t.gridColor } },
+                y: { ticks: { color: t.tickColor }, grid: { color: t.gridColor } } } },
+  });
+}
+
+function renderChannelChart(canvasId, data) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (S.charts[canvasId]) S.charts[canvasId].destroy();
+  const t = _chartTheme();
+  const colors = ['#6366f1','#22c55e','#ec4899','#3b82f6','#f59e0b'];
+  S.charts[canvasId] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: data.map(d => d.channel),
+      datasets: [{ data: data.map(d => d.count),
+        backgroundColor: colors, borderColor: t.borderColor, borderWidth: 2 }],
+    },
+    options: { responsive: true, plugins: {
+      legend: { position: 'bottom', labels: { color: t.legendColor, boxWidth: 12, padding: 10 } } } },
+  });
+}
+
+// ── Orders ────────────────────────────────────────────────────
+async function loadOrders() {
+  const params = new URLSearchParams();
+  if (S.orderStatus !== 'all') params.set('status', S.orderStatus);
+  const ch = document.getElementById('channelFilter')?.value;
+  if (ch) params.set('channel', ch);
+  const sr = document.getElementById('ordersSearch')?.value;
+  if (sr) params.set('search', sr);
+
+  document.getElementById('ordersLoading').classList.remove('hidden');
+  document.getElementById('ordersTable').classList.add('hidden');
+  document.getElementById('ordersEmpty').classList.add('hidden');
+  try {
+    S.orders = await api.get(`/api/orders?${params}`);
+    renderOrdersTable();
+  } catch(e) { toast(e.message, 'error'); }
+  document.getElementById('ordersLoading').classList.add('hidden');
+}
+
+function filterOrders(status) {
+  S.orderStatus = status;
+  document.querySelectorAll('.status-tab').forEach(b => {
+    const active = b.dataset.status === status;
+    b.className = `status-tab px-3 py-1.5 rounded-lg text-xs font-medium transition ${active ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`;
+  });
+  loadOrders();
+}
+
+function renderOrdersTable() {
+  if (!S.orders.length) {
+    document.getElementById('ordersEmpty').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('ordersTable').classList.remove('hidden');
+  document.getElementById('ordersBody').innerHTML = S.orders.map(o => `
+    <tr class="border-t border-slate-700/50 hover:bg-slate-700/30 transition">
+      <td class="px-4 py-3 text-slate-500 text-xs font-mono">#${o.id.slice(-8)}</td>
+      <td class="px-4 py-3 text-white font-medium">${o.customer_name}</td>
+      <td class="px-4 py-3">${platformBadge(o.channel)}</td>
+      <td class="px-4 py-3 text-slate-400 text-xs">${o.type === 'delivery' ? '🛵 توصيل' : '🏠 استلام'}</td>
+      <td class="px-4 py-3 text-green-400 font-semibold">${cur(o.total)}</td>
+      <td class="px-4 py-3">${statusBadge(o.status)}</td>
+      <td class="px-4 py-3 text-slate-500 text-xs">${dt(o.created_at)}</td>
+      <td class="px-4 py-3">
+        <button onclick="openOrderModal('${o.id}')" class="text-indigo-400 hover:text-indigo-300 text-xs px-2 py-1 rounded border border-indigo-500/30 hover:border-indigo-400/50 transition">
+          تفاصيل
+        </button>
+      </td>
+    </tr>`).join('');
+}
+
+async function openOrderModal(id) {
+  openModal('<div class="flex justify-center py-8"><div class="spinner"></div></div>');
+  try {
+    const o = await api.get(`/api/orders/${id}`);
+    const canAdvance = ['pending','confirmed','preparing','on_way'].includes(o.status);
+    const canCancel = !['delivered','cancelled'].includes(o.status);
+    openModal(`
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-white font-bold text-lg">تفاصيل الطلب</h2>
+        <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-4 text-sm">
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">العميل</p><p class="text-white">${o.customer_name}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">القناة</p><p>${platformBadge(o.channel)}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">النوع</p><p class="text-white">${o.type === 'delivery' ? '🛵 توصيل' : '🏠 استلام'}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الحالة</p>${statusBadge(o.status)}</div>
+        <div class="bg-slate-900 rounded-xl p-3 col-span-2"><p class="text-slate-500 text-xs mb-1">العنوان</p><p class="text-white">${o.address || '—'}</p></div>
+      </div>
+      <div class="mb-4">
+        <p class="text-slate-400 text-xs mb-2">المنتجات</p>
+        ${o.items.map(i => `
+          <div class="flex justify-between py-2 border-b border-slate-700/50 last:border-0">
+            <span class="text-white text-sm">${i.name} <span class="text-slate-500">× ${i.quantity}</span></span>
+            <span class="text-green-400 text-sm">${cur(i.price * i.quantity)}</span>
+          </div>`).join('')}
+        <div class="flex justify-between pt-2 font-semibold">
+          <span class="text-white">الإجمالي</span>
+          <span class="text-green-400 text-lg">${cur(o.total)}</span>
+        </div>
+      </div>
+      <div class="mb-4 space-y-2">
+        <div><label class="text-slate-500 text-xs block mb-1">ملاحظات</label>
+          <input id="modalNotes" value="${o.notes||''}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2 text-sm focus:border-indigo-500"></div>
+        <div><label class="text-slate-500 text-xs block mb-1">العنوان</label>
+          <input id="modalAddress" value="${o.address||''}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2 text-sm focus:border-indigo-500"></div>
+        <button onclick="saveOrderInfo('${o.id}')" class="text-xs text-indigo-400 hover:text-indigo-300">حفظ الملاحظات والعنوان</button>
+      </div>
+      <div class="flex gap-2">
+        ${canAdvance ? `<button onclick="advanceOrder('${o.id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2.5 rounded-xl transition">تقديم الحالة ▶</button>` : ''}
+        ${canCancel ? `<button onclick="cancelOrder('${o.id}')" class="flex-1 bg-red-600/20 hover:bg-red-600/40 border border-red-500/50 text-red-400 text-sm py-2.5 rounded-xl transition">إلغاء الطلب</button>` : ''}
+        <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white text-sm py-2.5 px-4 rounded-xl transition">إغلاق</button>
+      </div>
+    `);
+  } catch(e) { toast(e.message, 'error'); closeModal(); }
+}
+
+async function advanceOrder(id) {
+  try {
+    const r = await api.patch(`/api/orders/${id}/status`, { action: 'advance' });
+    toast(`الحالة: ${r.status}`, 'success');
+    closeModal(); loadOrders();
+  } catch(e) { toast(e.message, 'error'); }
+}
+async function cancelOrder(id) {
+  if (!confirm('هل تريد إلغاء هذا الطلب؟')) return;
+  try {
+    await api.patch(`/api/orders/${id}/status`, { action: 'cancel' });
+    toast('تم إلغاء الطلب', 'warning');
+    closeModal(); loadOrders();
+  } catch(e) { toast(e.message, 'error'); }
+}
+async function saveOrderInfo(id) {
+  try {
+    await api.patch(`/api/orders/${id}`, {
+      notes: document.getElementById('modalNotes').value,
+      address: document.getElementById('modalAddress').value,
+    });
+    toast('تم الحفظ', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Conversations ─────────────────────────────────────────────
+async function loadConversations() {
+  try {
+    S.convs = await api.get('/api/conversations');
+    renderConvList();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function filterConvs(f) {
+  S.convFilter = f;
+  ['all','open','urgent'].forEach(t => {
+    const btn = document.getElementById(`convTab-${t}`);
+    if (btn) btn.className = `flex-1 text-xs py-1.5 rounded-lg font-medium transition ${t === f ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`;
+  });
+  renderConvList();
+}
+
+function renderConvList() {
+  let list = S.convs;
+  if (S.convFilter === 'open') list = list.filter(c => c.status === 'open');
+  if (S.convFilter === 'urgent') list = list.filter(c => c.urgent);
+
+  const el = document.getElementById('convList');
+  if (!list.length) {
+    el.innerHTML = '<p class="text-slate-600 text-xs text-center py-8">لا توجد محادثات</p>';
+    return;
+  }
+  el.innerHTML = list.map(c => `
+    <div onclick="openConv('${c.id}')"
+      class="p-3 rounded-xl cursor-pointer transition ${S.activeConv === c.id ? 'bg-indigo-600/20 border border-indigo-500/50' : 'hover:bg-slate-700/50 border border-transparent'}">
+      <div class="flex items-center gap-2 mb-1">
+        <div class="w-7 h-7 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
+          ${c.customer_name?.[0] || '?'}
+        </div>
+        <p class="text-white text-sm font-medium flex-1 truncate">${c.customer_name}</p>
+        ${c.urgent ? '<span class="badge bg-red-500/20 text-red-400"><i class="fa-solid fa-triangle-exclamation"></i></span>' : ''}
+        ${c.unread_count > 0 ? `<span class="badge bg-indigo-500 text-white">${c.unread_count}</span>` : ''}
+      </div>
+      <div class="flex items-center gap-2">
+        ${platformBadge(c.platform)}
+        <span class="badge ${c.mode === 'bot' ? 'bg-purple-500/20 text-purple-400' : 'bg-green-500/20 text-green-400'} text-xs">${c.mode === 'bot' ? '🤖' : '👤'}</span>
+        <span class="badge ${c.status === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-500'} text-xs">${c.status === 'open' ? 'مفتوح' : 'مغلق'}</span>
+      </div>
+    </div>`).join('');
+}
+
+async function openConv(id) {
+  S.activeConv = id;
+  const conv = S.convs.find(c => c.id === id);
+  renderConvList();
+
+  document.getElementById('chatEmpty').classList.add('hidden');
+  const active = document.getElementById('chatActive');
+  active.classList.remove('hidden');
+  active.classList.add('flex');
+
+  document.getElementById('chatName').textContent = conv?.customer_name || '—';
+  document.getElementById('chatPlatform').textContent = `${channelIcon(conv?.platform)} ${conv?.platform}`;
+  document.getElementById('chatAvatar').textContent = conv?.customer_name?.[0] || '?';
+
+  const modeBtn = document.getElementById('modeBtnText');
+  modeBtn.textContent = conv?.mode === 'bot' ? '🤖 بوت' : '👤 بشري';
+  if (conv?.urgent) document.getElementById('urgentBtn').classList.add('border-red-500','text-red-400');
+
+  try {
+    await api.patch(`/api/conversations/${id}/read`);
+    const msgs = await api.get(`/api/conversations/${id}/messages`);
+    renderMessages(msgs);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function renderMessages(msgs) {
+  const el = document.getElementById('chatMessages');
+  if (!msgs.length) {
+    el.innerHTML = '<p class="text-slate-600 text-xs text-center">لا توجد رسائل بعد</p>';
+    return;
+  }
+  el.innerHTML = msgs.map(m => {
+    const align = m.role === 'customer' ? 'justify-end' : 'justify-start';
+    const roleLabel = m.role === 'staff' ? '👤 موظف' : m.role === 'bot' ? '🤖 بوت' : '🗣️ عميل';
+
+    // Story reply context badge
+    let storyBadge = '';
+    if (m.replied_story_id || m.replied_story_media_url) {
+      storyBadge = `<div class="mb-1 px-2 py-1 bg-pink-500/20 border border-pink-500/30 rounded-lg text-xs text-pink-300 flex items-center gap-1">
+        <i class="fa-brands fa-instagram"></i>
+        رد على قصة${m.replied_story_media_url ? ` <a href="${m.replied_story_media_url}" target="_blank" class="underline">عرض</a>` : ''}
+      </div>`;
+    }
+
+    // Voice message indicator
+    let voiceBadge = '';
+    if (m.media_type === 'voice') {
+      voiceBadge = `<div class="mb-1 flex items-center gap-1 text-xs text-slate-400">
+        <i class="fa-solid fa-microphone text-indigo-400"></i>
+        <span>رسالة صوتية</span>
+        ${m.voice_transcript ? `<span class="text-slate-500">— "${m.voice_transcript}"</span>` : ''}
+      </div>`;
+    }
+
+    return `<div class="flex ${align}">
+      <div class="chat-bubble ${m.role}" style="max-width:80%">
+        <p class="text-xs mb-1 opacity-60">${roleLabel}</p>
+        ${storyBadge}${voiceBadge}
+        <p class="whitespace-pre-wrap">${m.content}</p>
+        <p class="text-xs opacity-40 mt-1 text-left">${dt(m.created_at)}</p>
+      </div>
+    </div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const content = input.value.trim();
+  if (!content || !S.activeConv) return;
+  input.value = '';
+  try {
+    await api.post(`/api/conversations/${S.activeConv}/messages`, { content });
+    const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
+    renderMessages(msgs);
+    await loadConversations();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function sendAiReply() {
+  if (!S.activeConv) return;
+  try {
+    toast('جاري توليد الرد...', 'info');
+    await api.post(`/api/conversations/${S.activeConv}/ai-reply`);
+    const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
+    renderMessages(msgs);
+    toast('تم إرسال الرد الذكي', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleMode() {
+  if (!S.activeConv) return;
+  const conv = S.convs.find(c => c.id === S.activeConv);
+  const newMode = conv?.mode === 'bot' ? 'human' : 'bot';
+  try {
+    await api.patch(`/api/conversations/${S.activeConv}/mode`, { mode: newMode });
+    toast(`وضع: ${newMode === 'bot' ? 'بوت' : 'بشري'}`, 'info');
+    await loadConversations();
+    document.getElementById('modeBtnText').textContent = newMode === 'bot' ? '🤖 بوت' : '👤 بشري';
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleUrgent() {
+  if (!S.activeConv) return;
+  const conv = S.convs.find(c => c.id === S.activeConv);
+  const newUrgent = !conv?.urgent;
+  try {
+    await api.patch(`/api/conversations/${S.activeConv}/urgent`, { urgent: newUrgent });
+    toast(newUrgent ? 'تم تحديد المحادثة كعاجلة' : 'تم إلغاء الحالة العاجلة', 'info');
+    await loadConversations();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function closeConversation() {
+  S.activeConv = null;
+  document.getElementById('chatActive').classList.add('hidden');
+  document.getElementById('chatActive').classList.remove('flex');
+  document.getElementById('chatEmpty').classList.remove('hidden');
+  renderConvList();
+}
+
+async function createOrderFromConv() {
+  if (!S.activeConv) return;
+  const conv = S.convs.find(c => c.id === S.activeConv);
+  if (!conv) return;
+
+  // Build product selector from loaded products
+  const products = S.products || await api.get('/api/products').catch(() => []);
+  if (!products.length) { toast('لا توجد منتجات متاحة', 'error'); return; }
+
+  const rows = products.filter(p => p.available).map(p => `
+    <tr class="border-b border-slate-700/50">
+      <td class="py-2 text-white text-sm">${p.icon} ${p.name}</td>
+      <td class="py-2 text-slate-400 text-xs">${p.category}</td>
+      <td class="py-2 text-green-400 text-sm font-semibold">${cur(p.price)}</td>
+      <td class="py-2">
+        <input type="number" id="qty-${p.id}" min="0" value="0"
+          class="w-16 bg-slate-900 border border-slate-700 text-white text-sm rounded-lg px-2 py-1 text-center">
+      </td>
+    </tr>`).join('');
+
+  openModal(`
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-white font-bold">إنشاء طلب — ${conv.customer_name}</h2>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="mb-3 grid grid-cols-2 gap-2">
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">نوع الطلب</label>
+        <select id="convOrderType" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-sm">
+          <option value="delivery">🛵 توصيل</option>
+          <option value="pickup">🏃 استلام</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">عنوان التوصيل</label>
+        <input id="convOrderAddress" placeholder="العنوان..." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-sm focus:border-indigo-500">
+      </div>
+    </div>
+    <div class="mb-3">
+      <label class="text-slate-400 text-xs mb-1 block">ملاحظات</label>
+      <input id="convOrderNotes" placeholder="أي ملاحظات..." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-sm focus:border-indigo-500">
+    </div>
+    <div class="max-h-64 overflow-y-auto mb-4 rounded-xl border border-slate-700">
+      <table class="w-full text-sm px-3">
+        <thead class="bg-slate-900/50 sticky top-0">
+          <tr class="text-slate-500 text-xs">
+            <th class="text-right px-3 py-2">المنتج</th>
+            <th class="text-right px-3 py-2">الفئة</th>
+            <th class="text-right px-3 py-2">السعر</th>
+            <th class="text-right px-3 py-2">الكمية</th>
+          </tr>
+        </thead>
+        <tbody class="px-3">${rows}</tbody>
+      </table>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="submitConvOrder('${conv.customer_id}','${conv.platform||'telegram'}')"
+        class="flex-1 bg-green-600 hover:bg-green-500 text-white py-2.5 rounded-xl text-sm font-semibold transition">
+        <i class="fa-solid fa-check ml-1"></i>إنشاء الطلب
+      </button>
+      <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إلغاء</button>
+    </div>
+  `);
+}
+
+async function submitConvOrder(customerId, platform) {
+  const products = S.products || [];
+  const items = [];
+  products.filter(p => p.available).forEach(p => {
+    const qty = parseInt(document.getElementById(`qty-${p.id}`)?.value || '0');
+    if (qty > 0) items.push({ product_id: p.id, name: p.name, price: p.price, quantity: qty });
+  });
+  if (!items.length) { toast('اختر منتجاً واحداً على الأقل', 'error'); return; }
+
+  const data = {
+    customer_id: customerId,
+    channel: platform,
+    type: document.getElementById('convOrderType').value,
+    address: document.getElementById('convOrderAddress').value,
+    notes: document.getElementById('convOrderNotes').value,
+    items,
+  };
+  try {
+    await api.post('/api/orders', data);
+    toast('تم إنشاء الطلب بنجاح', 'success');
+    closeModal();
+    loadOrders();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Products ──────────────────────────────────────────────────
+async function loadProducts() {
+  document.getElementById('prodsLoading').classList.remove('hidden');
+  document.getElementById('prodsGrid').classList.add('hidden');
+  document.getElementById('prodsEmpty').classList.add('hidden');
+  try {
+    S.products = await api.get('/api/products');
+    // Build category tabs
+    const cats = ['all', ...new Set(S.products.map(p => p.category).filter(Boolean))];
+    const tabsEl = document.getElementById('catTabs');
+    tabsEl.innerHTML = cats.map(c => `
+      <button onclick="filterProducts('${c}')" data-cat="${c}"
+        class="cat-tab px-3 py-1.5 rounded-lg text-xs font-medium transition ${c === S.prodCategory ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}">
+        ${c === 'all' ? 'الكل' : c}
+      </button>`).join('');
+    renderProducts();
+  } catch(e) { toast(e.message, 'error'); }
+  document.getElementById('prodsLoading').classList.add('hidden');
+}
+
+function filterProducts(cat) {
+  S.prodCategory = cat;
+  document.querySelectorAll('.cat-tab').forEach(b => {
+    b.className = `cat-tab px-3 py-1.5 rounded-lg text-xs font-medium transition ${b.dataset.cat === cat ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`;
+  });
+  renderProducts();
+}
+
+function renderProducts() {
+  const search = document.getElementById('prodSearch')?.value?.toLowerCase() || '';
+  let prods = S.products;
+  if (S.prodCategory !== 'all') prods = prods.filter(p => p.category === S.prodCategory);
+  if (search) prods = prods.filter(p => p.name.toLowerCase().includes(search) || p.category?.toLowerCase().includes(search));
+
+  if (!prods.length) {
+    document.getElementById('prodsEmpty').classList.remove('hidden');
+    document.getElementById('prodsGrid').classList.add('hidden');
+    return;
+  }
+  document.getElementById('prodsGrid').classList.remove('hidden');
+  document.getElementById('prodsEmpty').classList.add('hidden');
+  document.getElementById('prodsGrid').innerHTML = prods.map(p => `
+    <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden hover:border-slate-600 transition">
+      ${p.image_url ? `<img src="${p.image_url}" alt="${p.name}" class="w-full h-36 object-cover" onerror="this.style.display='none'">` : ''}
+      <div class="p-4">
+        <div class="flex items-start justify-between mb-3">
+          <span class="text-3xl">${p.icon}</span>
+          <div class="flex items-center gap-1">
+            <label class="relative cursor-pointer" title="${p.available ? 'متوفر' : 'غير متوفر'}">
+              <input type="checkbox" ${p.available ? 'checked' : ''} onchange="toggleProduct('${p.id}')" class="sr-only peer">
+              <div class="w-9 h-5 bg-slate-700 rounded-full peer peer-checked:bg-green-600 transition"></div>
+              <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full peer-checked:translate-x-[-16px] transition"></div>
+            </label>
+          </div>
+        </div>
+        <h3 class="text-white font-semibold text-sm mb-1">${p.name}</h3>
+        <p class="text-slate-500 text-xs mb-2 line-clamp-2">${p.description || '—'}</p>
+        <div class="flex items-center justify-between">
+          <span class="badge bg-indigo-500/20 text-indigo-400">${p.category}</span>
+          <span class="text-green-400 font-bold text-sm">${cur(p.price)}</span>
+        </div>
+        <p class="text-slate-600 text-xs mt-1">${p.order_count} طلب</p>
+        <div class="flex gap-2 mt-3">
+          <button onclick="openProductModal('${p.id}')" class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/40 border border-indigo-500/30 transition">تعديل</button>
+          <button onclick="deleteProduct('${p.id}')" class="px-3 text-xs py-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/40 border border-red-500/30 transition"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+async function toggleProduct(id) {
+  try {
+    await api.patch(`/api/products/${id}/availability`);
+    S.products = await api.get('/api/products');
+    renderProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function openProductModal(id) {
+  const p = id ? S.products.find(x => x.id === id) : null;
+  openModal(`
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold">${p ? 'تعديل المنتج' : 'منتج جديد'}</h2>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-slate-400 text-xs mb-1 block">الاسم *</label>
+          <input id="pName" value="${p?.name||''}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+        <div><label class="text-slate-400 text-xs mb-1 block">السعر *</label>
+          <input id="pPrice" type="number" step="0.5" value="${p?.price||''}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-slate-400 text-xs mb-1 block">الفئة</label>
+          <input id="pCategory" value="${p?.category||'Main'}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+        <div><label class="text-slate-400 text-xs mb-1 block">الأيقونة</label>
+          <input id="pIcon" value="${p?.icon||'🍽️'}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+      </div>
+      <div><label class="text-slate-400 text-xs mb-1 block">الوصف</label>
+        <textarea id="pDesc" rows="2" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none">${p?.description||''}</textarea></div>
+      <div><label class="text-slate-400 text-xs mb-1 block">رابط الصورة (URL)</label>
+        <div class="flex gap-2">
+          <input id="pImageUrl" value="${p?.image_url||''}" placeholder="https://..." class="flex-1 bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+          <button type="button" onclick="document.getElementById('pImageFile').click()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-2 rounded-xl transition whitespace-nowrap">رفع صورة</button>
+          <input type="file" id="pImageFile" class="hidden" accept="image/*" onchange="uploadProductImage(this)">
+        </div>
+        <div id="pImageUploadStatus" class="hidden text-xs text-indigo-400 mt-1">جارٍ الرفع...</div>
+        ${p?.image_url ? `<img src="${p.image_url}" class="mt-2 rounded-lg h-24 object-cover" onerror="this.remove()">` : ''}
+      </div>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="pAvail" ${(!p || p.available) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
+          <span class="text-slate-400 text-sm">متوفر</span>
+        </label>
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button onclick="saveProduct('${id||''}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition font-semibold">حفظ</button>
+      <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إلغاء</button>
+    </div>
+  `);
+}
+
+async function saveProduct(id) {
+  const data = {
+    name: document.getElementById('pName').value,
+    price: parseFloat(document.getElementById('pPrice').value),
+    category: document.getElementById('pCategory').value,
+    icon: document.getElementById('pIcon').value,
+    description: document.getElementById('pDesc').value,
+    available: document.getElementById('pAvail').checked,
+    image_url: document.getElementById('pImageUrl')?.value || '',
+  };
+  if (!data.name || !data.price) { toast('الاسم والسعر مطلوبان', 'error'); return; }
+  try {
+    if (id) await api.patch(`/api/products/${id}`, data);
+    else await api.post('/api/products', data);
+    toast(id ? 'تم التعديل' : 'تم الإضافة', 'success');
+    closeModal();
+    S.products = await api.get('/api/products');
+    renderProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function uploadProductImage(fileInput) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('pImageUploadStatus');
+  if (statusEl) { statusEl.textContent = 'جارٍ الرفع...'; statusEl.classList.remove('hidden'); }
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const tok = localStorage.getItem('token');
+    const res = await fetch((window.API_BASE || '') + '/api/upload/product-image', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok },
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'فشل الرفع');
+    if (data.url) {
+      document.getElementById('pImageUrl').value = data.url;
+      if (statusEl) { statusEl.textContent = 'تم الرفع بنجاح'; }
+      toast('تم رفع الصورة', 'success');
+    } else {
+      if (statusEl) { statusEl.textContent = data.message || 'Supabase غير مُهيأ'; }
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = 'فشل الرفع: ' + e.message; }
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteProduct(id) {
+  if (!confirm('هل تريد حذف هذا المنتج؟')) return;
+  try {
+    await api.del(`/api/products/${id}`);
+    toast('تم الحذف', 'success');
+    S.products = await api.get('/api/products');
+    renderProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Customers ─────────────────────────────────────────────────
+async function loadCustomers() {
+  const s = document.getElementById('custSearch')?.value || '';
+  document.getElementById('custsLoading').classList.remove('hidden');
+  document.getElementById('custsTable').classList.add('hidden');
+  document.getElementById('custsEmpty').classList.add('hidden');
+  try {
+    S.customers = await api.get(`/api/customers${s ? `?search=${encodeURIComponent(s)}` : ''}`);
+    renderCustomers();
+  } catch(e) { toast(e.message, 'error'); }
+  document.getElementById('custsLoading').classList.add('hidden');
+}
+
+function renderCustomers() {
+  document.getElementById('custCount').textContent = `${S.customers.length} عميل`;
+  if (!S.customers.length) {
+    document.getElementById('custsEmpty').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('custsTable').classList.remove('hidden');
+  document.getElementById('custsBody').innerHTML = S.customers.map(c => `
+    <tr class="border-t border-slate-700/50 hover:bg-slate-700/30 transition">
+      <td class="px-4 py-3">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">${c.name[0]}</div>
+          <span class="text-white font-medium text-sm">${c.name}</span>
+        </div>
+      </td>
+      <td class="px-4 py-3 text-slate-400 text-sm">${c.phone || '—'}</td>
+      <td class="px-4 py-3">${platformBadge(c.platform)}</td>
+      <td class="px-4 py-3">${c.vip ? '<span class="badge bg-yellow-500/20 text-yellow-400">⭐ VIP</span>' : '<span class="text-slate-600 text-xs">—</span>'}</td>
+      <td class="px-4 py-3 text-white text-sm">${c.total_orders}</td>
+      <td class="px-4 py-3 text-green-400 font-semibold text-sm">${cur(c.total_spent)}</td>
+      <td class="px-4 py-3 text-slate-500 text-xs">${dt(c.last_seen)}</td>
+      <td class="px-4 py-3">
+        <button onclick="openCustomerModal('${c.id}')" class="text-indigo-400 hover:text-indigo-300 text-xs px-2 py-1 rounded border border-indigo-500/30 hover:border-indigo-400/50 transition">عرض</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function openCustomerModal(id) {
+  openModal('<div class="flex justify-center py-8"><div class="spinner"></div></div>');
+  try {
+    const c = await api.get(`/api/customers/${id}`);
+    openModal(`
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-white font-bold">ملف العميل</h2>
+        <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+      </div>
+      <div class="flex items-center gap-4 mb-5 p-4 bg-slate-900 rounded-2xl">
+        <div class="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-xl">${c.name[0]}</div>
+        <div>
+          <p class="text-white font-bold text-lg">${c.name}</p>
+          <div class="flex gap-2 mt-1">${platformBadge(c.platform)} ${c.vip ? '<span class="badge bg-yellow-500/20 text-yellow-400">⭐ VIP</span>' : ''}</div>
+        </div>
+        <div class="mr-auto text-right">
+          <p class="text-green-400 font-bold text-lg">${cur(c.total_spent)}</p>
+          <p class="text-slate-500 text-xs">${c.total_orders} طلب</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-4 text-sm">
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الجوال</p><p class="text-white">${c.phone||'—'}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">المفضل</p><p class="text-white">${c.favorite_item||'—'}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3 col-span-2"><p class="text-slate-500 text-xs mb-1">التفضيلات</p>
+          <input id="cPref" value="${c.preferences||''}" class="w-full bg-transparent text-white text-sm focus:outline-none"></div>
+        <div class="flex items-center gap-2 col-span-2">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="cVip" ${c.vip ? 'checked' : ''} class="w-4 h-4 rounded accent-yellow-500">
+            <span class="text-slate-400 text-sm">VIP</span>
+          </label>
+        </div>
+      </div>
+      ${c.orders.length ? `
+        <p class="text-slate-400 text-xs mb-2">آخر الطلبات</p>
+        <div class="space-y-1 mb-4 max-h-40 overflow-y-auto">
+          ${c.orders.map(o => `
+            <div class="flex justify-between py-1.5 border-b border-slate-700/50">
+              <span class="text-slate-400 text-xs">${dt(o.created_at)}</span>
+              ${statusBadge(o.status)}
+              <span class="text-green-400 text-xs font-semibold">${cur(o.total)}</span>
+            </div>`).join('')}
+        </div>` : ''}
+      <div class="flex gap-2">
+        <button onclick="saveCustomer('${id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition">حفظ</button>
+        <button onclick="deleteCustomer('${id}')" class="bg-red-600/20 hover:bg-red-600/40 border border-red-500/50 text-red-400 py-2.5 px-4 rounded-xl text-sm transition">حذف</button>
+        <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إغلاق</button>
+      </div>
+    `);
+  } catch(e) { toast(e.message, 'error'); closeModal(); }
+}
+
+async function saveCustomer(id) {
+  try {
+    await api.patch(`/api/customers/${id}`, {
+      preferences: document.getElementById('cPref').value,
+      vip: document.getElementById('cVip').checked,
+    });
+    toast('تم الحفظ', 'success');
+    closeModal(); loadCustomers();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteCustomer(id) {
+  if (!confirm('هل تريد حذف هذا العميل؟')) return;
+  try {
+    await api.del(`/api/customers/${id}`);
+    toast('تم الحذف', 'success');
+    closeModal(); loadCustomers();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Analytics ─────────────────────────────────────────────────
+async function loadAnalytics() {
+  document.getElementById('analyticsLoading').classList.remove('hidden');
+  document.getElementById('analyticsContent').classList.add('hidden');
+  try {
+    const [sum, weekly, channels, topProds, topCusts] = await Promise.all([
+      api.get('/api/analytics/summary'),
+      api.get('/api/analytics/weekly-revenue'),
+      api.get('/api/analytics/channel-breakdown'),
+      api.get('/api/analytics/top-products'),
+      api.get('/api/analytics/top-customers'),
+    ]);
+
+    document.getElementById('aKpiRevenue').textContent = cur(sum.total_revenue);
+    document.getElementById('aKpiOrders').textContent = sum.total_orders;
+    document.getElementById('aKpiCustomers').textContent = sum.total_customers;
+    document.getElementById('aKpiProducts').textContent = sum.total_products;
+
+    renderWeeklyChart('analyticsWeeklyChart', weekly);
+    renderChannelChart('analyticsChannelChart', channels);
+
+    // Top products bar chart
+    const tpCtx = document.getElementById('analyticsTopProdsChart');
+    if (S.charts['analyticsTopProdsChart']) S.charts['analyticsTopProdsChart'].destroy();
+    S.charts['analyticsTopProdsChart'] = new Chart(tpCtx, {
+      type: 'bar',
+      data: {
+        labels: topProds.map(p => p.name),
+        datasets: [{ label: 'الطلبات', data: topProds.map(p => p.order_count),
+          backgroundColor: 'rgba(99,102,241,0.6)', borderColor: '#6366f1',
+          borderWidth: 1, borderRadius: 4 }],
+      },
+      options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                  y: { ticks: { color: '#94a3b8' }, grid: { color: 'transparent' } } } },
+    });
+
+    document.getElementById('analyticsTopCusts').innerHTML = topCusts.map((c, i) => `
+      <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
+        <span class="text-slate-500 text-xs font-bold w-5">${i+1}</span>
+        <div class="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">${c.name[0]}</div>
+        <div class="flex-1"><p class="text-white text-sm">${c.name}</p><p class="text-slate-500 text-xs">${c.total_orders} طلب</p></div>
+        <p class="text-green-400 font-semibold text-sm">${cur(c.total_spent)}</p>
+        ${c.vip ? '<span class="badge bg-yellow-500/20 text-yellow-400">⭐</span>' : ''}
+      </div>`).join('');
+
+    document.getElementById('analyticsLoading').classList.add('hidden');
+    document.getElementById('analyticsContent').classList.remove('hidden');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Channels ──────────────────────────────────────────────────
+async function loadChannels() {
+  document.getElementById('chansLoading').classList.remove('hidden');
+  document.getElementById('chansContent').classList.add('hidden');
+  try {
+    const channels = await api.get('/api/channels');
+    const origin = window.location.origin;
+    const rid = S.user?.restaurant_id || '';
+
+    const conf = {
+      telegram: {
+        name: 'Telegram', icon: 'fa-telegram', color: 'text-blue-400',
+        webhookUrl: `${origin}/webhook/telegram/${rid}`,
+        fields: [
+          { id: 'token',          label: 'Bot Token',        ph: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', secret: true },
+          { id: 'bot_username',   label: 'Bot Username',     ph: '@my_restaurant_bot' },
+          { id: 'webhook_secret', label: 'Webhook Secret',   ph: 'مفتاح سري للتحقق من الطلبات', secret: true },
+          { id: 'admin_chat_id',  label: 'Admin Chat ID',    ph: '123456789' },
+        ]
+      },
+      whatsapp: {
+        name: 'WhatsApp', icon: 'fa-whatsapp', color: 'text-green-400',
+        webhookUrl: `${origin}/webhook/whatsapp/${rid}`,
+        fields: [
+          { id: 'token',               label: 'Access Token',        ph: 'EAAxxxxxxxxxx...', secret: true },
+          { id: 'phone_number_id',     label: 'Phone Number ID',     ph: '123456789012345' },
+          { id: 'business_account_id', label: 'Business Account ID', ph: '987654321012345' },
+          { id: 'verify_token',        label: 'Verify Token',        ph: 'my_verify_token_2024' },
+          { id: 'app_id',              label: 'App ID',              ph: '1234567890' },
+          { id: 'app_secret',          label: 'App Secret',          ph: 'abc123def456...', secret: true },
+        ]
+      },
+      instagram: {
+        name: 'Instagram', icon: 'fa-instagram', color: 'text-pink-400',
+        webhookUrl: `${origin}/webhook/instagram/${rid}`,
+        fields: [
+          { id: 'token',               label: 'Access Token',        ph: 'IGQVJxxxxxx...', secret: true },
+          { id: 'business_account_id', label: 'Instagram Business ID', ph: '17841400000000000' },
+          { id: 'page_id',             label: 'Facebook Page ID',    ph: '123456789012345' },
+          { id: 'verify_token',        label: 'Verify Token',        ph: 'my_verify_token_2024' },
+          { id: 'app_id',              label: 'App ID',              ph: '1234567890' },
+          { id: 'app_secret',          label: 'App Secret',          ph: 'abc123...', secret: true },
+        ]
+      },
+      facebook: {
+        name: 'Facebook', icon: 'fa-facebook', color: 'text-blue-500',
+        webhookUrl: `${origin}/webhook/facebook/${rid}`,
+        fields: [
+          { id: 'token',        label: 'Page Access Token', ph: 'EAAxxxxxxxxxx...', secret: true },
+          { id: 'page_id',      label: 'Page ID',           ph: '123456789012345' },
+          { id: 'verify_token', label: 'Verify Token',      ph: 'my_verify_token_2024' },
+          { id: 'app_id',       label: 'App ID',            ph: '1234567890' },
+          { id: 'app_secret',   label: 'App Secret',        ph: 'abc123...', secret: true },
+          { id: 'webhook_url',  label: 'Webhook URL (للمرجعية)', ph: 'سيظهر تلقائياً' },
+        ]
+      },
+    };
+
+    const el = document.getElementById('chansContent');
+    el.innerHTML = channels.map(ch => {
+      const c = conf[ch.type] || { name: ch.type, icon: 'fa-globe', color: 'text-slate-400', fields: [], webhookUrl: '' };
+      const fieldIds = c.fields.map(f => f.id);
+      return `
+        <div class="bg-slate-800 rounded-2xl border border-slate-700 p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center">
+                <i class="fa-brands ${c.icon} text-xl ${c.color}"></i>
+              </div>
+              <div>
+                <p class="text-white font-semibold">${c.name}</p>
+                <p class="text-slate-500 text-xs">${ch.verified ? '✅ متحقق' : '⚠️ غير متحقق'}</p>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <span class="text-slate-500 text-xs">${ch.enabled ? 'مفعّل' : 'معطّل'}</span>
+              <div class="relative">
+                <input type="checkbox" id="ch-enabled-${ch.type}" ${ch.enabled ? 'checked' : ''} class="sr-only peer">
+                <div class="w-10 h-5 bg-slate-700 rounded-full peer peer-checked:bg-green-600 transition"></div>
+                <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
+              </div>
+            </label>
+          </div>
+          <!-- Webhook URL -->
+          ${c.webhookUrl ? `
+          <div class="mb-3 bg-slate-900/60 rounded-xl p-3 flex items-center gap-2">
+            <div class="flex-1 overflow-hidden">
+              <p class="text-slate-500 text-xs mb-0.5">Webhook URL</p>
+              <p class="text-indigo-400 text-xs font-mono truncate">${c.webhookUrl}</p>
+            </div>
+            <button onclick="copyText('${c.webhookUrl}')" class="text-slate-500 hover:text-white text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 flex-shrink-0">
+              <i class="fa-solid fa-copy"></i>
+            </button>
+          </div>` : ''}
+          <!-- Fields -->
+          <div class="space-y-2.5 mb-4">
+            ${c.fields.map(f => `
+              <div>
+                <label class="text-slate-400 text-xs mb-1 block">${f.label}</label>
+                <input id="ch-${f.id}-${ch.type}" value="${(ch[f.id]||'').replace(/"/g,'&quot;')}"
+                  placeholder="${f.ph}" type="${f.secret ? 'password' : 'text'}"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs focus:border-indigo-500 font-mono">
+              </div>`).join('')}
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="saveChannel('${ch.type}',${JSON.stringify(fieldIds)})"
+              class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-2.5 rounded-xl transition font-semibold">حفظ</button>
+            <button onclick="testChannel('${ch.type}')"
+              class="bg-slate-700 hover:bg-slate-600 text-white text-xs py-2.5 px-4 rounded-xl transition">اختبار الاتصال</button>
+            ${ch.type === 'telegram' ? `<button onclick="registerTelegramWebhook()" class="bg-green-700 hover:bg-green-600 text-white text-xs py-2.5 px-4 rounded-xl transition">تسجيل الويب هوك</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('chansLoading').classList.add('hidden');
+    document.getElementById('chansContent').classList.remove('hidden');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast('تم النسخ!', 'success')).catch(() => toast('فشل النسخ', 'error'));
+}
+
+async function saveChannel(type, fieldIds) {
+  const data = { enabled: document.getElementById(`ch-enabled-${type}`)?.checked };
+  fieldIds.forEach(f => {
+    const el = document.getElementById(`ch-${f}-${type}`);
+    if (el) data[f] = el.value;
+  });
+  try {
+    await api.put(`/api/channels/${type}`, data);
+    toast(`تم حفظ إعدادات ${type}`, 'success');
+    loadChannels();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function testChannel(type) {
+  try {
+    toast('جاري الاختبار...', 'info');
+    const r = await api.post(`/api/channels/${type}/test`);
+    toast(r.message, r.success ? 'success' : 'error');
+    loadChannels();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function registerTelegramWebhook() {
+  try {
+    toast('جاري تسجيل الويب هوك...', 'info');
+    const r = await api.post('/api/channels/telegram/register-webhook');
+    toast(r.message, 'success');
+    loadChannels();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Settings ──────────────────────────────────────────────────
+
+const DAYS_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+const DAY_KEYS = ['sun','mon','tue','wed','thu','fri','sat'];
+
+function renderWorkingHoursGrid(wh) {
+  const grid = document.getElementById('workingHoursGrid');
+  if (!grid) return;
+  grid.innerHTML = DAY_KEYS.map((k, i) => {
+    const day = wh[k] || { open: false, from: '09:00', to: '22:00' };
+    return `<div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
+      <label class="flex items-center gap-2 w-28 cursor-pointer flex-shrink-0">
+        <div class="relative">
+          <input type="checkbox" id="wh-open-${k}" ${day.open ? 'checked' : ''} onchange="toggleDay('${k}')" class="sr-only peer">
+          <div class="w-9 h-4 bg-slate-700 rounded-full peer peer-checked:bg-indigo-600 transition"></div>
+          <div class="absolute top-0.5 right-0.5 w-3 h-3 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
+        </div>
+        <span class="text-slate-300 text-sm">${DAYS_AR[i]}</span>
+      </label>
+      <div id="wh-times-${k}" class="${day.open ? '' : 'opacity-40 pointer-events-none'} flex items-center gap-2 flex-1">
+        <span class="text-slate-500 text-xs">من</span>
+        <input type="time" id="wh-from-${k}" value="${day.from || '09:00'}"
+          class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
+        <span class="text-slate-500 text-xs">إلى</span>
+        <input type="time" id="wh-to-${k}" value="${day.to || '22:00'}"
+          class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleDay(k) {
+  const open = document.getElementById(`wh-open-${k}`).checked;
+  const times = document.getElementById(`wh-times-${k}`);
+  if (times) { times.classList.toggle('opacity-40', !open); times.classList.toggle('pointer-events-none', !open); }
+}
+
+async function saveWorkingHours() {
+  const wh = {};
+  DAY_KEYS.forEach(k => {
+    wh[k] = {
+      open: document.getElementById(`wh-open-${k}`)?.checked || false,
+      from: document.getElementById(`wh-from-${k}`)?.value || '09:00',
+      to:   document.getElementById(`wh-to-${k}`)?.value   || '22:00',
+    };
+  });
+  try {
+    await api.put('/api/settings', { working_hours: wh });
+    toast('تم حفظ أوقات العمل ✅', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function loadSettings() {
+  document.getElementById('settingsLoading').classList.remove('hidden');
+  document.getElementById('settingsContent').classList.add('hidden');
+  try {
+    const s = await api.get('/api/settings');
+    if (s.restaurant_name) document.getElementById('sRestName').value = s.restaurant_name;
+    if (s.restaurant_description) document.getElementById('sRestDesc').value = s.restaurant_description;
+    if (s.restaurant_phone) document.getElementById('sRestPhone').value = s.restaurant_phone;
+    if (s.restaurant_address) document.getElementById('sRestAddress').value = s.restaurant_address;
+    if (s.bot_name) document.getElementById('sBotName').value = s.bot_name;
+    if (s.bot_personality) document.getElementById('sBotPersonality').value = s.bot_personality;
+    if (s.bot_language) document.getElementById('sBotLanguage').value = s.bot_language;
+    if (s.bot_welcome) document.getElementById('sBotWelcome').value = s.bot_welcome;
+    document.getElementById('sBotEnabled').checked = !!s.bot_enabled;
+    document.getElementById('s2fa').checked = !!s.security_2fa;
+    if (s.security_session_timeout) document.getElementById('sSessionTimeout').value = s.security_session_timeout;
+    // Working hours
+    let wh = {};
+    try { wh = typeof s.working_hours === 'string' ? JSON.parse(s.working_hours||'{}') : (s.working_hours||{}); } catch(e) {}
+    renderWorkingHoursGrid(wh);
+    document.getElementById('settingsLoading').classList.add('hidden');
+    document.getElementById('settingsContent').classList.remove('hidden');
+    loadBotConfig();
+  } catch(e) {
+    document.getElementById('settingsLoading').classList.add('hidden');
+    toast(e.message, 'error');
+  }
+}
+
+function showSettingsTab(tab) {
+  document.querySelectorAll('.settings-tab').forEach(b => {
+    b.className = `settings-tab px-4 py-2 rounded-lg text-sm font-medium transition ${b.id === `stab-${tab}` ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`;
+  });
+  document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.add('hidden'));
+  document.getElementById(`stab-content-${tab}`).classList.remove('hidden');
+}
+
+async function saveSettings() {
+  try {
+    const restName = document.getElementById('sRestName').value;
+    await api.put('/api/settings', {
+      restaurant_name: restName,
+      restaurant_description: document.getElementById('sRestDesc').value,
+      restaurant_phone: document.getElementById('sRestPhone').value,
+      restaurant_address: document.getElementById('sRestAddress').value,
+      bot_name: document.getElementById('sBotName').value,
+      bot_personality: document.getElementById('sBotPersonality').value,
+      bot_language: document.getElementById('sBotLanguage').value,
+      bot_welcome: document.getElementById('sBotWelcome').value,
+      bot_enabled: document.getElementById('sBotEnabled').checked,
+      security_2fa: document.getElementById('s2fa').checked,
+      security_session_timeout: parseInt(document.getElementById('sSessionTimeout').value) || 24,
+    });
+    // Sync restaurant name in sidebar
+    if (restName) document.getElementById('sideRestName').textContent = restName;
+    toast('تم حفظ الإعدادات ✅', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Team ──────────────────────────────────────────────────────
+const ROLE_LABELS = { owner: ['مالك','bg-purple-500/20 text-purple-300'], manager: ['مدير','bg-blue-500/20 text-blue-300'], staff: ['موظف','bg-green-500/20 text-green-300'] };
+async function loadTeam() {
+  document.getElementById('teamLoading').classList.remove('hidden');
+  document.getElementById('teamTable').classList.add('hidden');
+  document.getElementById('teamEmpty').classList.add('hidden');
+  try {
+    const staff = await api.get('/api/staff');
+    document.getElementById('teamCount').textContent = `${staff.length} عضو`;
+    const canEdit = ['owner','manager'].includes(S.user?.role);
+    document.getElementById('addStaffBtn').classList.toggle('hidden', !canEdit);
+    if (!staff.length) { document.getElementById('teamEmpty').classList.remove('hidden'); return; }
+    document.getElementById('teamTable').classList.remove('hidden');
+    document.getElementById('teamBody').innerHTML = staff.map(u => {
+      const [rl, rc] = ROLE_LABELS[u.role] || ['—','bg-slate-700 text-slate-400'];
+      return `<tr class="border-t border-slate-700/50 hover:bg-slate-700/30 transition">
+        <td class="px-4 py-3"><div class="flex items-center gap-2">
+          <div class="w-7 h-7 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">${u.name[0]}</div>
+          <span class="text-white font-medium text-sm">${u.name}</span>
+          ${u.id === S.user?.id ? '<span class="badge bg-slate-700 text-slate-400 text-[10px]">أنت</span>' : ''}
+        </div></td>
+        <td class="px-4 py-3 text-slate-400 text-sm">${u.email}</td>
+        <td class="px-4 py-3"><span class="badge ${rc}">${rl}</span></td>
+        <td class="px-4 py-3 text-slate-500 text-xs">${u.last_login ? dt(u.last_login) : '—'}</td>
+        <td class="px-4 py-3 flex gap-1.5">
+          ${canEdit && u.id !== S.user?.id ? `
+            <select onchange="changeRole('${u.id}',this.value)" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1">
+              <option value="owner" ${u.role==='owner'?'selected':''}>مالك</option>
+              <option value="manager" ${u.role==='manager'?'selected':''}>مدير</option>
+              <option value="staff" ${u.role==='staff'?'selected':''}>موظف</option>
+            </select>
+            <button onclick="deleteStaff('${u.id}')" class="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded-lg bg-red-500/10 border border-red-500/30 transition"><i class="fa-solid fa-trash"></i></button>
+          ` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) { toast(e.message,'error'); }
+  document.getElementById('teamLoading').classList.add('hidden');
+}
+
+function openAddStaffModal() {
+  openModal(`
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold">إضافة موظف جديد</h2>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="space-y-3">
+      <div><label class="text-slate-400 text-xs mb-1.5 block">الاسم</label>
+        <input id="staffName" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+      <div><label class="text-slate-400 text-xs mb-1.5 block">البريد الإلكتروني</label>
+        <input id="staffEmail" type="email" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+      <div><label class="text-slate-400 text-xs mb-1.5 block">كلمة المرور</label>
+        <input id="staffPass" type="password" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+      <div><label class="text-slate-400 text-xs mb-1.5 block">الدور</label>
+        <select id="staffRole" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+          <option value="staff">موظف</option>
+          <option value="manager">مدير</option>
+          <option value="owner">مالك</option>
+        </select></div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button onclick="addStaff()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm font-semibold transition">إضافة</button>
+      <button onclick="closeModal()" class="bg-slate-700 text-white py-2.5 px-4 rounded-xl text-sm transition">إلغاء</button>
+    </div>`);
+}
+
+async function addStaff() {
+  const name=document.getElementById('staffName').value, email=document.getElementById('staffEmail').value,
+        pass=document.getElementById('staffPass').value, role=document.getElementById('staffRole').value;
+  if (!name||!email||!pass) { toast('جميع الحقول مطلوبة','error'); return; }
+  try {
+    await api.post('/api/staff',{name,email,password:pass,role});
+    toast('تمت الإضافة','success'); closeModal(); loadTeam();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function changeRole(id, role) {
+  try { await api.patch(`/api/staff/${id}`,{role}); toast('تم تغيير الدور','success'); loadTeam(); }
+  catch(e) { toast(e.message,'error'); loadTeam(); }
+}
+
+async function deleteStaff(id) {
+  if (!confirm('هل تريد حذف هذا الموظف؟')) return;
+  try { await api.del(`/api/staff/${id}`); toast('تم الحذف','success'); loadTeam(); }
+  catch(e) { toast(e.message,'error'); }
+}
+
+// ── Activity ──────────────────────────────────────────────────
+let activityOffset = 0;
+const ACTIVITY_ICONS = {
+  order_created:'🛒', order_status_changed:'🔄', order_cancelled:'❌',
+  conversation_mode_changed:'💬', channel_updated:'📡', staff_added:'👤',
+  staff_removed:'🗑️', login:'🔐', ai_reply:'🤖', escalation:'⚠️',
+};
+async function loadActivity() {
+  activityOffset = 0;
+  document.getElementById('activityLoading').classList.remove('hidden');
+  document.getElementById('activityList').classList.add('hidden');
+  document.getElementById('activityEmpty').classList.add('hidden');
+  const action = document.getElementById('activityFilter')?.value || '';
+  try {
+    const data = await api.get(`/api/activity?limit=30&offset=0${action ? '&action='+action : ''}`);
+    document.getElementById('activityLoading').classList.add('hidden');
+    if (!data.items?.length) { document.getElementById('activityEmpty').classList.remove('hidden'); return; }
+    document.getElementById('activityList').classList.remove('hidden');
+    renderActivityItems(data.items, false);
+    document.getElementById('activityMore').classList.toggle('hidden', !data.has_more);
+    activityOffset = data.items.length;
+  } catch(e) { toast(e.message,'error'); document.getElementById('activityLoading').classList.add('hidden'); }
+}
+
+async function loadActivityMore() {
+  const action = document.getElementById('activityFilter')?.value || '';
+  try {
+    const data = await api.get(`/api/activity?limit=30&offset=${activityOffset}${action ? '&action='+action : ''}`);
+    renderActivityItems(data.items, true);
+    document.getElementById('activityMore').classList.toggle('hidden', !data.has_more);
+    activityOffset += data.items.length;
+  } catch(e) { toast(e.message,'error'); }
+}
+
+function renderActivityItems(items, append) {
+  const html = items.map(a => `
+    <div class="bg-slate-800 rounded-xl px-4 py-3 border border-slate-700/50 flex items-center gap-3">
+      <span class="text-xl w-8 text-center flex-shrink-0">${ACTIVITY_ICONS[a.action] || '📋'}</span>
+      <div class="flex-1 min-w-0">
+        <p class="text-white text-sm">${a.description}</p>
+        <p class="text-slate-500 text-xs mt-0.5">${a.user_name || 'System'} • ${a.action}</p>
+      </div>
+      <span class="text-slate-600 text-xs flex-shrink-0">${dt(a.created_at)}</span>
+    </div>`).join('');
+  const el = document.getElementById('activityList');
+  if (append) el.insertAdjacentHTML('beforeend', html);
+  else el.innerHTML = html;
+}
+
+// ── Notifications ─────────────────────────────────────────────
+const NOTIF_ICONS = { new_order:'🛒', new_message:'💬', escalation:'⚠️', failed_webhook:'❌', failed_channel_auth:'🔐', urgent:'🔴' };
+let notifPanelOpen = false;
+
+function toggleNotifPanel() {
+  notifPanelOpen = !notifPanelOpen;
+  document.getElementById('notifPanel').classList.toggle('hidden', !notifPanelOpen);
+  if (notifPanelOpen) loadNotifications();
+}
+
+async function loadNotifications() {
+  try {
+    const data = await api.get('/api/notifications?limit=8');
+    renderNotifList(data);
+    const unread = data.filter(n => !n.is_read).length;
+    const badge = document.getElementById('notifBadge');
+    if (unread > 0) { badge.textContent = unread > 9 ? '9+' : unread; badge.classList.remove('hidden'); }
+    else badge.classList.add('hidden');
+  } catch(e) {}
+}
+
+async function loadUnreadCount() {
+  try {
+    const r = await api.get('/api/notifications/unread-count');
+    const badge = document.getElementById('notifBadge');
+    if (r.count > 0) { badge.textContent = r.count > 9 ? '9+' : r.count; badge.classList.remove('hidden'); }
+    else badge.classList.add('hidden');
+  } catch(e) {}
+}
+
+function renderNotifList(notifs) {
+  const el = document.getElementById('notifList');
+  if (!notifs.length) { el.innerHTML = '<p class="text-slate-500 text-xs text-center py-6">لا توجد إشعارات</p>'; return; }
+  el.innerHTML = notifs.map(n => `
+    <div onclick="markNotifRead('${n.id}')"
+      class="px-4 py-3 border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 cursor-pointer transition ${n.is_read ? 'opacity-60' : ''}">
+      <div class="flex items-start gap-2.5">
+        <span class="text-base mt-0.5">${NOTIF_ICONS[n.type]||'📢'}</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-white text-xs font-semibold">${n.title}${!n.is_read ? '<span class="inline-block w-1.5 h-1.5 bg-indigo-400 rounded-full mr-1.5 mb-0.5"></span>' : ''}</p>
+          <p class="text-slate-400 text-xs mt-0.5 line-clamp-2">${n.message}</p>
+          <p class="text-slate-600 text-xs mt-1">${dt(n.created_at)}</p>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+async function markNotifRead(id) {
+  try {
+    await api.patch(`/api/notifications/${id}/read`);
+    loadNotifications();
+  } catch(e) {}
+}
+
+async function markAllRead() {
+  try {
+    await api.post('/api/notifications/read-all');
+    loadNotifications();
+    toast('تم تحديد الكل كمقروء','success');
+  } catch(e) {}
+}
+
+// ── Bot Config ────────────────────────────────────────────────
+async function loadBotConfig() {
+  try {
+    const d = await api.get('/api/bot-config');
+    if (!d || !d.id) return;
+    document.getElementById('bcSystemPrompt').value = d.system_prompt || '';
+    document.getElementById('bcSalesPrompt').value = d.sales_prompt || '';
+    const kw = JSON.parse(d.escalation_keywords || '[]');
+    document.getElementById('bcEscalationKw').value = kw.join(', ');
+    document.getElementById('bcFallback').value = d.fallback_message || '';
+    document.getElementById('bcMaxTurns').value = d.max_bot_turns || 15;
+    document.getElementById('bcAutoHandoff').checked = !!d.auto_handoff_enabled;
+    document.getElementById('bcOrderExtract').checked = !!d.order_extraction_enabled;
+    document.getElementById('bcMemory').checked = !!d.memory_enabled;
+  } catch(e) {}
+}
+
+async function saveBotConfig() {
+  const kwStr = document.getElementById('bcEscalationKw').value;
+  const kw = kwStr.split(',').map(s=>s.trim()).filter(Boolean);
+  try {
+    await api.put('/api/bot-config', {
+      system_prompt: document.getElementById('bcSystemPrompt').value,
+      sales_prompt: document.getElementById('bcSalesPrompt').value,
+      escalation_keywords: kw,
+      fallback_message: document.getElementById('bcFallback').value,
+      max_bot_turns: parseInt(document.getElementById('bcMaxTurns').value)||15,
+      auto_handoff_enabled: document.getElementById('bcAutoHandoff').checked,
+      order_extraction_enabled: document.getElementById('bcOrderExtract').checked,
+      memory_enabled: document.getElementById('bcMemory').checked,
+    });
+    toast('تم حفظ إعدادات البوت','success');
+  } catch(e) { toast(e.message,'error'); }
+}
+
+// ── Init ──────────────────────────────────────────────────────
+async function init() {
+  if (!S.token) { window.location.href = '/'; return; }
+
+  try {
+    const user = await api.get('/api/auth/me');
+    S.user = user;
+    document.getElementById('sideRestName').textContent = user.restaurant_name;
+    document.getElementById('sidePlan').textContent = user.plan;
+    document.getElementById('userName').textContent = user.name;
+    document.getElementById('userEmail').textContent = user.email;
+    document.getElementById('userInitial').textContent = user.name?.[0] || 'أ';
+    localStorage.setItem('user', JSON.stringify(user));
+  } catch(e) {
+    logout(); return;
+  }
+
+  // Hide Team nav for staff-only role
+  if (S.user?.role === 'staff') document.getElementById('navTeam')?.classList.add('hidden');
+
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // Poll notifications every 30s
+  loadUnreadCount();
+  setInterval(loadUnreadCount, 30000);
+
+  // Auto-refresh active conversation messages every 8s
+  setInterval(async () => {
+    if (!S.activeConv) return;
+    try {
+      const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
+      renderMessages(msgs);
+    } catch(e) {}
+  }, 8000);
+
+  // Auto-refresh conversation list every 15s
+  setInterval(async () => {
+    if (document.querySelector('#sec-conversations.active')) {
+      S.convs = await api.get('/api/conversations').catch(() => S.convs);
+      renderConvList();
+    }
+  }, 15000);
+
+  // Close notif panel on outside click
+  document.addEventListener('click', (e) => {
+    if (notifPanelOpen && !e.target.closest('#notifPanel') && !e.target.closest('button[onclick="toggleNotifPanel()"]')) {
+      notifPanelOpen = false;
+      document.getElementById('notifPanel').classList.add('hidden');
+    }
+  });
+
+  const page = location.hash.replace('#', '') || 'dashboard';
+  navigate(page);
+}
+
+// Bot config is loaded inside loadSettings() above
+
+init();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── MENU IMPORT ────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _miSessionId   = null;
+let _miItems       = [];      // raw preview items
+let _miEditedItems = {};      // temp_id → overrides from user edits
+let _miPollTimer   = null;
+
+// ── Open modal ────────────────────────────────────────────────────────────────
+function openMenuImport() {
+  _miSessionId   = null;
+  _miItems       = [];
+  _miEditedItems = {};
+  clearInterval(_miPollTimer);
+  _miShowState('upload');
+  document.getElementById('miDropzone').classList.remove('border-emerald-400', 'bg-emerald-900/20');
+  document.getElementById('miFileList').innerHTML = '';
+  document.getElementById('miUploadErr').classList.add('hidden');
+  document.getElementById('miFileInput').value = '';
+  _miSelectedFiles = [];
+  document.getElementById('menuImportModal').classList.remove('hidden');
+}
+function closeMenuImport() {
+  clearInterval(_miPollTimer);
+  document.getElementById('menuImportModal').classList.add('hidden');
+}
+
+// ── State machine ─────────────────────────────────────────────────────────────
+function _miShowState(state) {
+  ['upload','processing','preview','done'].forEach(s => {
+    document.getElementById('miState_' + s).classList.add('hidden');
+  });
+  document.getElementById('miState_' + state).classList.remove('hidden');
+}
+
+// ── File selection ────────────────────────────────────────────────────────────
+let _miSelectedFiles = [];
+
+function _miHandleFiles(fileList) {
+  const allowed = ['image/jpeg','image/png','image/gif','image/webp',
+                   'application/pdf',
+                   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                   'text/plain','text/csv',
+                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                   'application/vnd.ms-excel'];
+  const allowedExt = ['.jpg','.jpeg','.png','.gif','.webp','.pdf','.docx','.txt','.csv','.xlsx','.xls'];
+
+  const errEl = document.getElementById('miUploadErr');
+  errEl.classList.add('hidden');
+
+  Array.from(fileList).forEach(f => {
+    const ext = '.' + f.name.split('.').pop().toLowerCase();
+    if (!allowedExt.includes(ext)) {
+      errEl.textContent = `نوع الملف غير مدعوم: ${f.name}`;
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (f.size > 20 * 1024 * 1024) {
+      errEl.textContent = `حجم الملف كبير جداً (الحد 20 MB): ${f.name}`;
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (!_miSelectedFiles.find(x => x.name === f.name && x.size === f.size)) {
+      _miSelectedFiles.push(f);
+    }
+  });
+  _miRenderFileList();
+}
+
+function _miRenderFileList() {
+  const el = document.getElementById('miFileList');
+  if (!_miSelectedFiles.length) { el.innerHTML = ''; return; }
+  const icons = { pdf:'📄', docx:'📝', doc:'📝', xlsx:'📊', xls:'📊', csv:'📊', txt:'📃', jpg:'🖼️', jpeg:'🖼️', png:'🖼️', gif:'🖼️', webp:'🖼️' };
+  el.innerHTML = _miSelectedFiles.map((f, i) => {
+    const ext = f.name.split('.').pop().toLowerCase();
+    return `<div class="flex items-center gap-2 py-1.5 border-b border-slate-700">
+      <span>${icons[ext] || '📁'}</span>
+      <span class="text-sm text-slate-300 flex-1 truncate">${f.name}</span>
+      <span class="text-xs text-slate-500">${(f.size/1024/1024).toFixed(1)} MB</span>
+      <button onclick="_miRemoveFile(${i})" class="text-red-400 hover:text-red-300 text-xs px-1">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function _miRemoveFile(idx) {
+  _miSelectedFiles.splice(idx, 1);
+  _miRenderFileList();
+}
+
+// ── Upload + parse ────────────────────────────────────────────────────────────
+async function miStartUpload() {
+  if (!_miSelectedFiles.length) {
+    document.getElementById('miUploadErr').textContent = 'اختر ملفاً واحداً على الأقل';
+    document.getElementById('miUploadErr').classList.remove('hidden');
+    return;
+  }
+  _miShowState('processing');
+  document.getElementById('miProcessMsg').textContent = 'جارٍ الرفع…';
+  document.getElementById('miProcessDetail').textContent = `${_miSelectedFiles.length} ملف`;
+
+  try {
+    const form = new FormData();
+    _miSelectedFiles.forEach(f => form.append('files', f));
+
+    const tok = localStorage.getItem('token');
+    const res = await fetch((window.API_BASE || '') + '/api/menu-import/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok },
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'فشل الرفع');
+
+    _miSessionId = data.session_id;
+    document.getElementById('miProcessMsg').textContent = 'جارٍ تحليل المنيو بالذكاء الاصطناعي…';
+    document.getElementById('miProcessDetail').textContent = 'قد يستغرق هذا 30–90 ثانية حسب عدد الصفحات';
+    _miPollStatus();
+  } catch (e) {
+    _miShowState('upload');
+    document.getElementById('miUploadErr').textContent = e.message;
+    document.getElementById('miUploadErr').classList.remove('hidden');
+  }
+}
+
+function _miPollStatus() {
+  clearInterval(_miPollTimer);
+  _miPollTimer = setInterval(async () => {
+    try {
+      const data = await api.get(`/api/menu-import/${_miSessionId}/status`);
+      if (data.status === 'ready') {
+        clearInterval(_miPollTimer);
+        await _miLoadPreview();
+      } else if (data.status === 'failed') {
+        clearInterval(_miPollTimer);
+        _miShowState('upload');
+        document.getElementById('miUploadErr').textContent = 'فشل التحليل: ' + (data.error || 'خطأ غير معروف');
+        document.getElementById('miUploadErr').classList.remove('hidden');
+      } else if (data.status === 'parsing') {
+        document.getElementById('miProcessMsg').textContent = 'جارٍ استخراج المنتجات…';
+      }
+    } catch (e) {
+      clearInterval(_miPollTimer);
+    }
+  }, 3000);
+}
+
+// ── Preview ────────────────────────────────────────────────────────────────────
+async function _miLoadPreview() {
+  const data = await api.get(`/api/menu-import/${_miSessionId}/preview`);
+  _miItems = data.items || [];
+  // Initialize edited items from originals
+  _miEditedItems = {};
+  _miItems.forEach(it => { _miEditedItems[it.temp_id] = { action: it.action }; });
+  _miRenderPreview();
+  _miShowState('preview');
+}
+
+function _miRenderPreview() {
+  const items = _miItems;
+  document.getElementById('miPreviewCount').textContent = items.length;
+  const needsReview = items.filter(i => i.needs_review).length;
+  const dups        = items.filter(i => i.existing_match).length;
+  document.getElementById('miPreviewReview').textContent = needsReview;
+  document.getElementById('miPreviewDups').textContent   = dups;
+
+  const tbody = document.getElementById('miPreviewTable');
+  tbody.innerHTML = items.map((it, idx) => {
+    const conf      = it.confidence;
+    const confPct   = Math.round(conf * 100);
+    const confColor = conf >= 0.85 ? 'text-green-400' : conf >= 0.65 ? 'text-yellow-400' : 'text-red-400';
+    const confBg    = conf >= 0.85 ? 'bg-green-500' : conf >= 0.65 ? 'bg-yellow-500' : 'bg-red-500';
+    const rowBg     = it.needs_review ? 'bg-yellow-900/10' : '';
+    const dupBadge  = it.existing_match
+      ? `<span class="badge-warn ml-1" title="مشابه: ${it.existing_match.name}">مكرر محتمل</span>`
+      : '';
+    const reviewBadge = it.needs_review && !it.existing_match
+      ? `<span class="badge-review ml-1">يحتاج مراجعة</span>`
+      : '';
+
+    const ed    = _miEditedItems[it.temp_id] || {};
+    const action = ed.action || it.action;
+    const actColors = { create:'text-green-400', skip:'text-slate-500', update_existing:'text-blue-400', merge_review:'text-yellow-400' };
+    const actLabels = { create:'إضافة', skip:'تجاوز', update_existing:'تحديث موجود', merge_review:'مراجعة تكرار' };
+
+    return `<tr class="border-b border-slate-800 ${rowBg}" id="miRow_${it.temp_id}">
+      <td class="px-3 py-2 w-8 text-center">
+        <input type="checkbox" class="miCheck" data-id="${it.temp_id}"
+               ${action !== 'skip' ? 'checked' : ''}
+               onchange="_miToggleItem('${it.temp_id}', this.checked)">
+      </td>
+      <td class="px-3 py-2">
+        <div class="flex items-center gap-1 flex-wrap">
+          <span class="text-white text-sm font-medium">${h(it.name)}</span>
+          ${dupBadge}${reviewBadge}
+        </div>
+        ${it.existing_match ? `<div class="text-xs text-yellow-400 mt-0.5">مشابه لـ: ${h(it.existing_match.name)} (${Math.round(it.existing_match.similarity*100)}%)</div>` : ''}
+        ${it.source_note ? `<div class="text-xs text-slate-500 mt-0.5">${h(it.source_note)}</div>` : ''}
+      </td>
+      <td class="px-3 py-2 text-slate-400 text-sm">${h(it.category)}</td>
+      <td class="px-3 py-2 text-sm">
+        ${it.price !== null ? `<span class="text-white">${it.price}</span>` : `<span class="text-red-400 text-xs">غير محدد</span>`}
+      </td>
+      <td class="px-3 py-2">
+        <div class="flex items-center gap-1.5">
+          <div class="w-16 bg-slate-700 rounded-full h-1.5">
+            <div class="h-1.5 rounded-full ${confBg}" style="width:${confPct}%"></div>
+          </div>
+          <span class="${confColor} text-xs">${confPct}%</span>
+        </div>
+      </td>
+      <td class="px-3 py-2">
+        <select class="bg-slate-800 border border-slate-600 text-xs rounded px-1 py-0.5 ${actColors[action]}"
+                onchange="_miSetAction('${it.temp_id}', this.value)">
+          <option value="create"          ${action==='create'?'selected':''}>إضافة جديد</option>
+          ${it.existing_match ? `<option value="update_existing" ${action==='update_existing'?'selected':''}>تحديث الموجود</option>` : ''}
+          <option value="skip"            ${action==='skip'?'selected':''}>تجاوز</option>
+        </select>
+      </td>
+      <td class="px-3 py-2">
+        <button onclick="_miEditItem('${it.temp_id}')" class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded border border-slate-700 hover:border-slate-500 transition">
+          تعديل
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function h(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+
+function _miToggleItem(tempId, checked) {
+  if (!_miEditedItems[tempId]) _miEditedItems[tempId] = {};
+  const it = _miItems.find(x => x.temp_id === tempId);
+  if (!checked) {
+    _miEditedItems[tempId].action = 'skip';
+  } else {
+    _miEditedItems[tempId].action = (it && it.existing_match) ? 'merge_review' : 'create';
+  }
+}
+
+function _miSetAction(tempId, action) {
+  if (!_miEditedItems[tempId]) _miEditedItems[tempId] = {};
+  _miEditedItems[tempId].action = action;
+  const sel = document.querySelector(`#miRow_${tempId} select`);
+  const colors = { create:'text-green-400', skip:'text-slate-500', update_existing:'text-blue-400', merge_review:'text-yellow-400' };
+  if (sel) { sel.className = sel.className.replace(/text-\w+-\d+/g, ''); sel.classList.add(colors[action] || 'text-slate-300'); }
+}
+
+function miApproveAll() {
+  _miItems.forEach(it => {
+    if (!_miEditedItems[it.temp_id]) _miEditedItems[it.temp_id] = {};
+    if (_miEditedItems[it.temp_id].action === 'skip') {
+      _miEditedItems[it.temp_id].action = it.existing_match ? 'update_existing' : 'create';
+    }
+    const cb = document.querySelector(`[data-id="${it.temp_id}"]`);
+    if (cb) cb.checked = true;
+  });
+  _miRenderPreview();
+}
+
+function miApproveHighConf() {
+  _miItems.forEach(it => {
+    if (!_miEditedItems[it.temp_id]) _miEditedItems[it.temp_id] = {};
+    if (it.confidence >= 0.85 && !it.needs_review) {
+      _miEditedItems[it.temp_id].action = it.existing_match ? 'update_existing' : 'create';
+    } else {
+      _miEditedItems[it.temp_id].action = 'skip';
+    }
+    const cb = document.querySelector(`[data-id="${it.temp_id}"]`);
+    if (cb) cb.checked = (it.confidence >= 0.85 && !it.needs_review);
+  });
+  _miRenderPreview();
+}
+
+function miSkipAll() {
+  _miItems.forEach(it => {
+    if (!_miEditedItems[it.temp_id]) _miEditedItems[it.temp_id] = {};
+    _miEditedItems[it.temp_id].action = 'skip';
+    const cb = document.querySelector(`[data-id="${it.temp_id}"]`);
+    if (cb) cb.checked = false;
+  });
+  _miRenderPreview();
+}
+
+// ── Edit single item ──────────────────────────────────────────────────────────
+function _miEditItem(tempId) {
+  const it = _miItems.find(x => x.temp_id === tempId);
+  if (!it) return;
+  const ed = _miEditedItems[tempId] || {};
+  document.getElementById('miEditTempId').value   = tempId;
+  document.getElementById('miEditName').value      = ed.name        ?? it.name;
+  document.getElementById('miEditCategory').value  = ed.category    ?? it.category;
+  document.getElementById('miEditPrice').value     = ed.price       ?? (it.price ?? '');
+  document.getElementById('miEditDesc').value      = ed.description ?? it.description;
+  document.getElementById('miEditImageUrl').value  = ed.image_url   ?? it.image_url;
+  document.getElementById('miEditModal').classList.remove('hidden');
+}
+
+function miSaveEditItem() {
+  const tempId = document.getElementById('miEditTempId').value;
+  if (!_miEditedItems[tempId]) _miEditedItems[tempId] = {};
+  const price = parseFloat(document.getElementById('miEditPrice').value);
+  _miEditedItems[tempId].name        = document.getElementById('miEditName').value.trim();
+  _miEditedItems[tempId].category    = document.getElementById('miEditCategory').value.trim();
+  _miEditedItems[tempId].price       = isNaN(price) ? null : price;
+  _miEditedItems[tempId].description = document.getElementById('miEditDesc').value.trim();
+  _miEditedItems[tempId].image_url   = document.getElementById('miEditImageUrl').value.trim();
+  document.getElementById('miEditModal').classList.add('hidden');
+  _miRenderPreview();
+}
+
+// ── Final import ──────────────────────────────────────────────────────────────
+async function miSubmitImport() {
+  const btn = document.getElementById('miImportBtn');
+  btn.disabled = true;
+  btn.textContent = 'جارٍ الاستيراد…';
+
+  const items = _miItems.map(it => {
+    const ed  = _miEditedItems[it.temp_id] || {};
+    const act = ed.action || it.action;
+    return {
+      temp_id:     it.temp_id,
+      action:      act === 'merge_review' ? 'create' : act,
+      name:        ed.name        ?? it.name,
+      category:    ed.category    ?? it.category,
+      price:       ed.price       !== undefined ? ed.price : it.price,
+      description: ed.description ?? it.description,
+      variants:    it.variants,
+      image_url:   ed.image_url   ?? it.image_url,
+    };
+  });
+
+  try {
+    const result = await api.post(`/api/menu-import/${_miSessionId}/approve`, { items });
+    document.getElementById('miDoneCreated').textContent = result.created;
+    document.getElementById('miDoneUpdated').textContent = result.updated;
+    document.getElementById('miDoneSkipped').textContent = result.skipped;
+    const errEl = document.getElementById('miDoneErrors');
+    if (result.errors && result.errors.length) {
+      errEl.textContent = result.errors.join(' | ');
+      errEl.classList.remove('hidden');
+    } else {
+      errEl.classList.add('hidden');
+    }
+    _miShowState('done');
+    // Refresh products list
+    if (typeof loadProducts === 'function') loadProducts();
+  } catch (e) {
+    toast(e.message || 'فشل الاستيراد', 'error');
+    btn.disabled = false;
+    btn.textContent = 'استيراد المعتمد';
+  }
+}
+
+function miStartOver() {
+  openMenuImport();
+}
+</script>
+
+<!-- ═══ MENU IMPORT MODAL ═══ -->
+<div id="menuImportModal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+  <div class="bg-[#1e293b] border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <div>
+        <h2 class="text-white font-bold text-lg flex items-center gap-2">
+          <span class="text-2xl">📁</span> رفع منيو كامل
+        </h2>
+        <p class="text-slate-400 text-xs mt-0.5">يحلل النظام ملفك تلقائياً ويستخرج المنتجات بالذكاء الاصطناعي</p>
+      </div>
+      <button onclick="closeMenuImport()" class="text-slate-400 hover:text-white text-xl px-2">✕</button>
+    </div>
+
+    <!-- Body (scrollable) -->
+    <div class="flex-1 overflow-y-auto p-6">
+
+      <!-- STATE: UPLOAD -->
+      <div id="miState_upload">
+        <!-- Dropzone -->
+        <div id="miDropzone"
+             class="border-2 border-dashed border-slate-600 hover:border-emerald-500 rounded-xl p-10 text-center cursor-pointer transition-all"
+             onclick="document.getElementById('miFileInput').click()"
+             ondragover="event.preventDefault(); this.classList.add('border-emerald-400','bg-emerald-900/20')"
+             ondragleave="this.classList.remove('border-emerald-400','bg-emerald-900/20')"
+             ondrop="event.preventDefault(); this.classList.remove('border-emerald-400','bg-emerald-900/20'); _miHandleFiles(event.dataTransfer.files)">
+          <div class="text-5xl mb-4">📂</div>
+          <p class="text-white font-semibold text-lg">اسحب الملفات هنا أو اضغط للاختيار</p>
+          <p class="text-slate-400 text-sm mt-2">يدعم: صور (JPG, PNG, WEBP) • PDF متعدد الصفحات • Word • Excel • CSV • TXT</p>
+          <p class="text-slate-500 text-xs mt-1">يمكنك رفع عدة ملفات في آن واحد • الحد الأقصى 20 MB لكل ملف</p>
+          <input id="miFileInput" type="file" class="hidden" multiple
+                 accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.docx,.txt,.csv,.xlsx,.xls"
+                 onchange="_miHandleFiles(this.files)">
+        </div>
+
+        <!-- File list -->
+        <div id="miFileList" class="mt-4 space-y-0.5"></div>
+
+        <!-- Error -->
+        <div id="miUploadErr" class="hidden mt-3 bg-red-900/30 border border-red-700 text-red-300 rounded-lg px-4 py-2 text-sm"></div>
+
+        <!-- Supported formats info -->
+        <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-slate-500">
+          <div class="bg-slate-800 rounded-lg p-2 text-center">🖼️<br>صور المنيو<br>JPG PNG WEBP</div>
+          <div class="bg-slate-800 rounded-lg p-2 text-center">📄<br>PDF<br>متعدد الصفحات</div>
+          <div class="bg-slate-800 rounded-lg p-2 text-center">📝<br>Word<br>DOCX</div>
+          <div class="bg-slate-800 rounded-lg p-2 text-center">📊<br>جدول<br>Excel • CSV</div>
+        </div>
+
+        <div class="mt-5 flex justify-end">
+          <button onclick="miStartUpload()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-8 py-2.5 rounded-xl transition flex items-center gap-2">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> تحليل وإضافة
+          </button>
+        </div>
+      </div>
+
+      <!-- STATE: PROCESSING -->
+      <div id="miState_processing" class="hidden text-center py-16">
+        <div class="inline-block w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-6"></div>
+        <p id="miProcessMsg" class="text-white text-lg font-semibold">جارٍ التحليل…</p>
+        <p id="miProcessDetail" class="text-slate-400 text-sm mt-2"></p>
+        <p class="text-slate-500 text-xs mt-4">لا تغلق هذه النافذة أثناء التحليل</p>
+      </div>
+
+      <!-- STATE: PREVIEW -->
+      <div id="miState_preview" class="hidden">
+        <!-- Stats bar -->
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+          <div class="bg-slate-800 rounded-lg px-3 py-2 text-center">
+            <div class="text-white font-bold text-lg" id="miPreviewCount">0</div>
+            <div class="text-slate-500 text-xs">منتج مستخرج</div>
+          </div>
+          <div class="bg-yellow-900/30 border border-yellow-700/40 rounded-lg px-3 py-2 text-center">
+            <div class="text-yellow-400 font-bold text-lg" id="miPreviewReview">0</div>
+            <div class="text-slate-500 text-xs">يحتاج مراجعة</div>
+          </div>
+          <div class="bg-blue-900/30 border border-blue-700/40 rounded-lg px-3 py-2 text-center">
+            <div class="text-blue-400 font-bold text-lg" id="miPreviewDups">0</div>
+            <div class="text-slate-500 text-xs">مكرر محتمل</div>
+          </div>
+          <div class="mr-auto flex gap-2 flex-wrap">
+            <button onclick="miApproveHighConf()" class="bg-emerald-700 hover:bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg transition">✅ اعتماد عالي الثقة</button>
+            <button onclick="miApproveAll()" class="bg-indigo-700 hover:bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-lg transition">✅ اعتماد الكل</button>
+            <button onclick="miSkipAll()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1.5 rounded-lg transition">⏭ تجاوز الكل</button>
+          </div>
+        </div>
+
+        <!-- Legend -->
+        <div class="flex gap-4 text-xs mb-3 flex-wrap">
+          <span class="flex items-center gap-1"><span class="w-3 h-3 bg-green-500 rounded-full inline-block"></span> ثقة عالية ≥85%</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 bg-yellow-500 rounded-full inline-block"></span> ثقة متوسطة 65–84%</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 bg-red-500 rounded-full inline-block"></span> ثقة منخفضة &lt;65%</span>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto rounded-xl border border-slate-700">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-800 text-slate-400 text-xs">
+              <tr>
+                <th class="px-3 py-2 w-8"></th>
+                <th class="px-3 py-2 text-right">المنتج</th>
+                <th class="px-3 py-2 text-right">الفئة</th>
+                <th class="px-3 py-2 text-right">السعر</th>
+                <th class="px-3 py-2 text-right">الثقة</th>
+                <th class="px-3 py-2 text-right">الإجراء</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody id="miPreviewTable"></tbody>
+          </table>
+        </div>
+
+        <!-- Footer actions -->
+        <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-700">
+          <button onclick="openMenuImport()" class="text-slate-400 hover:text-white text-sm transition">← رفع ملف آخر</button>
+          <button id="miImportBtn" onclick="miSubmitImport()"
+            class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-8 py-2.5 rounded-xl transition flex items-center gap-2">
+            <i class="fa-solid fa-database"></i> استيراد المعتمد
+          </button>
+        </div>
+      </div>
+
+      <!-- STATE: DONE -->
+      <div id="miState_done" class="hidden text-center py-10">
+        <div class="text-6xl mb-4">✅</div>
+        <h3 class="text-white text-xl font-bold mb-6">تم الاستيراد بنجاح!</h3>
+        <div class="flex justify-center gap-6 mb-6">
+          <div class="bg-green-900/30 border border-green-700/40 rounded-xl px-6 py-4">
+            <div class="text-green-400 font-bold text-3xl" id="miDoneCreated">0</div>
+            <div class="text-slate-400 text-sm mt-1">منتج جديد</div>
+          </div>
+          <div class="bg-blue-900/30 border border-blue-700/40 rounded-xl px-6 py-4">
+            <div class="text-blue-400 font-bold text-3xl" id="miDoneUpdated">0</div>
+            <div class="text-slate-400 text-sm mt-1">منتج محدّث</div>
+          </div>
+          <div class="bg-slate-800 rounded-xl px-6 py-4">
+            <div class="text-slate-400 font-bold text-3xl" id="miDoneSkipped">0</div>
+            <div class="text-slate-400 text-sm mt-1">متجاوز</div>
+          </div>
+        </div>
+        <div id="miDoneErrors" class="hidden bg-red-900/30 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm mb-6 text-right max-w-xl mx-auto"></div>
+        <div class="flex justify-center gap-3">
+          <button onclick="closeMenuImport()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl font-semibold transition">عرض المنتجات</button>
+          <button onclick="miStartOver()" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2.5 rounded-xl transition">استيراد منيو آخر</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MENU IMPORT — Edit Item Modal ═══ -->
+<div id="miEditModal" class="hidden fixed inset-0 bg-black/70 z-[60] flex items-center justify-center p-4">
+  <div class="bg-[#1e293b] border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <h3 class="text-white font-bold">تعديل المنتج</h3>
+      <button onclick="document.getElementById('miEditModal').classList.add('hidden')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <input type="hidden" id="miEditTempId">
+    <div class="space-y-3">
+      <div>
+        <label class="text-slate-400 text-xs block mb-1">الاسم</label>
+        <input id="miEditName" type="text" class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1">الفئة</label>
+        <input id="miEditCategory" type="text" class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1">السعر</label>
+        <input id="miEditPrice" type="number" step="0.01" min="0" class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1">الوصف</label>
+        <textarea id="miEditDesc" rows="2" class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none resize-none"></textarea>
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1">رابط الصورة (اختياري)</label>
+        <input id="miEditImageUrl" type="url" class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none">
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5 justify-end">
+      <button onclick="document.getElementById('miEditModal').classList.add('hidden')" class="text-slate-400 hover:text-white px-4 py-2 text-sm">إلغاء</button>
+      <button onclick="miSaveEditItem()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition">حفظ</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.badge-warn { display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:.7rem;font-weight:600;background:rgba(234,179,8,.15);color:#facc15; }
+.badge-review { display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:.7rem;font-weight:600;background:rgba(239,68,68,.15);color:#f87171; }
+</style>
+</body>
+</html>

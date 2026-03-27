@@ -1,0 +1,5 @@
+# SPA routing fallback
+/super     /super.html     200
+/super/*   /super.html     200
+/login     /login.html     200
+/*         /app.html       200
