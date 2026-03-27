@@ -1467,12 +1467,14 @@ async def test_channel(ch_type: str, user=Depends(current_user)):
 
 
 @app.post("/api/channels/telegram/register-webhook")
-async def register_telegram_webhook(user=Depends(current_user)):
+async def register_telegram_webhook(request: Request, user=Depends(current_user)):
     """Register this server's webhook URL with Telegram Bot API."""
     import httpx as _httpx
-    BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
-    if not BASE_URL:
-        raise HTTPException(400, "يجب ضبط BASE_URL في ملف .env أولاً (مثال: https://yourapp.railway.app)")
+
+    # Prefer env var; if missing or localhost, derive from actual request URL
+    base = os.getenv("BASE_URL", "").rstrip("/")
+    if not base or "localhost" in base or "127.0.0.1" in base:
+        base = str(request.base_url).rstrip("/")
 
     conn = database.get_db()
     rid = user["restaurant_id"]
@@ -1480,20 +1482,28 @@ async def register_telegram_webhook(user=Depends(current_user)):
         "SELECT * FROM channels WHERE restaurant_id=? AND type='telegram'", (rid,)
     ).fetchone()
 
-    if not ch or not ch["token"]:
+    if not ch:
         conn.close()
-        raise HTTPException(400, "يجب حفظ توكن التيليجرام أولاً")
+        raise HTTPException(400, "قناة Telegram غير موجودة — احفظ إعدادات القناة أولاً")
+    if not ch["token"]:
+        conn.close()
+        raise HTTPException(400, "Bot Token فارغ — أدخل التوكن واضغط حفظ أولاً")
 
-    webhook_url = f"{BASE_URL}/webhook/telegram/{rid}"
+    webhook_url = f"{base}/webhook/telegram/{rid}"
 
     try:
         r = _httpx.post(
             f"https://api.telegram.org/bot{ch['token']}/setWebhook",
-            json={"url": webhook_url, "allowed_updates": ["message", "edited_message"]},
-            timeout=10,
+            json={"url": webhook_url, "allowed_updates": ["message", "edited_message", "callback_query"]},
+            timeout=15,
         )
         data = r.json()
         if data.get("ok"):
+            # Verify registration via getWebhookInfo
+            info_r = _httpx.get(
+                f"https://api.telegram.org/bot{ch['token']}/getWebhookInfo", timeout=10
+            )
+            info = info_r.json().get("result", {})
             conn.execute(
                 "UPDATE channels SET webhook_url=?, connection_status='connected', last_error='', last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
                 (webhook_url, rid)
@@ -1502,24 +1512,24 @@ async def register_telegram_webhook(user=Depends(current_user)):
             conn.close()
             return {
                 "success": True,
-                "message": "تم تسجيل الويب هوك بنجاح",
+                "message": f"✅ تم تسجيل الويب هوك بنجاح",
                 "webhook_url": webhook_url,
-                "detail": data,
+                "telegram_info": info,
             }
         else:
             err = data.get("description", "فشل التسجيل")
             conn.execute(
-                "UPDATE channels SET last_error=?, last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+                "UPDATE channels SET last_error=?, connection_status='error', last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
                 (err, rid)
             )
             conn.commit()
             conn.close()
-            raise HTTPException(400, f"فشل تسجيل الويب هوك: {err}")
+            raise HTTPException(400, f"رفض Telegram الطلب: {err}")
     except HTTPException:
         raise
     except Exception as e:
         conn.close()
-        raise HTTPException(500, f"خطأ: {e}")
+        raise HTTPException(500, f"خطأ في الاتصال بـ Telegram: {e}")
 
 
 # ── Staff Management ──────────────────────────────────────────────────────────

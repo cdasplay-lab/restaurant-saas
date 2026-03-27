@@ -1773,13 +1773,15 @@ async function loadChannels() {
   document.getElementById('chansContent').classList.add('hidden');
   try {
     const channels = await api.get('/api/channels');
-    const origin = window.location.origin;
+    // Use API_BASE (backend URL) for webhook URLs, not the browser origin
+    // This ensures correct URLs when frontend is hosted separately (e.g. Netlify)
+    const backendBase = (window.API_BASE || window.location.origin).replace(/\/$/, '');
     const rid = S.user?.restaurant_id || '';
 
     const conf = {
       telegram: {
         name: 'Telegram', icon: 'fa-telegram', color: 'text-blue-400',
-        webhookUrl: `${origin}/webhook/telegram/${rid}`,
+        webhookUrl: `${backendBase}/webhook/telegram/${rid}`,
         fields: [
           { id: 'token',          label: 'Bot Token',        ph: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', secret: true },
           { id: 'bot_username',   label: 'Bot Username',     ph: '@my_restaurant_bot' },
@@ -1789,7 +1791,7 @@ async function loadChannels() {
       },
       whatsapp: {
         name: 'WhatsApp', icon: 'fa-whatsapp', color: 'text-green-400',
-        webhookUrl: `${origin}/webhook/whatsapp/${rid}`,
+        webhookUrl: `${backendBase}/webhook/whatsapp/${rid}`,
         fields: [
           { id: 'token',               label: 'Access Token',        ph: 'EAAxxxxxxxxxx...', secret: true },
           { id: 'phone_number_id',     label: 'Phone Number ID',     ph: '123456789012345' },
@@ -1801,7 +1803,7 @@ async function loadChannels() {
       },
       instagram: {
         name: 'Instagram', icon: 'fa-instagram', color: 'text-pink-400',
-        webhookUrl: `${origin}/webhook/instagram/${rid}`,
+        webhookUrl: `${backendBase}/webhook/instagram/${rid}`,
         fields: [
           { id: 'token',               label: 'Access Token',        ph: 'IGQVJxxxxxx...', secret: true },
           { id: 'business_account_id', label: 'Instagram Business ID', ph: '17841400000000000' },
@@ -1813,7 +1815,7 @@ async function loadChannels() {
       },
       facebook: {
         name: 'Facebook', icon: 'fa-facebook', color: 'text-blue-500',
-        webhookUrl: `${origin}/webhook/facebook/${rid}`,
+        webhookUrl: `${backendBase}/webhook/facebook/${rid}`,
         fields: [
           { id: 'token',        label: 'Page Access Token', ph: 'EAAxxxxxxxxxx...', secret: true },
           { id: 'page_id',      label: 'Page ID',           ph: '123456789012345' },
