@@ -472,6 +472,84 @@ async def logout():
     return {"message": "تم تسجيل الخروج"}
 
 
+class RegisterReq(BaseModel):
+    restaurant_name: str
+    owner_name: str
+    email: str
+    password: str
+    plan: Optional[str] = "trial"
+
+
+@app.post("/api/auth/register")
+async def register(request: Request, data: RegisterReq):
+    ip = request.client.host if request.client else "unknown"
+    if not _check_rate(ip, limit=5, window=60):
+        raise HTTPException(429, "طلبات كثيرة جداً — حاول بعد دقيقة")
+
+    if len(data.password) < 6:
+        raise HTTPException(400, "كلمة المرور يجب أن تكون 6 أحرف على الأقل")
+
+    plan = data.plan if data.plan in ("trial", "starter", "professional", "enterprise") else "trial"
+
+    conn = database.get_db()
+    try:
+        if conn.execute("SELECT id FROM users WHERE email=?", (data.email.lower().strip(),)).fetchone():
+            raise HTTPException(400, "البريد الإلكتروني مستخدم بالفعل")
+
+        rid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+
+        conn.execute(
+            "INSERT INTO restaurants (id, name, phone, address, plan, status) VALUES (?,?,?,?,?,'active')",
+            (rid, data.restaurant_name.strip(), "", "", plan),
+        )
+        pw_hash = _bcrypt.hashpw(data.password.encode(), _bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT INTO users (id, restaurant_id, email, password_hash, name, role) VALUES (?,?,?,?,?,?)",
+            (uid, rid, data.email.lower().strip(), pw_hash, data.owner_name.strip(), "owner"),
+        )
+        for ch_type in ["telegram", "whatsapp", "instagram", "facebook"]:
+            conn.execute(
+                "INSERT INTO channels (id, restaurant_id, type, name, enabled, verified) VALUES (?,?,?,?,0,0)",
+                (str(uuid.uuid4()), rid, ch_type, f"قناة {ch_type}"),
+            )
+        conn.execute(
+            "INSERT INTO settings (id, restaurant_id, restaurant_name, bot_enabled) VALUES (?,?,?,1)",
+            (str(uuid.uuid4()), rid, data.restaurant_name.strip()),
+        )
+        conn.execute(
+            "INSERT INTO bot_config (id, restaurant_id, system_prompt, sales_prompt) VALUES (?,?,?,?)",
+            (str(uuid.uuid4()), rid,
+             f"أنت مساعد ذكاء اصطناعي لـ {data.restaurant_name}. ساعد العملاء بكل ود واحترافية.", ""),
+        )
+        from datetime import date as _date, timedelta as _td
+        today = _date.today().isoformat()
+        trial_end = (_date.today() + _td(days=14)).isoformat()
+        conn.execute(
+            "INSERT INTO subscriptions (id, restaurant_id, plan, status, price, start_date, end_date, trial_ends_at, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), rid, plan,
+             "trial" if plan == "trial" else "active",
+             0.0, today,
+             (_date.today() + _td(days=365)).isoformat() if plan != "trial" else trial_end,
+             trial_end, "Self-registered"),
+        )
+        conn.commit()
+        logger.info(f"[register] new restaurant — name={data.restaurant_name} email={data.email} plan={plan}")
+    finally:
+        conn.close()
+
+    token = create_token({"sub": uid, "restaurant_id": rid})
+    return {
+        "token": token,
+        "user": {
+            "id": uid, "name": data.owner_name.strip(), "email": data.email.lower().strip(),
+            "role": "owner", "restaurant_id": rid,
+            "restaurant_name": data.restaurant_name.strip(), "plan": plan,
+        },
+    }
+
+
 @app.get("/api/auth/me")
 async def me(user=Depends(current_user)):
     return {k: user[k] for k in ("id", "name", "email", "role",
@@ -3035,6 +3113,12 @@ async def root():
 @app.get("/app")
 async def app_page():
     return FileResponse("public/app.html")
+
+
+@app.get("/register")
+@app.get("/register.html")
+async def register_page():
+    return FileResponse("public/register.html")
 
 
 @app.get("/super/login")
