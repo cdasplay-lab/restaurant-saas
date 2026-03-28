@@ -280,8 +280,18 @@ def _parse_spreadsheet(path: str, client) -> List[Dict]:
     try:
         if ext == ".csv":
             import csv
-            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-                rows = list(csv.reader(f))
+            # Try utf-8-sig first (handles BOM), fall back to latin-1
+            for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1256"):
+                try:
+                    with open(path, "r", encoding=enc, errors="strict") as f:
+                        rows = list(csv.reader(f))
+                    logger.info(f"CSV read OK with encoding={enc}, rows={len(rows)}")
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            if not rows:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    rows = list(csv.reader(f))
         else:
             try:
                 import openpyxl
@@ -289,16 +299,20 @@ def _parse_spreadsheet(path: str, client) -> List[Dict]:
                 ws = wb.active
                 rows = [[str(c.value if c.value is not None else "").strip() for c in row]
                         for row in ws.iter_rows()]
+                logger.info(f"Excel read OK, rows={len(rows)}")
             except ImportError:
                 logger.warning("openpyxl not installed — falling back to text mode")
                 with open(path, "r", errors="ignore") as f:
                     return _call_text(f.read(), client)
     except Exception as e:
-        logger.error(f"Spreadsheet read error: {e}")
+        logger.error(f"Spreadsheet read error: {e}", exc_info=True)
         return []
 
     if not rows:
+        logger.error("Spreadsheet: no rows read from file")
         return []
+
+    logger.info(f"Spreadsheet: total rows={len(rows)}, first row={rows[0][:6]}")
 
     # ── Try direct column mapping first ───────────────────────────────────────
     items = _spreadsheet_direct(rows)
@@ -327,6 +341,7 @@ def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
     Returns [] if no recognised 'name' column is found.
     """
     if len(rows) < 2:
+        logger.warning(f"_spreadsheet_direct: only {len(rows)} rows — need at least 2")
         return []
 
     # Find header row (first non-empty row)
@@ -336,7 +351,10 @@ def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
             header_idx = i
             break
 
-    headers = [h.strip().lower() for h in rows[header_idx]]
+    # Strip BOM, whitespace, quotes from each header and lowercase
+    raw_headers = rows[header_idx]
+    headers = [h.strip().lower().strip('"\'').replace('\ufeff', '') for h in raw_headers]
+    logger.info(f"_spreadsheet_direct: header_idx={header_idx}, headers={headers}")
 
     # Map each header to a field key
     col_map: Dict[str, int] = {}  # field_key → col_index
@@ -354,7 +372,10 @@ def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
         elif h in _COL_AVAIL:
             col_map.setdefault("available", idx)
 
+    logger.info(f"_spreadsheet_direct: col_map={col_map}")
+
     if "name" not in col_map:
+        logger.warning(f"_spreadsheet_direct: no 'name' column found. headers={headers} — will fall back to OpenAI")
         return []  # no recognised structure
 
     items: List[Dict] = []
@@ -362,11 +383,15 @@ def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
         if not row or not any(c.strip() for c in row):
             continue  # skip blank rows
 
-        def _cell(key: str, default: str = "") -> str:
-            idx = col_map.get(key)
-            if idx is None or idx >= len(row):
+        # Capture col_map and row in closure correctly
+        _cm = col_map
+        _row = row
+
+        def _cell(key: str, default: str = "", _cm=_cm, _row=_row) -> str:
+            i = _cm.get(key)
+            if i is None or i >= len(_row):
                 return default
-            return str(row[idx]).strip()
+            return str(_row[i]).strip()
 
         name = _cell("name")
         if not name or len(name) < 2:
@@ -483,7 +508,9 @@ def _normalize(raw_items: List[Dict], session_id: str) -> List[Dict]:
         if name_key not in by_name or conf > by_name[name_key]["confidence"]:
             by_name[name_key] = item
 
-    return list(by_name.values())
+    result = list(by_name.values())
+    logger.info(f"_normalize: input={len(raw_items)} raw → output={len(result)} unique items")
+    return result
 
 
 # ── Duplicate detection ────────────────────────────────────────────────────────
