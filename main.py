@@ -425,9 +425,21 @@ async def health_check():
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "ok" if db_ok else "error",
+        "db_backend": "postgresql" if database.IS_POSTGRES else "sqlite",
         "version": "3.0.0",
         "base_url": BASE_URL,
     }
+
+
+@app.post("/api/super/init-db")
+async def reinit_db(admin=Depends(current_super_admin)):
+    """Re-run init_db (seeds super admin + demo restaurant if missing). Super admin only."""
+    try:
+        database.init_db()
+        return {"ok": True, "message": "تم تهيئة قاعدة البيانات بنجاح"}
+    except Exception as e:
+        logger.error(f"[super] init-db failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

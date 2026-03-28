@@ -118,26 +118,26 @@ class _PgConnection:
         return _PgCursor(cur)
 
     def executescript(self, script: str):
-        """Execute a multi-statement SQL script (DDL)."""
-        # Adjust CREATE TABLE defaults for PostgreSQL
+        """Execute a multi-statement SQL script (DDL) with per-statement autocommit."""
         script = script.replace(
             "TEXT DEFAULT CURRENT_TIMESTAMP",
             "TEXT DEFAULT to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')"
         )
+        # Use autocommit so each DDL statement is independent — one failure doesn't rollback others
+        self._conn.autocommit = True
         cur = self._conn.cursor()
-        # Split by ; and execute each non-empty statement
         stmts = [s.strip() for s in script.split(";") if s.strip()]
+        ok = 0
         for stmt in stmts:
             try:
                 cur.execute(stmt)
+                ok += 1
             except Exception as e:
-                # Ignore "already exists" errors during DDL
-                if "already exists" in str(e).lower():
-                    self._conn.rollback()
-                else:
-                    self._conn.rollback()
-                    print(f"[DB] DDL error (ignored): {e}")
+                if "already exists" not in str(e).lower():
+                    print(f"[DB] DDL error: {e!r}")
         cur.close()
+        self._conn.autocommit = False
+        print(f"[DB] executescript: {ok}/{len(stmts)} statements OK")
 
     def commit(self):
         self._conn.commit()
@@ -497,40 +497,71 @@ def _migrate_db(conn):
 
 
 def init_db():
+    print(f"[DB] init_db starting — backend={'PostgreSQL' if IS_POSTGRES else 'SQLite'}")
     conn = get_db()
+
+    # ── Create schema ────────────────────────────────────────────────────────
     if IS_POSTGRES:
         conn.executescript(CREATE_TABLES_SQL)
-        conn.commit()
+        # executescript uses autocommit; no explicit commit needed
     else:
         c = conn.cursor()
         c.executescript(CREATE_TABLES_SQL)
         conn.commit()
-        c = conn  # reuse for seed check
 
+    # ── Migrations & indexes ─────────────────────────────────────────────────
     _migrate_db(conn)
     _create_indexes(conn)
-
     if IS_POSTGRES:
-        row = conn.execute("SELECT COUNT(*) as cnt FROM restaurants").fetchone()
-        existing = row["cnt"]
-    else:
-        row = conn.execute("SELECT COUNT(*) FROM restaurants").fetchone()
-        existing = row[0]
+        conn.commit()
+
+    # ── Seed restaurant data (only if empty) ─────────────────────────────────
+    try:
+        if IS_POSTGRES:
+            row = conn.execute("SELECT COUNT(*) as cnt FROM restaurants").fetchone()
+            existing = int(row["cnt"])
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM restaurants").fetchone()
+            existing = row[0]
+        print(f"[DB] restaurants count = {existing}")
+    except Exception as e:
+        print(f"[DB] ERROR reading restaurants count: {e}")
+        existing = 1  # assume non-empty to avoid bad seed attempt
 
     if existing == 0:
-        _seed_data(conn)
+        try:
+            _seed_data(conn)
+            print("[DB] seed data inserted OK")
+        except Exception as e:
+            print(f"[DB] ERROR in _seed_data: {e}")
+            try:
+                conn.commit()  # partial commit — better than nothing
+            except Exception:
+                pass
 
-    # Seed super admin independently
-    if IS_POSTGRES:
-        sa_row = conn.execute("SELECT COUNT(*) as cnt FROM super_admins").fetchone()
-        sa_count = sa_row["cnt"]
-    else:
-        sa_row = conn.execute("SELECT COUNT(*) FROM super_admins").fetchone()
-        sa_count = sa_row[0]
+    # ── Seed super admin (always ensure at least one exists) ─────────────────
+    try:
+        if IS_POSTGRES:
+            sa_row = conn.execute("SELECT COUNT(*) as cnt FROM super_admins").fetchone()
+            sa_count = int(sa_row["cnt"])
+        else:
+            sa_row = conn.execute("SELECT COUNT(*) FROM super_admins").fetchone()
+            sa_count = sa_row[0]
+        print(f"[DB] super_admins count = {sa_count}")
+    except Exception as e:
+        print(f"[DB] ERROR reading super_admins count: {e}")
+        sa_count = 1
+
     if sa_count == 0:
-        _seed_super_admin(conn)
+        try:
+            _seed_super_admin(conn)
+        except Exception as e:
+            print(f"[DB] ERROR in _seed_super_admin: {e}")
 
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
     print(f"✅ Database initialized ({'PostgreSQL' if IS_POSTGRES else 'SQLite'})")
 
@@ -548,6 +579,7 @@ def _seed_super_admin(conn):
     conn.execute("""
         INSERT INTO super_admins (id, email, password_hash, name)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT(email) DO NOTHING
     """, (str(uuid.uuid4()), "superadmin@platform.com", _hash("super123"), "Super Admin"))
     conn.commit()
     print("✅ Super admin seeded — login: superadmin@platform.com / super123")
