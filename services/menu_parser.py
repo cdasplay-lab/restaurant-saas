@@ -631,7 +631,7 @@ def _dispatch_non_image(path: str, name: str, client) -> List[Dict]:
         return _parse_docx(path, client)
     elif ext in {".xlsx", ".xls", ".csv"}:
         logger.info(f"[dispatch] → _parse_spreadsheet (direct column mapping, no OpenAI)")
-        return _parse_spreadsheet(path, name, client)
+        return _parse_spreadsheet(path, client, file_name=name)
     elif ext == ".txt":
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return _call_text(f.read(), client)
