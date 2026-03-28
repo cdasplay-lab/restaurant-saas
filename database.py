@@ -12,11 +12,27 @@ import sqlite3
 import uuid
 import json
 import os
+import re
+import threading
 from datetime import datetime, timedelta
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_PATH = os.getenv("DB_PATH", "restaurant.db")
 IS_POSTGRES = bool(DATABASE_URL)
+
+# Connection pool (PostgreSQL only)
+_pg_pool = None
+_pg_pool_lock = threading.Lock()
+
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        with _pg_pool_lock:
+            if _pg_pool is None:
+                import psycopg2.pool
+                _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+    return _pg_pool
 
 
 # ── PostgreSQL compatibility layer ────────────────────────────────────────────
@@ -80,8 +96,9 @@ class _PgCursor:
 class _PgConnection:
     """Wraps a psycopg2 connection to provide a sqlite3-compatible interface."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, pool=None):
         self._conn = conn
+        self._pool = pool
 
     def execute(self, sql: str, params=None):
         import psycopg2.extras
@@ -92,6 +109,10 @@ class _PgConnection:
             "CURRENT_TIMESTAMP",
             "to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')"
         )
+        # DATE(col) → (col)::date  (SQLite-only function)
+        sql = re.sub(r'\bDATE\(([^)]+)\)', r'(\1)::date', sql)
+        # strftime('%Y-%m', col) → to_char((col)::timestamp, 'YYYY-MM')
+        sql = re.sub(r"strftime\('%Y-%m',\s*([^)]+)\)", r"to_char((\1)::timestamp, 'YYYY-MM')", sql)
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql, params or [])
         return _PgCursor(cur)
@@ -122,16 +143,19 @@ class _PgConnection:
         self._conn.commit()
 
     def close(self):
-        self._conn.close()
+        if self._pool is not None:
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
 
 
 def get_db():
     """Return a database connection. Uses PostgreSQL if DATABASE_URL is set, else SQLite."""
     if IS_POSTGRES:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
+        pool = _get_pg_pool()
+        conn = pool.getconn()
         conn.autocommit = False
-        return _PgConnection(conn)
+        return _PgConnection(conn, pool)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

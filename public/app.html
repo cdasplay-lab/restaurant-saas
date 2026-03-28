@@ -1570,6 +1570,11 @@ async function uploadProductImage(fileInput) {
   const file = fileInput.files[0];
   if (!file) return;
   const statusEl = document.getElementById('pImageUploadStatus');
+  if (file.size > 10 * 1024 * 1024) {
+    if (statusEl) { statusEl.textContent = 'حجم الصورة يجب أن يكون أقل من 10 MB'; statusEl.classList.remove('hidden'); }
+    toast('حجم الصورة يجب أن يكون أقل من 10 MB', 'error');
+    return;
+  }
   if (statusEl) { statusEl.textContent = 'جارٍ الرفع...'; statusEl.classList.remove('hidden'); }
   try {
     const form = new FormData();
@@ -1840,7 +1845,9 @@ async function loadChannels() {
               </div>
               <div>
                 <p class="text-white font-semibold">${c.name}</p>
-                <p class="text-slate-500 text-xs">${ch.verified ? '✅ متحقق' : '⚠️ غير متحقق'}</p>
+                <p class="text-xs ${ch.connection_status === 'connected' ? 'text-green-400' : ch.connection_status === 'error' ? 'text-red-400' : 'text-slate-500'}">
+                  ${ch.connection_status === 'connected' ? '✅ متصل' : ch.connection_status === 'error' ? '❌ خطأ في الاتصال' : '⚠️ لم يُختبر بعد'}
+                </p>
               </div>
             </div>
             <label class="flex items-center gap-2 cursor-pointer">
@@ -1872,6 +1879,16 @@ async function loadChannels() {
                   placeholder="${f.ph}" type="${f.secret ? 'password' : 'text'}"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs focus:border-indigo-500 font-mono">
               </div>`).join('')}
+          </div>
+          <!-- Token status + last error -->
+          <div class="mb-3 space-y-1">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="${ch.token ? 'text-green-400' : 'text-yellow-400'}">
+                ${ch.token ? '🔑 توكن محفوظ' : '⚠️ لا يوجد توكن — أدخل التوكن واضغط حفظ'}
+              </span>
+              ${ch.last_tested_at ? `<span class="text-slate-600">• آخر اختبار: ${new Date(ch.last_tested_at).toLocaleString('ar')}</span>` : ''}
+            </div>
+            ${ch.last_error ? `<div class="bg-red-900/30 border border-red-800 rounded-lg px-3 py-1.5 text-red-300 text-xs font-mono break-all">${ch.last_error}</div>` : ''}
           </div>
           <div class="flex gap-2 flex-wrap">
             <button onclick="saveChannel('${ch.type}',${JSON.stringify(fieldIds)})"
@@ -1905,9 +1922,22 @@ async function saveChannel(type, fieldIds) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+async function _autoSaveChannel(type) {
+  const data = { enabled: document.getElementById(`ch-enabled-${type}`)?.checked || false };
+  document.querySelectorAll(`[id^="ch-"][id$="-${type}"]`).forEach(el => {
+    if (el.id === `ch-enabled-${type}`) return;
+    // Don't overwrite a saved secret with an empty value — user may not have re-entered it
+    if (el.type === 'password' && !el.value.trim()) return;
+    const field = el.id.replace(/^ch-/, '').replace(new RegExp(`-${type}$`), '');
+    data[field] = el.value;
+  });
+  await api.put(`/api/channels/${type}`, data);
+}
+
 async function testChannel(type) {
   try {
     toast('جاري الاختبار...', 'info');
+    await _autoSaveChannel(type);
     const r = await api.post(`/api/channels/${type}/test`);
     toast(r.message, r.success ? 'success' : 'error');
     loadChannels();
@@ -1917,6 +1947,7 @@ async function testChannel(type) {
 async function registerTelegramWebhook() {
   try {
     toast('جاري تسجيل الويب هوك...', 'info');
+    await _autoSaveChannel('telegram');
     const r = await api.post('/api/channels/telegram/register-webhook');
     toast(r.message, 'success');
     loadChannels();

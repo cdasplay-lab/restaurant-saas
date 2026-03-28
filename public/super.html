@@ -145,7 +145,7 @@
 
     <!-- === RESTAURANTS === -->
     <section id="sec-restaurants" class="section space-y-4">
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
         <input id="restSearch" type="text" placeholder="بحث باسم المطعم أو المالك..." oninput="filterRestaurants()" class="max-w-xs">
         <select id="restFilter" onchange="filterRestaurants()" class="max-w-xs">
           <option value="">جميع الحالات</option>
@@ -155,6 +155,7 @@
           <option value="expired">منتهي</option>
           <option value="archived">مؤرشف</option>
         </select>
+        <button onclick="openCreateRestModal()" class="mr-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg font-semibold transition">+ مطعم جديد</button>
       </div>
       <div class="card overflow-hidden">
         <table class="w-full text-sm">
@@ -383,6 +384,61 @@
   </div>
 </div>
 
+<!-- === MODAL: Create Restaurant === -->
+<div id="createRestModal" class="modal-bg hidden">
+  <div class="modal-box p-6">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold text-lg">➕ إنشاء مطعم جديد</h2>
+      <button onclick="closeModal('createRestModal')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <form id="createRestForm" class="space-y-4" onsubmit="submitCreateRest(event)">
+      <div>
+        <label class="block text-slate-400 text-xs mb-1">اسم المطعم *</label>
+        <input id="crName" type="text" required placeholder="مثال: مطعم الفخر" class="w-full text-sm">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">اسم المالك *</label>
+          <input id="crOwnerName" type="text" required placeholder="محمد أحمد" class="w-full text-sm">
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">الخطة</label>
+          <select id="crPlan" class="w-full text-sm">
+            <option value="trial">تجربة (14 يوم)</option>
+            <option value="starter">Starter</option>
+            <option value="professional">Professional</option>
+            <option value="enterprise">Enterprise</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="block text-slate-400 text-xs mb-1">البريد الإلكتروني *</label>
+        <input id="crEmail" type="email" required placeholder="owner@restaurant.com" class="w-full text-sm" dir="ltr">
+      </div>
+      <div>
+        <label class="block text-slate-400 text-xs mb-1">كلمة المرور *</label>
+        <input id="crPassword" type="password" required placeholder="8 أحرف على الأقل" class="w-full text-sm" dir="ltr">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">رقم الهاتف</label>
+          <input id="crPhone" type="text" placeholder="+966..." class="w-full text-sm" dir="ltr">
+        </div>
+        <div>
+          <label class="block text-slate-400 text-xs mb-1">العنوان</label>
+          <input id="crAddress" type="text" placeholder="المدينة، الحي" class="w-full text-sm">
+        </div>
+      </div>
+      <div id="createRestError" class="hidden bg-red-500/20 text-red-300 rounded-lg px-3 py-2 text-sm"></div>
+      <div id="createRestSuccess" class="hidden bg-green-500/20 text-green-300 rounded-lg px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 justify-end">
+        <button type="button" onclick="closeModal('createRestModal')" class="btn btn-ghost">إلغاء</button>
+        <button type="submit" id="createRestBtn" class="btn btn-primary">إنشاء المطعم</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- === MODAL: Update Restaurant === -->
 <div id="editRestModal" class="modal-bg hidden">
   <div class="modal-box p-6">
@@ -561,6 +617,48 @@ async function loadRestaurants() {
     allRestaurants = data.restaurants || data;
     renderRestaurants(allRestaurants);
   } catch(e) { showToast(e.message, 'error'); }
+}
+
+function openCreateRestModal() {
+  document.getElementById('createRestForm').reset();
+  document.getElementById('createRestError').classList.add('hidden');
+  document.getElementById('createRestSuccess').classList.add('hidden');
+  document.getElementById('createRestBtn').disabled = false;
+  document.getElementById('createRestModal').classList.remove('hidden');
+}
+
+async function submitCreateRest(e) {
+  e.preventDefault();
+  const errEl = document.getElementById('createRestError');
+  const sucEl = document.getElementById('createRestSuccess');
+  const btn   = document.getElementById('createRestBtn');
+  errEl.classList.add('hidden');
+  sucEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.textContent = 'جارٍ الإنشاء…';
+  try {
+    const result = await api('/api/super/restaurants', {
+      method: 'POST',
+      body: JSON.stringify({
+        name:           document.getElementById('crName').value.trim(),
+        owner_name:     document.getElementById('crOwnerName').value.trim(),
+        owner_email:    document.getElementById('crEmail').value.trim(),
+        owner_password: document.getElementById('crPassword').value,
+        plan:           document.getElementById('crPlan').value,
+        phone:          document.getElementById('crPhone').value.trim(),
+        address:        document.getElementById('crAddress').value.trim(),
+      }),
+    });
+    sucEl.textContent = `✅ ${result.message || 'تم الإنشاء'} — البريد: ${result.owner_email}`;
+    sucEl.classList.remove('hidden');
+    btn.textContent = 'تم ✓';
+    loadRestaurants();
+  } catch(e) {
+    errEl.textContent = e.message || 'فشل الإنشاء';
+    errEl.classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = 'إنشاء المطعم';
+  }
 }
 
 function filterRestaurants() {

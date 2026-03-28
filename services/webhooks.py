@@ -4,12 +4,15 @@ Webhook handlers for Telegram, WhatsApp, Instagram, and Facebook Messenger.
 import uuid
 import json
 import os
+import logging
 from typing import Optional
 
 import httpx
 
 import database
 from services import bot
+
+logger = logging.getLogger("restaurant-saas")
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -35,8 +38,11 @@ def _get_openai():
 
 def handle_telegram(restaurant_id: str, update: dict) -> None:
     """Process an incoming Telegram update (text or voice/audio)."""
+    update_id = update.get("update_id", "?")
+    logger.info(f"[telegram] incoming update #{update_id} for restaurant {restaurant_id}")
     message = update.get("message") or update.get("edited_message")
     if not message:
+        logger.debug(f"[telegram] update #{update_id} has no message — skipping")
         return
 
     chat_id = str(message.get("chat", {}).get("id", ""))
@@ -139,7 +145,7 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
         return file_url, transcript
 
     except Exception as e:
-        print(f"[webhooks] voice transcription error: {e}")
+        logger.error(f"[telegram] voice transcription error: {e}")
         return "", ""
 
 
@@ -466,14 +472,23 @@ def _send_reply(channel_data: dict, text: str) -> None:
             if page_token and recipient_id:
                 _send_facebook_messenger(page_token, recipient_id, text)
     except Exception as e:
-        print(f"[webhooks] send error on {platform}: {e}")
+        logger.error(f"[webhooks] send error on {platform}: {e}")
 
 
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
     """Send a message via Telegram Bot API."""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    with httpx.Client(timeout=10) as client:
-        client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    # Do NOT use parse_mode=HTML — unescaped < > & in AI replies causes silent 400 from Telegram
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(url, json={"chat_id": chat_id, "text": text})
+        result = r.json()
+        if result.get("ok"):
+            logger.info(f"[telegram] sendMessage OK → chat_id={chat_id}")
+        else:
+            logger.error(f"[telegram] sendMessage FAILED → chat_id={chat_id} | {result.get('description', result)}")
+    except Exception as e:
+        logger.error(f"[telegram] sendMessage exception → chat_id={chat_id} | {e}")
 
 
 def _send_whatsapp(access_token: str, phone_number_id: str, to: str, text: str) -> None:
@@ -490,8 +505,16 @@ def _send_whatsapp(access_token: str, phone_number_id: str, to: str, text: str) 
         "type": "text",
         "text": {"body": text},
     }
-    with httpx.Client(timeout=10) as client:
-        client.post(url, headers=headers, json=payload)
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(url, headers=headers, json=payload)
+        result = r.json()
+        if r.status_code == 200:
+            logger.info(f"[whatsapp] sendMessage OK → to={to}")
+        else:
+            logger.error(f"[whatsapp] sendMessage FAILED → to={to} | {result}")
+    except Exception as e:
+        logger.error(f"[whatsapp] sendMessage exception → to={to} | {e}")
 
 
 def _send_facebook_messenger(page_token: str, recipient_id: str, text: str) -> None:
@@ -502,8 +525,16 @@ def _send_facebook_messenger(page_token: str, recipient_id: str, text: str) -> N
         "recipient": {"id": recipient_id},
         "message": {"text": text},
     }
-    with httpx.Client(timeout=10) as client:
-        client.post(url, params=params, json=payload)
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(url, params=params, json=payload)
+        result = r.json()
+        if r.status_code == 200:
+            logger.info(f"[messenger] sendMessage OK → recipient={recipient_id}")
+        else:
+            logger.error(f"[messenger] sendMessage FAILED → recipient={recipient_id} | {result}")
+    except Exception as e:
+        logger.error(f"[messenger] sendMessage exception → recipient={recipient_id} | {e}")
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -1340,6 +1340,8 @@ async def update_channel(ch_type: str, data: ChannelUpdate, user=Depends(current
     rid = user["restaurant_id"]
     existing = conn.execute("SELECT * FROM channels WHERE restaurant_id=? AND type=?",
                             (rid, ch_type)).fetchone()
+    token_action = "provided" if data.token else "not provided"
+    logger.info(f"[channel] save {ch_type} for restaurant={rid} token={token_action}")
     if not existing:
         conn.execute("""
             INSERT INTO channels (id, restaurant_id, type, name, token, webhook_url, username, enabled)
@@ -1380,14 +1382,17 @@ async def update_channel(ch_type: str, data: ChannelUpdate, user=Depends(current
 async def test_channel(ch_type: str, user=Depends(current_user)):
     import httpx as _httpx
     conn = database.get_db()
+    rid = user["restaurant_id"]
     ch = conn.execute("SELECT * FROM channels WHERE restaurant_id=? AND type=?",
-                      (user["restaurant_id"], ch_type)).fetchone()
+                      (rid, ch_type)).fetchone()
     if not ch:
         conn.close()
         raise HTTPException(404, "القناة غير موجودة")
     if not ch["token"]:
+        logger.warning(f"[channel] test {ch_type} failed — no token in DB for restaurant={rid}")
         conn.close()
         raise HTTPException(400, "يجب إدخال التوكن أولاً")
+    logger.info(f"[channel] testing {ch_type} for restaurant={rid}")
 
     rid = user["restaurant_id"]
     result = {"success": False, "message": "", "detail": {}}
@@ -1410,6 +1415,7 @@ async def test_channel(ch_type: str, user=Depends(current_user)):
                     "UPDATE channels SET verified=1, connection_status='connected', last_error='', last_tested_at=CURRENT_TIMESTAMP, bot_username=? WHERE restaurant_id=? AND type=?",
                     (bot_info.get("username", ""), rid, ch_type)
                 )
+                logger.info(f"[telegram] test OK — bot=@{bot_info.get('username', '?')} restaurant={rid}")
             else:
                 err = data.get("description", "خطأ غير معروف")
                 result = {"success": False, "message": f"فشل الاتصال: {err}", "detail": data}
@@ -1417,6 +1423,7 @@ async def test_channel(ch_type: str, user=Depends(current_user)):
                     "UPDATE channels SET connection_status='error', last_error=?, last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type=?",
                     (err, rid, ch_type)
                 )
+                logger.error(f"[telegram] test FAILED — restaurant={rid} | {err}")
         except Exception as e:
             err = str(e)
             result = {"success": False, "message": f"خطأ في الاتصال: {err}", "detail": {}}
@@ -1424,6 +1431,7 @@ async def test_channel(ch_type: str, user=Depends(current_user)):
                 "UPDATE channels SET connection_status='error', last_error=?, last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type=?",
                 (err, rid, ch_type)
             )
+            logger.error(f"[telegram] test exception — restaurant={rid} | {err}")
 
     elif ch_type in ("whatsapp", "instagram", "facebook"):
         # For Meta platforms, verify the token is non-empty and try to call the Graph API
@@ -1486,10 +1494,12 @@ async def register_telegram_webhook(request: Request, user=Depends(current_user)
         conn.close()
         raise HTTPException(400, "قناة Telegram غير موجودة — احفظ إعدادات القناة أولاً")
     if not ch["token"]:
+        logger.warning(f"[telegram] register-webhook failed — no token in DB for restaurant={rid}")
         conn.close()
         raise HTTPException(400, "Bot Token فارغ — أدخل التوكن واضغط حفظ أولاً")
 
     webhook_url = f"{base}/webhook/telegram/{rid}"
+    logger.info(f"[telegram] registering webhook for restaurant={rid} url={webhook_url}")
 
     try:
         r = _httpx.post(
@@ -1510,6 +1520,7 @@ async def register_telegram_webhook(request: Request, user=Depends(current_user)
             )
             conn.commit()
             conn.close()
+            logger.info(f"[telegram] webhook registered OK — restaurant={rid} url={webhook_url}")
             return {
                 "success": True,
                 "message": f"✅ تم تسجيل الويب هوك بنجاح",
@@ -1524,11 +1535,13 @@ async def register_telegram_webhook(request: Request, user=Depends(current_user)
             )
             conn.commit()
             conn.close()
+            logger.error(f"[telegram] setWebhook FAILED — restaurant={rid} | {err}")
             raise HTTPException(400, f"رفض Telegram الطلب: {err}")
     except HTTPException:
         raise
     except Exception as e:
         conn.close()
+        logger.error(f"[telegram] register-webhook exception — restaurant={rid} | {e}")
         raise HTTPException(500, f"خطأ في الاتصال بـ Telegram: {e}")
 
 
@@ -1774,6 +1787,7 @@ async def mark_all_read(user=Depends(current_user)):
 @app.post("/webhook/telegram/{restaurant_id}")
 async def webhook_telegram(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     update = await req.json()
+    logger.info(f"[webhook] telegram POST received — restaurant={restaurant_id} update_id={update.get('update_id','?')}")
     background_tasks.add_task(webhooks.handle_telegram, restaurant_id, update)
     return {"ok": True}
 
@@ -1792,14 +1806,17 @@ async def verify_whatsapp(restaurant_id: str, req: Request):
     conn.close()
 
     stored_token = ch["verify_token"] if ch and "verify_token" in ch.keys() else ""
-    if mode == "subscribe" and token == stored_token:
-        return int(challenge) if challenge.isdigit() else challenge
+    if mode == "subscribe" and token and token == stored_token:
+        # Meta requires plain text challenge response — JSON would fail verification
+        return PlainTextResponse(challenge)
+    logger.warning(f"[whatsapp] webhook verify failed: restaurant={restaurant_id} mode={mode}")
     raise HTTPException(403, "Verification failed")
 
 
 @app.post("/webhook/whatsapp/{restaurant_id}")
 async def webhook_whatsapp(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     data = await req.json()
+    logger.info(f"[webhook] whatsapp POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_whatsapp, restaurant_id, data)
     return {"status": "ok"}
 
@@ -1818,14 +1835,16 @@ async def verify_instagram(restaurant_id: str, req: Request):
     conn.close()
 
     stored_token = ch["verify_token"] if ch and "verify_token" in ch.keys() else ""
-    if mode == "subscribe" and token == stored_token:
-        return int(challenge) if challenge.isdigit() else challenge
+    if mode == "subscribe" and token and token == stored_token:
+        return PlainTextResponse(challenge)
+    logger.warning(f"[instagram] webhook verify failed: restaurant={restaurant_id} mode={mode}")
     raise HTTPException(403, "Verification failed")
 
 
 @app.post("/webhook/instagram/{restaurant_id}")
 async def webhook_instagram(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     data = await req.json()
+    logger.info(f"[webhook] instagram POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_instagram, restaurant_id, data)
     return {"status": "ok"}
 
@@ -1844,14 +1863,16 @@ async def verify_facebook(restaurant_id: str, req: Request):
     conn.close()
 
     stored_token = ch["verify_token"] if ch and "verify_token" in ch.keys() else ""
-    if mode == "subscribe" and token == stored_token:
-        return int(challenge) if challenge.isdigit() else challenge
+    if mode == "subscribe" and token and token == stored_token:
+        return PlainTextResponse(challenge)
+    logger.warning(f"[facebook] webhook verify failed: restaurant={restaurant_id} mode={mode}")
     raise HTTPException(403, "Verification failed")
 
 
 @app.post("/webhook/facebook/{restaurant_id}")
 async def webhook_facebook(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     data = await req.json()
+    logger.info(f"[webhook] facebook POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_facebook, restaurant_id, data)
     return {"status": "ok"}
 
@@ -1876,6 +1897,16 @@ class SuperRestUpdate(BaseModel):
     status: Optional[str] = None        # active / suspended / expired
     internal_notes: Optional[str] = None
     plan: Optional[str] = None
+
+
+class SuperRestCreate(BaseModel):
+    name: str
+    owner_email: str
+    owner_password: str
+    owner_name: str
+    plan: Optional[str] = "trial"
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
 
 
 def _sa_log(conn, admin_id: str, admin_name: str, action: str,
@@ -2021,7 +2052,90 @@ async def super_list_restaurants(
         conn.close()
 
 
-# ── Restaurant Details ────────────────────────────────────────────────────────
+# ── Create Restaurant ─────────────────────────────────────────────────────────
+
+@app.post("/api/super/restaurants", status_code=201)
+async def super_create_restaurant(
+    data: SuperRestCreate,
+    request: Request,
+    admin=Depends(current_super_admin),
+):
+    """Create a new restaurant with an owner account and default channels/settings."""
+    conn = database.get_db()
+    try:
+        # Check email is not already taken
+        if conn.execute("SELECT id FROM users WHERE email=?", (data.owner_email,)).fetchone():
+            raise HTTPException(400, f"البريد الإلكتروني مستخدم بالفعل: {data.owner_email}")
+
+        rid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        plan = data.plan or "trial"
+
+        # Restaurant row
+        conn.execute(
+            "INSERT INTO restaurants (id, name, description, phone, address, plan, status) VALUES (?,?,?,?,?,?,'active')",
+            (rid, data.name, "", data.phone or "", data.address or "", plan),
+        )
+
+        # Owner user
+        pw_hash = _bcrypt.hashpw(data.owner_password.encode(), _bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT INTO users (id, restaurant_id, email, password_hash, name, role) VALUES (?,?,?,?,?,?)",
+            (uid, rid, data.owner_email, pw_hash, data.owner_name, "owner"),
+        )
+
+        # Default channels (empty tokens)
+        for ch_type in ["telegram", "whatsapp", "instagram", "facebook"]:
+            conn.execute(
+                "INSERT INTO channels (id, restaurant_id, type, name, enabled, verified) VALUES (?,?,?,?,0,0)",
+                (str(uuid.uuid4()), rid, ch_type, f"قناة {ch_type}"),
+            )
+
+        # Settings row
+        conn.execute(
+            "INSERT INTO settings (id, restaurant_id, restaurant_name, bot_enabled) VALUES (?,?,?,1)",
+            (str(uuid.uuid4()), rid, data.name),
+        )
+
+        # Bot config row
+        conn.execute(
+            "INSERT INTO bot_config (id, restaurant_id, system_prompt, sales_prompt) VALUES (?,?,?,?)",
+            (str(uuid.uuid4()), rid,
+             f"أنت مساعد ذكاء اصطناعي لـ {data.name}. ساعد العملاء بكل ود واحترافية.",
+             ""),
+        )
+
+        # Subscription
+        from datetime import date as _date, timedelta as _td
+        today = _date.today().isoformat()
+        trial_end = (_date.today() + _td(days=14)).isoformat()
+        conn.execute(
+            "INSERT INTO subscriptions (id, restaurant_id, plan, status, price, start_date, end_date, trial_ends_at, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), rid, plan,
+             "trial" if plan == "trial" else "active",
+             0.0, today,
+             (_date.today() + _td(days=365)).isoformat() if plan != "trial" else trial_end,
+             trial_end, "Created by super admin"),
+        )
+
+        conn.commit()
+        _sa_log(conn, admin["id"], admin["name"], "restaurant_created", "restaurant", rid,
+                f"إنشاء مطعم: {data.name}", request.client.host if request.client else "")
+        conn.commit()
+        logger.info(f"[super] restaurant created — name={data.name} email={data.owner_email} plan={plan}")
+        return {
+            "id": rid,
+            "name": data.name,
+            "owner_email": data.owner_email,
+            "plan": plan,
+            "message": f"✅ تم إنشاء المطعم بنجاح — يمكن الدخول الآن بـ {data.owner_email}",
+        }
+    finally:
+        conn.close()
+
+
+# ── Restaurant Details ─────────────────────────────────────────────────────────
 
 @app.get("/api/super/restaurants/{rid}")
 async def super_get_restaurant(rid: str, admin=Depends(current_super_admin)):
