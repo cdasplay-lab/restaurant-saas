@@ -270,12 +270,14 @@ def _parse_docx(path: str, client) -> List[Dict]:
         return []
 
 
-def _parse_spreadsheet(path: str, client) -> List[Dict]:
+def _parse_spreadsheet(path: str, client, file_name: str = "") -> List[Dict]:
     """Parse .xlsx/.xls or .csv.
     - If the file has recognised column headers (name/price/category/...) → direct mapping, no OpenAI.
     - Otherwise → convert to text and call GPT-4o.
     """
-    ext = Path(path).suffix.lower()
+    # Use original filename extension if provided, otherwise derive from path
+    ext = Path(file_name).suffix.lower() if file_name else Path(path).suffix.lower()
+    logger.info(f"[spreadsheet] START file='{file_name or path}' ext='{ext}' — will try direct column mapping first")
     rows: List[List[str]] = []
     try:
         if ext == ".csv":
@@ -351,10 +353,16 @@ def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
             header_idx = i
             break
 
-    # Strip BOM, whitespace, quotes from each header and lowercase
+    # Strip BOM, all Unicode whitespace, quotes, then lowercase
     raw_headers = rows[header_idx]
-    headers = [h.strip().lower().strip('"\'').replace('\ufeff', '') for h in raw_headers]
-    logger.info(f"_spreadsheet_direct: header_idx={header_idx}, headers={headers}")
+    def _clean_h(h: str) -> str:
+        import unicodedata
+        # Remove BOM and normalize unicode whitespace
+        h = h.replace('\ufeff', '').replace('\xa0', ' ')
+        h = ''.join(c for c in h if not unicodedata.category(c).startswith('C'))  # strip control chars
+        return h.strip().lower().strip('"\'` ')
+    headers = [_clean_h(h) for h in raw_headers]
+    logger.info(f"_spreadsheet_direct: header_idx={header_idx}, raw={raw_headers}, cleaned={headers}")
 
     # Map each header to a field key
     col_map: Dict[str, int] = {}  # field_key → col_index
@@ -616,12 +624,14 @@ def parse_files(file_paths: List[str], file_names: List[str], session_id: str) -
 
 def _dispatch_non_image(path: str, name: str, client) -> List[Dict]:
     ext = Path(name).suffix.lower()
+    logger.info(f"[dispatch] file='{name}' ext='{ext}' path='{path}'")
     if ext == ".pdf":
         return _parse_pdf(path, client)
     elif ext == ".docx":
         return _parse_docx(path, client)
     elif ext in {".xlsx", ".xls", ".csv"}:
-        return _parse_spreadsheet(path, client)
+        logger.info(f"[dispatch] → _parse_spreadsheet (direct column mapping, no OpenAI)")
+        return _parse_spreadsheet(path, name, client)
     elif ext == ".txt":
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return _call_text(f.read(), client)
