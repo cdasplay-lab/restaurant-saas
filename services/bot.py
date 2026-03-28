@@ -5,9 +5,12 @@ Handles conversation processing, order extraction, and escalation detection.
 import os
 import json
 import re
+import logging
 from typing import Optional
 
 import database
+
+logger = logging.getLogger("restaurant-saas")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -28,12 +31,15 @@ def _get_client():
     if _openai_client is not None:
         return _openai_client
     if not OPENAI_API_KEY:
+        logger.error("[bot] OPENAI_API_KEY is not set — bot cannot call OpenAI")
         return None
     try:
         import openai
         _openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        logger.info(f"[bot] OpenAI client initialized (key prefix: {OPENAI_API_KEY[:8]}...)")
         return _openai_client
-    except Exception:
+    except Exception as e:
+        logger.error(f"[bot] Failed to initialize OpenAI client: {e}", exc_info=True)
         return None
 
 
@@ -143,13 +149,14 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # Call OpenAI
     client = _get_client()
     if not client:
-        # No OpenAI key — return a simple fallback
+        logger.error(f"[bot] No OpenAI client for restaurant={restaurant_id} — OPENAI_API_KEY missing or failed to init")
         return {
             "reply": "مرحباً! يسعدني مساعدتك. كيف يمكنني خدمتك؟",
             "action": "reply",
             "extracted_order": None,
         }
 
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         role = "user" if h["role"] == "customer" else "assistant"
@@ -157,14 +164,17 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     messages.append({"role": "user", "content": customer_message})
 
     try:
+        logger.info(f"[bot] calling OpenAI model={model} restaurant={restaurant_id} conv={conversation_id}")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=messages,
             max_tokens=500,
             temperature=0.7,
         )
         reply_text = response.choices[0].message.content.strip()
+        logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} reply_len={len(reply_text)}")
     except Exception as e:
+        logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
 
