@@ -40,6 +40,19 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
     """Process an incoming Telegram update (text or voice/audio)."""
     update_id = update.get("update_id", "?")
     logger.info(f"[telegram] incoming update #{update_id} for restaurant {restaurant_id}")
+
+    # Early check: restaurant must exist before we do anything
+    _conn = database.get_db()
+    _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    _conn.close()
+    if not _rest:
+        logger.error(
+            f"[telegram] ORPHANED WEBHOOK — restaurant_id={restaurant_id} does NOT exist in DB. "
+            f"update_id={update_id}. SQLite was wiped on Render deploy. "
+            "ACTION REQUIRED: migrate to PostgreSQL (render.yaml already configured) then re-register webhook."
+        )
+        return
+
     message = update.get("message") or update.get("edited_message")
     if not message:
         logger.debug(f"[telegram] update #{update_id} has no message — skipping")
@@ -153,6 +166,13 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
 
 def handle_whatsapp(restaurant_id: str, data: dict) -> None:
     """Process an incoming WhatsApp Cloud API message."""
+    _conn = database.get_db()
+    _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    _conn.close()
+    if not _rest:
+        logger.error(f"[whatsapp] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB. Re-register after PostgreSQL migration.")
+        return
+
     try:
         entry = data["entry"][0]
         change = entry["changes"][0]
@@ -206,6 +226,13 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
 
 def handle_instagram(restaurant_id: str, data: dict) -> None:
     """Process an incoming Instagram message, including story replies."""
+    _conn = database.get_db()
+    _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    _conn.close()
+    if not _rest:
+        logger.error(f"[instagram] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB. Re-register after PostgreSQL migration.")
+        return
+
     try:
         entry = data["entry"][0]
         messaging = entry["messaging"][0]
@@ -271,6 +298,13 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
 
 def handle_facebook(restaurant_id: str, data: dict) -> None:
     """Process an incoming Facebook Messenger message."""
+    _conn = database.get_db()
+    _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    _conn.close()
+    if not _rest:
+        logger.error(f"[facebook] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB. Re-register after PostgreSQL migration.")
+        return
+
     try:
         entry = data["entry"][0]
         messaging = entry["messaging"][0]
@@ -548,6 +582,14 @@ def _find_or_create_customer(
     phone: str,
 ) -> dict:
     """Find existing customer by platform+external_id or create a new one."""
+    # Guard: confirm restaurant exists before any INSERT (prevents FK violation after DB wipe)
+    rest = conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    if not rest:
+        raise ValueError(
+            f"ORPHANED_WEBHOOK: restaurant_id={restaurant_id} not found in database. "
+            "SQLite was likely wiped on Render deploy. Migrate to PostgreSQL and re-register the webhook."
+        )
+
     row = conn.execute(
         """SELECT * FROM customers WHERE restaurant_id=? AND platform=? AND
            (phone=? OR id IN (
