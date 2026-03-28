@@ -271,7 +271,10 @@ def _parse_docx(path: str, client) -> List[Dict]:
 
 
 def _parse_spreadsheet(path: str, client) -> List[Dict]:
-    """Parse .xlsx/.xls or .csv into text and call GPT-4o."""
+    """Parse .xlsx/.xls or .csv.
+    - If the file has recognised column headers (name/price/category/...) → direct mapping, no OpenAI.
+    - Otherwise → convert to text and call GPT-4o.
+    """
     ext = Path(path).suffix.lower()
     rows: List[List[str]] = []
     try:
@@ -284,9 +287,10 @@ def _parse_spreadsheet(path: str, client) -> List[Dict]:
                 import openpyxl
                 wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
                 ws = wb.active
-                rows = [[str(c.value or "").strip() for c in row] for row in ws.iter_rows()]
+                rows = [[str(c.value if c.value is not None else "").strip() for c in row]
+                        for row in ws.iter_rows()]
             except ImportError:
-                # Last resort — treat file as text
+                logger.warning("openpyxl not installed — falling back to text mode")
                 with open(path, "r", errors="ignore") as f:
                     return _call_text(f.read(), client)
     except Exception as e:
@@ -296,9 +300,104 @@ def _parse_spreadsheet(path: str, client) -> List[Dict]:
     if not rows:
         return []
 
-    # Convert rows to readable text
+    # ── Try direct column mapping first ───────────────────────────────────────
+    items = _spreadsheet_direct(rows)
+    if items:
+        logger.info(f"Spreadsheet direct parse: {len(items)} items (no OpenAI needed)")
+        return items
+
+    # ── Fallback: unrecognised structure → send to OpenAI ─────────────────────
+    logger.info("Spreadsheet: no recognised headers — falling back to OpenAI text parse")
     text = "\n".join(" | ".join(r) for r in rows[:500])
     return _call_text(text, client)
+
+
+# ── Arabic + English column header synonyms ───────────────────────────────────
+_COL_NAME     = {"name", "اسم", "الاسم", "product", "item", "المنتج", "product_name", "اسم المنتج"}
+_COL_CATEGORY = {"category", "cat", "section", "قسم", "فئة", "القسم", "التصنيف", "الفئة", "group"}
+_COL_PRICE    = {"price", "سعر", "السعر", "cost", "amount", "الثمن", "ثمن", "قيمة"}
+_COL_DESC     = {"description", "desc", "وصف", "الوصف", "details", "تفاصيل", "ملاحظات"}
+_COL_ICON     = {"icon", "emoji", "أيقونة", "رمز"}
+_COL_AVAIL    = {"available", "متاح", "active", "نشط", "enabled"}
+
+
+def _spreadsheet_direct(rows: List[List[str]]) -> List[Dict]:
+    """
+    Map spreadsheet rows to product dicts using column headers.
+    Returns [] if no recognised 'name' column is found.
+    """
+    if len(rows) < 2:
+        return []
+
+    # Find header row (first non-empty row)
+    header_idx = 0
+    for i, row in enumerate(rows):
+        if any(c.strip() for c in row):
+            header_idx = i
+            break
+
+    headers = [h.strip().lower() for h in rows[header_idx]]
+
+    # Map each header to a field key
+    col_map: Dict[str, int] = {}  # field_key → col_index
+    for idx, h in enumerate(headers):
+        if h in _COL_NAME:
+            col_map.setdefault("name", idx)
+        elif h in _COL_CATEGORY:
+            col_map.setdefault("category", idx)
+        elif h in _COL_PRICE:
+            col_map.setdefault("price", idx)
+        elif h in _COL_DESC:
+            col_map.setdefault("description", idx)
+        elif h in _COL_ICON:
+            col_map.setdefault("icon", idx)
+        elif h in _COL_AVAIL:
+            col_map.setdefault("available", idx)
+
+    if "name" not in col_map:
+        return []  # no recognised structure
+
+    items: List[Dict] = []
+    for row in rows[header_idx + 1:]:
+        if not row or not any(c.strip() for c in row):
+            continue  # skip blank rows
+
+        def _cell(key: str, default: str = "") -> str:
+            idx = col_map.get(key)
+            if idx is None or idx >= len(row):
+                return default
+            return str(row[idx]).strip()
+
+        name = _cell("name")
+        if not name or len(name) < 2:
+            continue
+
+        # Parse price
+        price_raw = _cell("price")
+        price: Optional[float] = None
+        if price_raw:
+            try:
+                price = float(price_raw.replace(",", ".").replace(" ", "").replace("ر.س", "").replace("SAR", "").strip())
+                if price < 0:
+                    price = None
+            except ValueError:
+                price = None
+
+        conf = 1.0 if price is not None else 0.55
+        needs_review = price is None
+
+        items.append({
+            "name":         name,
+            "category":     _cell("category") or "عام",
+            "price":        price,
+            "description":  _cell("description"),
+            "variants":     [],
+            "confidence":   conf,
+            "needs_review": needs_review,
+            "source_note":  "" if price is not None else "السعر مفقود",
+        })
+
+    return items
 
 
 def _error_item(msg: str) -> List[Dict]:
