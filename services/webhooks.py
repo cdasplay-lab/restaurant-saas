@@ -91,6 +91,29 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
             )
         text = voice_transcript or "[رسالة صوتية]"
 
+    # Handle photo messages via OpenAI Vision
+    photo_obj = message.get("photo")
+    if photo_obj and not text:
+        media_type = "image"
+        largest = photo_obj[-1]  # Telegram sends multiple sizes; last = largest
+        file_id = largest.get("file_id", "")
+
+        conn_tmp = database.get_db()
+        ch_tmp = conn_tmp.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type='telegram'",
+            (restaurant_id,)
+        ).fetchone()
+        bot_token_tmp = ch_tmp["token"] if ch_tmp else None
+        conn_tmp.close()
+
+        if bot_token_tmp and file_id:
+            media_url, image_text = _download_and_describe_telegram_image(
+                bot_token_tmp, file_id, restaurant_id
+            )
+            text = image_text or "[العميل أرسل صورة]"
+        else:
+            text = "[العميل أرسل صورة]"
+
     if not text:
         return
 
@@ -160,6 +183,80 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
     except Exception as e:
         logger.error(f"[telegram] voice transcription error: {e}")
         return "", ""
+
+
+def _download_and_describe_telegram_image(bot_token: str, file_id: str, restaurant_id: str) -> tuple:
+    """Download a photo from Telegram and identify it using OpenAI Vision.
+    Returns (file_url, description_text).
+    """
+    import base64
+    try:
+        with httpx.Client(timeout=20) as client:
+            # Get file path
+            r = client.get(
+                f"https://api.telegram.org/bot{bot_token}/getFile",
+                params={"file_id": file_id}
+            )
+            r.raise_for_status()
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                return "", ""
+
+            file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+            # Download image bytes
+            img_resp = client.get(file_url)
+            img_resp.raise_for_status()
+            img_bytes = img_resp.content
+
+        # Base64-encode for Vision API
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else "jpeg"
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}" if ext in ("png", "webp", "gif") else "image/jpeg"
+
+        # Load restaurant menu for context
+        conn_tmp = database.get_db()
+        products = conn_tmp.execute(
+            "SELECT name FROM products WHERE restaurant_id=? AND available=1",
+            (restaurant_id,)
+        ).fetchall()
+        conn_tmp.close()
+        menu_names = "، ".join(p["name"] for p in products) if products else ""
+
+        client_ai = _get_openai()
+        if not client_ai:
+            return file_url, "[العميل أرسل صورة]"
+
+        menu_hint = f"قائمة المطعم تحتوي على: {menu_names}." if menu_names else ""
+        response = client_ai.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"العميل أرسل هذه الصورة. {menu_hint}\n"
+                            "بجملة قصيرة بالعربي: ما الذي تظهره الصورة؟ "
+                            "إذا كانت الصورة لمنتج موجود في قائمة المطعم اذكر اسمه بالضبط. "
+                            "لا تضف تحيات أو شرح — فقط وصف ما في الصورة."
+                        )
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{img_b64}", "detail": "low"}
+                    }
+                ]
+            }],
+            max_tokens=80,
+        )
+        description = response.choices[0].message.content.strip()
+        logger.info(f"[telegram] image vision result: {description}")
+        return file_url, f"[صورة من العميل: {description}]"
+
+    except Exception as e:
+        logger.error(f"[telegram] image vision error: {e}")
+        return "", "[العميل أرسل صورة]"
 
 
 # ── WhatsApp ──────────────────────────────────────────────────────────────────
