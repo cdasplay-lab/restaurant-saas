@@ -185,49 +185,24 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
         return "", ""
 
 
-def _download_and_describe_telegram_image(bot_token: str, file_id: str, restaurant_id: str) -> tuple:
-    """Download a photo from Telegram and identify it using OpenAI Vision.
-    Returns (file_url, description_text).
-    """
+def _vision_describe(img_bytes: bytes, restaurant_id: str, platform: str = "") -> str:
+    """Send raw image bytes to OpenAI Vision. Returns Arabic description string."""
     import base64
+    client_ai = _get_openai()
+    if not client_ai:
+        return "[العميل أرسل صورة]"
+
+    conn_tmp = database.get_db()
+    products = conn_tmp.execute(
+        "SELECT name FROM products WHERE restaurant_id=? AND available=1",
+        (restaurant_id,)
+    ).fetchall()
+    conn_tmp.close()
+    menu_names = "، ".join(p["name"] for p in products) if products else ""
+    menu_hint = f"قائمة المطعم تحتوي على: {menu_names}." if menu_names else ""
+
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
     try:
-        with httpx.Client(timeout=20) as client:
-            # Get file path
-            r = client.get(
-                f"https://api.telegram.org/bot{bot_token}/getFile",
-                params={"file_id": file_id}
-            )
-            r.raise_for_status()
-            file_path = r.json().get("result", {}).get("file_path", "")
-            if not file_path:
-                return "", ""
-
-            file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-
-            # Download image bytes
-            img_resp = client.get(file_url)
-            img_resp.raise_for_status()
-            img_bytes = img_resp.content
-
-        # Base64-encode for Vision API
-        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else "jpeg"
-        mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}" if ext in ("png", "webp", "gif") else "image/jpeg"
-
-        # Load restaurant menu for context
-        conn_tmp = database.get_db()
-        products = conn_tmp.execute(
-            "SELECT name FROM products WHERE restaurant_id=? AND available=1",
-            (restaurant_id,)
-        ).fetchall()
-        conn_tmp.close()
-        menu_names = "، ".join(p["name"] for p in products) if products else ""
-
-        client_ai = _get_openai()
-        if not client_ai:
-            return file_url, "[العميل أرسل صورة]"
-
-        menu_hint = f"قائمة المطعم تحتوي على: {menu_names}." if menu_names else ""
         response = client_ai.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             messages=[{
@@ -244,18 +219,70 @@ def _download_and_describe_telegram_image(bot_token: str, file_id: str, restaura
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{img_b64}", "detail": "low"}
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}
                     }
                 ]
             }],
             max_tokens=80,
         )
-        description = response.choices[0].message.content.strip()
-        logger.info(f"[telegram] image vision result: {description}")
-        return file_url, f"[صورة من العميل: {description}]"
-
+        desc = response.choices[0].message.content.strip()
+        logger.info(f"[{platform}] vision result: {desc}")
+        return f"[صورة من العميل: {desc}]"
     except Exception as e:
-        logger.error(f"[telegram] image vision error: {e}")
+        logger.error(f"[{platform}] vision call error: {e}")
+        return "[العميل أرسل صورة]"
+
+
+def _download_and_describe_telegram_image(bot_token: str, file_id: str, restaurant_id: str) -> tuple:
+    """Download a Telegram photo and describe via Vision. Returns (file_url, description)."""
+    try:
+        with httpx.Client(timeout=20) as client:
+            r = client.get(
+                f"https://api.telegram.org/bot{bot_token}/getFile",
+                params={"file_id": file_id}
+            )
+            r.raise_for_status()
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                return "", ""
+            file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+            img_bytes = client.get(file_url).content
+        return file_url, _vision_describe(img_bytes, restaurant_id, "telegram")
+    except Exception as e:
+        logger.error(f"[telegram] image download error: {e}")
+        return "", "[العميل أرسل صورة]"
+
+
+def _download_and_describe_url(url: str, restaurant_id: str, platform: str, headers: Optional[dict] = None) -> tuple:
+    """Download an image from a URL and describe via Vision. Returns (url, description)."""
+    try:
+        with httpx.Client(timeout=20) as client:
+            img_bytes = client.get(url, headers=headers or {}).content
+        return url, _vision_describe(img_bytes, restaurant_id, platform)
+    except Exception as e:
+        logger.error(f"[{platform}] image download error: {e}")
+        return url, "[العميل أرسل صورة]"
+
+
+def _download_and_describe_whatsapp_image(media_id: str, access_token: str, restaurant_id: str) -> tuple:
+    """Resolve a WhatsApp media ID to bytes then describe via Vision."""
+    try:
+        auth = {"Authorization": f"Bearer {access_token}"}
+        with httpx.Client(timeout=20) as client:
+            # Step 1: resolve media URL
+            r = client.get(
+                f"https://graph.facebook.com/v19.0/{media_id}",
+                headers=auth
+            )
+            r.raise_for_status()
+            media_url = r.json().get("url", "")
+            if not media_url:
+                return "", "[العميل أرسل صورة]"
+            # Step 2: download bytes
+            img_bytes = client.get(media_url, headers=auth).content
+        return media_url, _vision_describe(img_bytes, restaurant_id, "whatsapp")
+    except Exception as e:
+        logger.error(f"[whatsapp] image download error: {e}")
         return "", "[العميل أرسل صورة]"
 
 
@@ -282,10 +309,35 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
         return
 
     msg_type = msg.get("type", "")
-    if msg_type != "text":
+    if msg_type not in ("text", "image"):
         return
 
-    text = msg.get("text", {}).get("body", "").strip()
+    text = ""
+    media_type = ""
+    media_url = ""
+
+    if msg_type == "text":
+        text = msg.get("text", {}).get("body", "").strip()
+    elif msg_type == "image":
+        media_type = "image"
+        caption = msg.get("image", {}).get("caption", "").strip()
+        media_id = msg.get("image", {}).get("id", "")
+        # Need access_token to resolve WhatsApp media — load channel first
+        conn_pre = database.get_db()
+        ch_pre = conn_pre.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+            (restaurant_id,)
+        ).fetchone()
+        token_pre = ch_pre["token"] if ch_pre else None
+        conn_pre.close()
+        if media_id and token_pre:
+            media_url, image_text = _download_and_describe_whatsapp_image(
+                media_id, token_pre, restaurant_id
+            )
+            text = (caption + " " + image_text).strip() if caption else image_text
+        else:
+            text = caption or "[العميل أرسل صورة]"
+
     if not text:
         return
 
@@ -314,7 +366,8 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
             "phone_number_id": phone_number_id,
             "to": external_id,
         }
-        _process_incoming(restaurant_id, customer, conversation, text, channel_data)
+        extra = {"media_type": media_type, "media_url": media_url}
+        _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
         conn.close()
 
@@ -342,6 +395,25 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
     if not sender_id:
         return
 
+    media_type = ""
+    media_url_ig = ""
+
+    # Handle image attachments
+    attachments = message.get("attachments", [])
+    for att in attachments:
+        if att.get("type") == "image":
+            media_type = "image"
+            img_url = att.get("payload", {}).get("url", "")
+            if img_url:
+                media_url_ig, image_text = _download_and_describe_url(
+                    img_url, restaurant_id, "instagram"
+                )
+                if not text:
+                    text = image_text
+                else:
+                    text = text + " " + image_text
+            break
+
     # Detect story reply context
     replied_story_id = ""
     replied_story_text = ""
@@ -353,8 +425,7 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         if story:
             replied_story_id = story.get("id", "")
             replied_story_media_url = story.get("url", "")
-            # Story text may appear in the message text itself; keep it for context
-            replied_story_text = text  # the user's message in context of the story
+            replied_story_text = text
 
         if not text:
             text = reply_to.get("text", "").strip()
@@ -382,6 +453,8 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             "recipient_id": sender_id,
         }
         extra = {
+            "media_type": media_type,
+            "media_url": media_url_ig,
             "replied_story_id": replied_story_id,
             "replied_story_text": replied_story_text,
             "replied_story_media_url": replied_story_media_url,
@@ -411,7 +484,29 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
     sender_id = messaging.get("sender", {}).get("id", "")
     message = messaging.get("message", {})
     text = message.get("text", "").strip()
-    if not text or not sender_id:
+    if not sender_id:
+        return
+
+    media_type_fb = ""
+    media_url_fb = ""
+
+    # Handle image attachments
+    attachments = message.get("attachments", [])
+    for att in attachments:
+        if att.get("type") == "image":
+            media_type_fb = "image"
+            img_url = att.get("payload", {}).get("url", "")
+            if img_url:
+                media_url_fb, image_text = _download_and_describe_url(
+                    img_url, restaurant_id, "facebook"
+                )
+                if not text:
+                    text = image_text
+                else:
+                    text = text + " " + image_text
+            break
+
+    if not text:
         return
 
     conn = database.get_db()
@@ -433,7 +528,8 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
             "page_token": page_token,
             "recipient_id": sender_id,
         }
-        _process_incoming(restaurant_id, customer, conversation, text, channel_data)
+        extra = {"media_type": media_type_fb, "media_url": media_url_fb}
+        _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
         conn.close()
 
