@@ -474,6 +474,8 @@ def _migrate_db(conn):
         ("restaurants", "working_hours", "TEXT DEFAULT '{}'"),
         # settings — working hours JSON
         ("settings", "working_hours", "TEXT DEFAULT '{}'"),
+        # settings — payment methods (free text, shown to bot)
+        ("settings", "payment_methods", "TEXT DEFAULT 'كاش'"),
         # super_admins — support PIN for restaurant owner recovery
         ("super_admins", "support_pin", "TEXT DEFAULT ''"),
     ]

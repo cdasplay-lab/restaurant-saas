@@ -368,6 +368,7 @@ class SettingsUpdate(BaseModel):
     bot_enabled: Optional[bool] = None
     security_2fa: Optional[bool] = None
     security_session_timeout: Optional[int] = None
+    payment_methods: Optional[str] = None
 
 
 class ChannelUpdate(BaseModel):
@@ -1486,6 +1487,7 @@ async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
     if data.bot_enabled is not None: upd["bot_enabled"] = int(data.bot_enabled)
     if data.security_2fa is not None: upd["security_2fa"] = int(data.security_2fa)
     if data.security_session_timeout is not None: upd["security_session_timeout"] = data.security_session_timeout
+    if data.payment_methods is not None: upd["payment_methods"] = data.payment_methods
     if upd:
         conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])

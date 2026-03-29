@@ -230,6 +230,7 @@ def _build_system_prompt(
     rest_address = restaurant.get("address") or settings.get("restaurant_address") or ""
     rest_phone = restaurant.get("phone") or settings.get("restaurant_phone") or ""
     welcome = settings.get("bot_welcome") or "مرحباً! كيف يمكنني مساعدتك؟"
+    payment_methods = settings.get("payment_methods") or "كاش"
 
     # Build menu by category
     menu_by_cat: dict[str, list] = {}
@@ -299,7 +300,7 @@ def _build_system_prompt(
   ──────────────
   💰 المجموع: [الإجمالي] د.ع
 - بعد عرض الملخص، اطلب عنوان التوصيل إذا لم يكن محفوظاً.
-- اذكر طرق الدفع المتاحة (كاش / دفع إلكتروني) بعد تأكيد العنوان.
+- اذكر طرق الدفع المتاحة للزبون بعد تأكيد العنوان: {payment_methods}
 - لا تخترع منتجات أو أسعاراً خارج القائمة أعلاه.
 - العملة دائماً: دينار عراقي (د.ع) — لا تذكر ريال أو أي عملة أخرى.
 - إذا سأل العميل عن شيء خارج نطاق المطعم، أعده بلطف لموضوع الطلب.

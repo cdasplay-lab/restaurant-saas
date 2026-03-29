@@ -583,6 +583,12 @@
                 <input id="sRestPhone" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
               <div><label class="text-slate-400 text-xs mb-1.5 block">العنوان</label>
                 <input id="sRestAddress" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+              <div>
+                <label class="text-slate-400 text-xs mb-1.5 block">💳 وسائل الدفع المتاحة</label>
+                <input id="sPaymentMethods" placeholder="مثال: كاش، ماستر كارد العراق، فيزا الرافدين، زين كاش"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
+                <p class="text-slate-500 text-xs mt-1">سيذكرها البوت تلقائياً عند سؤال الزبون عن طريقة الدفع</p>
+              </div>
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
           </div>
@@ -2028,6 +2034,7 @@ async function loadSettings() {
     if (s.restaurant_description) document.getElementById('sRestDesc').value = s.restaurant_description;
     if (s.restaurant_phone) document.getElementById('sRestPhone').value = s.restaurant_phone;
     if (s.restaurant_address) document.getElementById('sRestAddress').value = s.restaurant_address;
+    if (s.payment_methods) document.getElementById('sPaymentMethods').value = s.payment_methods;
     if (s.bot_name) document.getElementById('sBotName').value = s.bot_name;
     if (s.bot_personality) document.getElementById('sBotPersonality').value = s.bot_personality;
     if (s.bot_language) document.getElementById('sBotLanguage').value = s.bot_language;
@@ -2064,6 +2071,7 @@ async function saveSettings() {
       restaurant_description: document.getElementById('sRestDesc').value,
       restaurant_phone: document.getElementById('sRestPhone').value,
       restaurant_address: document.getElementById('sRestAddress').value,
+      payment_methods: document.getElementById('sPaymentMethods').value,
       bot_name: document.getElementById('sBotName').value,
       bot_personality: document.getElementById('sBotPersonality').value,
       bot_language: document.getElementById('sBotLanguage').value,
