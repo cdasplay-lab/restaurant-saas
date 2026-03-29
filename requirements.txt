@@ -13,3 +13,4 @@ psycopg2-binary>=2.9.0
 PyMuPDF>=1.23.0        # PDF → images (renders each page for Vision OCR)
 python-docx>=1.1.0     # Word .docx text extraction
 openpyxl>=3.1.0        # Excel .xlsx parsing
+xlrd>=2.0.0            # Excel legacy .xls parsing
