@@ -944,6 +944,101 @@ async def upload_product_image(
     return {"url": public_url, "product_id": pid}
 
 
+@app.post("/api/upload/bulk-product-images", status_code=200)
+async def bulk_upload_product_images(
+    files: List[UploadFile] = File(...),
+    user=Depends(require_role("owner", "manager")),
+):
+    """Upload multiple product images at once.
+
+    Each file's stem (filename without extension) is matched against product names
+    (case-insensitive, trimmed). On match the image is uploaded via the same
+    Supabase Storage path used by the single-upload route, and the product's
+    image_url is updated automatically.
+
+    Returns a report:
+      matched   — list of {file, product_id, product_name, image_url}
+      unmatched — list of {file, reason}
+      matched_count, unmatched_count, total
+    """
+    from services import storage as _storage
+
+    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+    # Load all products for this restaurant once (avoids N+1 queries)
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, name FROM products WHERE restaurant_id=?",
+            (user["restaurant_id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Build case-insensitive name → product lookup
+    product_map: dict = {dict(r)["name"].strip().lower(): dict(r) for r in rows}
+
+    matched: list = []
+    unmatched: list = []
+
+    for f in files:
+        filename = f.filename or ""
+        ext = Path(filename).suffix.lower()
+        stem = Path(filename).stem.strip()
+
+        if ext not in ALLOWED:
+            unmatched.append({"file": filename, "reason": f"نوع الملف غير مدعوم: {ext}"})
+            continue
+
+        content = await f.read()
+        if len(content) > 10 * 1024 * 1024:
+            unmatched.append({"file": filename, "reason": "الملف أكبر من 10 MB"})
+            continue
+        if not content:
+            unmatched.append({"file": filename, "reason": "الملف فارغ"})
+            continue
+
+        product = product_map.get(stem.lower())
+        if not product:
+            unmatched.append({"file": filename, "reason": "لم يُعثر على منتج بهذا الاسم"})
+            continue
+
+        fname = f"{uuid.uuid4()}{ext}"
+        storage_path = _storage.product_storage_path(
+            user["restaurant_id"], product["id"], fname
+        )
+        public_url = _storage.upload_bytes(
+            content,
+            _storage.BUCKET_PRODUCTS,
+            storage_path,
+            content_type=f.content_type or "image/jpeg",
+        )
+
+        if not public_url:
+            unmatched.append({"file": filename, "reason": "Supabase غير مُهيأ — تحقق من SUPABASE_URL"})
+            continue
+
+        conn = database.get_db()
+        conn.execute("UPDATE products SET image_url=? WHERE id=?", (public_url, product["id"]))
+        conn.commit()
+        conn.close()
+
+        matched.append({
+            "file":         filename,
+            "product_id":   product["id"],
+            "product_name": product["name"],
+            "image_url":    public_url,
+        })
+
+    return {
+        "matched":         matched,
+        "unmatched":       unmatched,
+        "total":           len(files),
+        "matched_count":   len(matched),
+        "unmatched_count": len(unmatched),
+    }
+
+
 @app.post("/api/upload/gallery-image", status_code=201)
 async def upload_gallery_image(
     file: UploadFile = File(...),

@@ -460,6 +460,9 @@
           <button onclick="openMenuImport()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5" title="رفع منيو كامل وتحويله تلقائياً إلى منتجات">
             <i class="fa-solid fa-file-arrow-up"></i> رفع منيو
           </button>
+          <button onclick="openBulkImageUpload()" class="bg-purple-600 hover:bg-purple-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5" title="رفع صور جماعي — اسم الملف = اسم المنتج">
+            <i class="fa-solid fa-images"></i> رفع صور
+          </button>
           <button onclick="openProductModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
             <i class="fa-solid fa-plus"></i> منتج جديد
           </button>
@@ -2867,6 +2870,264 @@ function miStartOver() {
     </div>
   </div>
 </div>
+
+<!-- ═══ BULK IMAGE UPLOAD MODAL ═══ -->
+<div id="bulkImgModal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+  <div class="bg-[#1e293b] border border-slate-700 rounded-2xl w-full max-w-xl shadow-2xl flex flex-col" style="max-height:88vh">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <div class="flex items-center gap-2">
+        <i class="fa-solid fa-images text-purple-400 text-lg"></i>
+        <span class="text-white font-semibold">رفع صور جماعي للمنتجات</span>
+      </div>
+      <button onclick="closeBulkImageUpload()" class="text-slate-400 hover:text-white transition text-xl leading-none">&times;</button>
+    </div>
+
+    <!-- State: pick -->
+    <div id="biState_pick" class="flex-1 overflow-y-auto p-6 flex flex-col gap-5">
+      <p class="text-slate-400 text-sm leading-relaxed">
+        اختر صور المنتجات — <span class="text-purple-300 font-medium">اسم الملف = اسم المنتج بالضبط</span><br>
+        مثال: <code class="bg-slate-700 rounded px-1 text-xs">برجر كلاسيك.jpg</code> سيربط مع المنتج المسمى "برجر كلاسيك"
+      </p>
+
+      <!-- Drop zone -->
+      <label id="biDropzone"
+        class="border-2 border-dashed border-slate-600 rounded-xl p-8 flex flex-col items-center gap-3 cursor-pointer hover:border-purple-400 hover:bg-purple-900/10 transition"
+        ondragover="event.preventDefault();this.classList.add('border-purple-400','bg-purple-900/20')"
+        ondragleave="this.classList.remove('border-purple-400','bg-purple-900/20')"
+        ondrop="event.preventDefault();this.classList.remove('border-purple-400','bg-purple-900/20');_biHandleFiles(event.dataTransfer.files)">
+        <i class="fa-solid fa-cloud-arrow-up text-4xl text-slate-500"></i>
+        <span class="text-slate-400 text-sm">اسحب الصور هنا أو انقر للاختيار</span>
+        <span class="text-slate-500 text-xs">JPG · PNG · WEBP · GIF · حتى 10 MB للصورة</span>
+        <input type="file" id="biFileInput" class="hidden" accept="image/*" multiple onchange="_biHandleFiles(this.files)">
+      </label>
+
+      <!-- File list preview -->
+      <div id="biFileList" class="hidden flex flex-col gap-1.5 max-h-44 overflow-y-auto"></div>
+      <div id="biErr" class="hidden text-red-400 text-xs bg-red-900/20 rounded-lg px-3 py-2"></div>
+
+      <button id="biStartBtn" onclick="biStart()" disabled
+        class="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition text-sm">
+        رفع الصور
+      </button>
+    </div>
+
+    <!-- State: uploading -->
+    <div id="biState_uploading" class="hidden flex-1 p-6 flex flex-col items-center justify-center gap-5">
+      <div class="spinner w-10 h-10 border-4 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+      <div class="text-center">
+        <p class="text-white font-medium" id="biProgressText">جارٍ الرفع...</p>
+        <p class="text-slate-400 text-sm mt-1" id="biProgressSub"></p>
+      </div>
+      <div class="w-full bg-slate-700 rounded-full h-2">
+        <div id="biProgressBar" class="bg-purple-500 h-2 rounded-full transition-all" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- State: results -->
+    <div id="biState_results" class="hidden flex-1 overflow-y-auto p-6 flex flex-col gap-4">
+
+      <!-- Summary badges -->
+      <div class="flex gap-3">
+        <div class="flex-1 bg-emerald-900/30 border border-emerald-700/40 rounded-xl p-3 text-center">
+          <div id="biResMatchCount" class="text-2xl font-bold text-emerald-400">0</div>
+          <div class="text-xs text-emerald-300 mt-0.5">تم الربط</div>
+        </div>
+        <div class="flex-1 bg-red-900/20 border border-red-700/30 rounded-xl p-3 text-center">
+          <div id="biResNoMatchCount" class="text-2xl font-bold text-red-400">0</div>
+          <div class="text-xs text-red-300 mt-0.5">بدون تطابق</div>
+        </div>
+        <div class="flex-1 bg-slate-700/40 border border-slate-600/40 rounded-xl p-3 text-center">
+          <div id="biResTotalCount" class="text-2xl font-bold text-slate-300">0</div>
+          <div class="text-xs text-slate-400 mt-0.5">إجمالي</div>
+        </div>
+      </div>
+
+      <!-- Matched list -->
+      <div id="biResMatchedWrap" class="hidden">
+        <p class="text-emerald-400 text-xs font-semibold mb-2 flex items-center gap-1.5">
+          <i class="fa-solid fa-check-circle"></i> صور تم ربطها بنجاح
+        </p>
+        <div id="biResMatched" class="flex flex-col gap-1.5"></div>
+      </div>
+
+      <!-- Unmatched list -->
+      <div id="biResUnmatchedWrap" class="hidden">
+        <p class="text-red-400 text-xs font-semibold mb-2 flex items-center gap-1.5">
+          <i class="fa-solid fa-circle-xmark"></i> ملفات بدون تطابق
+        </p>
+        <div id="biResUnmatched" class="flex flex-col gap-1.5"></div>
+      </div>
+
+      <div class="flex gap-2 mt-1 shrink-0">
+        <button onclick="_biReset()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2.5 rounded-xl text-sm transition">رفع مجموعة أخرى</button>
+        <button onclick="closeBulkImageUpload();loadProducts()" class="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-2.5 rounded-xl text-sm font-semibold transition">إغلاق وتحديث</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Bulk Image Upload ─────────────────────────────────────────────────────────
+let _biFiles = [];
+
+function openBulkImageUpload() {
+  _biReset();
+  document.getElementById('bulkImgModal').classList.remove('hidden');
+}
+function closeBulkImageUpload() {
+  document.getElementById('bulkImgModal').classList.add('hidden');
+}
+
+function _biShowState(s) {
+  ['pick','uploading','results'].forEach(st =>
+    document.getElementById('biState_' + st).classList.add('hidden')
+  );
+  document.getElementById('biState_' + s).classList.remove('hidden');
+}
+
+function _biReset() {
+  _biFiles = [];
+  document.getElementById('biFileInput').value = '';
+  document.getElementById('biFileList').innerHTML = '';
+  document.getElementById('biFileList').classList.add('hidden');
+  document.getElementById('biErr').classList.add('hidden');
+  document.getElementById('biStartBtn').disabled = true;
+  _biShowState('pick');
+}
+
+function _biHandleFiles(fileList) {
+  const ALLOWED = ['.jpg','.jpeg','.png','.gif','.webp'];
+  const errEl = document.getElementById('biErr');
+  errEl.classList.add('hidden');
+  _biFiles = [];
+
+  const bad = [];
+  Array.from(fileList).forEach(f => {
+    const ext = '.' + f.name.split('.').pop().toLowerCase();
+    if (!ALLOWED.includes(ext)) { bad.push(`${f.name} (نوع غير مدعوم)`); return; }
+    if (f.size > 10 * 1024 * 1024) { bad.push(`${f.name} (أكبر من 10 MB)`); return; }
+    if (f.size === 0) { bad.push(`${f.name} (ملف فارغ)`); return; }
+    _biFiles.push(f);
+  });
+
+  if (bad.length) {
+    errEl.textContent = 'تم تجاهل: ' + bad.join(' · ');
+    errEl.classList.remove('hidden');
+  }
+
+  const listEl = document.getElementById('biFileList');
+  if (_biFiles.length) {
+    listEl.innerHTML = _biFiles.map(f =>
+      `<div class="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-2 text-xs text-slate-300">
+        <i class="fa-regular fa-image text-purple-400 shrink-0"></i>
+        <span class="truncate flex-1">${f.name}</span>
+        <span class="text-slate-500 shrink-0">${(f.size/1024).toFixed(0)} KB</span>
+      </div>`
+    ).join('');
+    listEl.classList.remove('hidden');
+    document.getElementById('biStartBtn').disabled = false;
+  } else {
+    listEl.classList.add('hidden');
+    document.getElementById('biStartBtn').disabled = true;
+  }
+}
+
+async function biStart() {
+  if (!_biFiles.length) return;
+  _biShowState('uploading');
+
+  const total = _biFiles.length;
+  document.getElementById('biProgressText').textContent = `جارٍ رفع 0 / ${total}`;
+  document.getElementById('biProgressSub').textContent = '';
+  document.getElementById('biProgressBar').style.width = '0%';
+
+  const form = new FormData();
+  _biFiles.forEach(f => form.append('files', f));
+
+  // Simulate per-file progress (the actual upload is one request)
+  let tick = 0;
+  const fakeTimer = setInterval(() => {
+    tick = Math.min(tick + 1, total - 1);
+    document.getElementById('biProgressText').textContent = `جارٍ رفع ${tick} / ${total}`;
+    document.getElementById('biProgressBar').style.width = `${Math.round(tick / total * 85)}%`;
+  }, 400);
+
+  try {
+    const tok = localStorage.getItem('token');
+    const res = await fetch((window.API_BASE || '') + '/api/upload/bulk-product-images', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok },
+      body: form,
+    });
+    clearInterval(fakeTimer);
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'فشل الرفع');
+
+    document.getElementById('biProgressBar').style.width = '100%';
+    document.getElementById('biProgressText').textContent = 'اكتمل الرفع';
+
+    setTimeout(() => _biShowResults(data), 300);
+  } catch(e) {
+    clearInterval(fakeTimer);
+    _biShowState('pick');
+    document.getElementById('biErr').textContent = e.message;
+    document.getElementById('biErr').classList.remove('hidden');
+    toast(e.message, 'error');
+  }
+}
+
+function _biShowResults(data) {
+  document.getElementById('biResMatchCount').textContent   = data.matched_count;
+  document.getElementById('biResNoMatchCount').textContent = data.unmatched_count;
+  document.getElementById('biResTotalCount').textContent   = data.total;
+
+  const matchedWrap = document.getElementById('biResMatchedWrap');
+  const matchedEl   = document.getElementById('biResMatched');
+  if (data.matched.length) {
+    matchedEl.innerHTML = data.matched.map(m =>
+      `<div class="flex items-center gap-2 bg-emerald-900/20 border border-emerald-700/30 rounded-lg px-3 py-2 text-xs">
+        <img src="${m.image_url}" class="w-8 h-8 rounded object-cover shrink-0" onerror="this.style.display='none'">
+        <div class="flex-1 min-w-0">
+          <p class="text-white truncate">${m.product_name}</p>
+          <p class="text-slate-400 truncate">${m.file}</p>
+        </div>
+        <i class="fa-solid fa-check text-emerald-400 shrink-0"></i>
+      </div>`
+    ).join('');
+    matchedWrap.classList.remove('hidden');
+  } else {
+    matchedWrap.classList.add('hidden');
+  }
+
+  const unmatchedWrap = document.getElementById('biResUnmatchedWrap');
+  const unmatchedEl   = document.getElementById('biResUnmatched');
+  if (data.unmatched.length) {
+    unmatchedEl.innerHTML = data.unmatched.map(u =>
+      `<div class="flex items-center gap-2 bg-red-900/10 border border-red-700/20 rounded-lg px-3 py-2 text-xs">
+        <i class="fa-regular fa-image text-red-400 shrink-0"></i>
+        <div class="flex-1 min-w-0">
+          <p class="text-slate-300 truncate">${u.file}</p>
+          <p class="text-red-400">${u.reason}</p>
+        </div>
+      </div>`
+    ).join('');
+    unmatchedWrap.classList.remove('hidden');
+  } else {
+    unmatchedWrap.classList.add('hidden');
+  }
+
+  _biShowState('results');
+
+  if (data.matched_count > 0)
+    toast(`تم ربط ${data.matched_count} صورة بنجاح`, 'success');
+  else
+    toast('لم يُعثر على تطابق لأي صورة', 'error');
+}
+</script>
 
 <!-- ═══ MENU IMPORT — Edit Item Modal ═══ -->
 <div id="miEditModal" class="hidden fixed inset-0 bg-black/70 z-[60] flex items-center justify-center p-4">
