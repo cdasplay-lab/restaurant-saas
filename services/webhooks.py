@@ -264,6 +264,217 @@ def _download_and_describe_url(url: str, restaurant_id: str, platform: str, head
         return url, "[العميل أرسل صورة]"
 
 
+# ── Smart Story Analysis ───────────────────────────────────────────────────────
+
+def _get_product_image_bytes(image_url: str) -> Optional[bytes]:
+    """Download a product image from Supabase/CDN. Returns bytes or None."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(image_url)
+            if resp.status_code == 200 and len(resp.content) > 0:
+                return resp.content
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_story_media(media_url: str, story_id: str, access_token: str) -> tuple:
+    """
+    Download story media. Handles images and videos.
+    For videos: tries to get thumbnail from Graph API first.
+    Returns (img_bytes, is_video).
+    """
+    if not media_url:
+        return b"", False
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True) as client:
+            resp = client.get(media_url)
+            content_type = resp.headers.get("content-type", "").lower()
+
+            if "image" in content_type:
+                return resp.content, False
+
+            if "video" in content_type:
+                # Try Graph API for thumbnail
+                if story_id and access_token:
+                    try:
+                        thumb_resp = client.get(
+                            f"https://graph.facebook.com/v19.0/{story_id}",
+                            params={"fields": "thumbnail_url", "access_token": access_token},
+                            timeout=8,
+                        )
+                        thumb_url = thumb_resp.json().get("thumbnail_url", "")
+                        if thumb_url:
+                            tb = client.get(thumb_url)
+                            if tb.status_code == 200:
+                                logger.info(f"[story] got video thumbnail via Graph API story_id={story_id}")
+                                return tb.content, True
+                    except Exception as e:
+                        logger.warning(f"[story] Graph API thumbnail failed: {e}")
+                # No thumbnail — return empty to trigger text-only fallback
+                logger.info(f"[story] video with no thumbnail, story_id={story_id}")
+                return b"", True
+
+            # Unknown content type — try as image
+            return resp.content, False
+    except Exception as e:
+        logger.error(f"[story] media fetch error: {e}")
+        return b"", False
+
+
+def _match_story_to_product(img_bytes: bytes, restaurant_id: str) -> dict:
+    """
+    Two-pass Vision product matching against the restaurant's stored product images.
+
+    Pass 1 — cheap: ask Vision which product name (from text list) matches the image.
+    Pass 2 — visual: send up to 4 candidate product images side-by-side for exact match.
+
+    Returns: {"product": dict|None, "description": str, "confidence": "high"|"medium"|"low"}
+    """
+    import base64
+    client_ai = _get_openai()
+    if not client_ai or not img_bytes:
+        return {"product": None, "description": "", "confidence": "low"}
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    story_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+    # Load all products
+    conn_tmp = database.get_db()
+    rows = conn_tmp.execute(
+        "SELECT id, name, price, category, image_url FROM products WHERE restaurant_id=? AND available=1",
+        (restaurant_id,)
+    ).fetchall()
+    conn_tmp.close()
+
+    all_products = [dict(r) for r in rows]
+    if not all_products:
+        return {"product": None, "description": "", "confidence": "low"}
+
+    product_names = [p["name"] for p in all_products]
+
+    # ── Pass 1: text-name match ────────────────────────────────────────────────
+    try:
+        r1 = client_ai.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"قائمة منتجات المطعم: {', '.join(product_names)}\n"
+                        "انظر لهذه الصورة — ما اسم المنتج من القائمة أعلاه الذي تراه؟ "
+                        "أجب باسم المنتج فقط بدون أي كلام آخر. "
+                        "إذا لم تجد تطابقاً واضحاً اكتب: غير محدد"
+                    )
+                },
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{story_b64}", "detail": "low"}}
+            ]}],
+            max_tokens=25,
+        )
+        pass1 = r1.choices[0].message.content.strip()
+        logger.info(f"[story] Pass1={pass1}")
+    except Exception as e:
+        logger.error(f"[story] Pass1 error: {e}")
+        return {"product": None, "description": "", "confidence": "low"}
+
+    if pass1 == "غير محدد":
+        return {"product": None, "description": "محتوى من المطعم", "confidence": "low"}
+
+    # Exact match first
+    for p in all_products:
+        if p["name"].strip() == pass1.strip():
+            return {"product": p, "description": p["name"], "confidence": "high"}
+
+    # Partial match → candidates for Pass 2
+    candidates = [p for p in all_products if pass1 in p["name"] or p["name"] in pass1]
+    if not candidates:
+        candidates = all_products  # widen if no partial match
+
+    products_with_images = [p for p in candidates if p.get("image_url")][:4]
+
+    if not products_with_images:
+        # No product images stored — trust Pass 1
+        best = candidates[0] if candidates else None
+        return {"product": best, "description": pass1, "confidence": "medium"}
+
+    # ── Pass 2: visual comparison ──────────────────────────────────────────────
+    content_parts = [
+        {
+            "type": "text",
+            "text": "الصورة الأولى هي صورة الستوري. الصور التالية هي منتجات المطعم. أي منتج يطابق صورة الستوري؟ أجب باسم المنتج فقط."
+        },
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{story_b64}", "detail": "low"}},
+    ]
+    candidate_map = {}
+    for p in products_with_images:
+        pb = _get_product_image_bytes(p["image_url"])
+        if not pb:
+            continue
+        pb64 = base64.b64encode(pb).decode("utf-8")
+        content_parts.append({"type": "text", "text": f"▶ {p['name']}"})
+        content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{pb64}", "detail": "low"}})
+        candidate_map[p["name"]] = p
+
+    if len(candidate_map) == 0:
+        best = candidates[0] if candidates else None
+        return {"product": best, "description": pass1, "confidence": "medium"}
+
+    try:
+        r2 = client_ai.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": content_parts}],
+            max_tokens=25,
+        )
+        pass2 = r2.choices[0].message.content.strip()
+        logger.info(f"[story] Pass2={pass2}")
+        for name, p in candidate_map.items():
+            if name == pass2 or name in pass2 or pass2 in name:
+                return {"product": p, "description": p["name"], "confidence": "high"}
+        # Pass2 gave something different — fallback to Pass1 best
+        best = candidates[0] if candidates else None
+        return {"product": best, "description": pass1, "confidence": "medium"}
+    except Exception as e:
+        logger.error(f"[story] Pass2 error: {e}")
+        best = candidates[0] if candidates else None
+        return {"product": best, "description": pass1, "confidence": "medium"}
+
+
+def _analyze_story(media_url: str, story_id: str, restaurant_id: str,
+                   access_token: str = "", platform: str = "") -> str:
+    """
+    Full story analysis pipeline. Returns a rich context string for the bot.
+    Handles both image stories and video stories (via thumbnail).
+    """
+    if not media_url:
+        return "[العميل يرد على ستوري للمطعم — اسأله بودية عما يرغب به]"
+
+    img_bytes, is_video = _fetch_story_media(media_url, story_id, access_token)
+    video_tag = " [فيديو]" if is_video else ""
+
+    if not img_bytes:
+        # Video with no thumbnail — still engage warmly
+        return f"[العميل يرد على ستوري فيديو للمطعم — رحّب به واسأله عما يشتهيه]"
+
+    match = _match_story_to_product(img_bytes, restaurant_id)
+    product = match.get("product")
+    confidence = match.get("confidence", "low")
+    description = match.get("description", "")
+
+    if product and confidence in ("high", "medium"):
+        price_str = f"{int(product['price']):,}" if product.get("price") else ""
+        price_part = f" — {price_str} د.ع" if price_str else ""
+        conf_note = "" if confidence == "high" else " (تقريباً)"
+        return (
+            f"[العميل يرد على ستوري{video_tag} يعرض: {product['name']}{price_part}{conf_note}]"
+            f"\nسياق للبوت: هذا المنتج موجود في قائمتك. استغل الفرصة وابدأ flow البيع مباشرة."
+        )
+
+    if description and description not in ("محتوى من المطعم", ""):
+        return f"[العميل يرد على ستوري{video_tag} يظهر: {description} — اسأله إذا يريد تجربته]"
+
+    return f"[العميل يرد على ستوري{video_tag} للمطعم — رحّب به وابدأ محادثة البيع]"
+
+
 def _download_and_describe_whatsapp_image(media_id: str, access_token: str, restaurant_id: str) -> tuple:
     """Resolve a WhatsApp media ID to bytes then describe via Vision."""
     try:
@@ -418,6 +629,7 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
     replied_story_id = ""
     replied_story_text = ""
     replied_story_media_url = ""
+    story_context = ""
 
     reply_to = message.get("reply_to", {})
     if reply_to:
@@ -426,9 +638,12 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             replied_story_id = story.get("id", "")
             replied_story_media_url = story.get("url", "")
             replied_story_text = text
-
         if not text:
             text = reply_to.get("text", "").strip()
+
+    # Story reply with no text (reaction/emoji tap) — still engage
+    if replied_story_id and not text:
+        text = "👍"
 
     if not text:
         return
@@ -440,6 +655,14 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             (restaurant_id,)
         ).fetchone()
         access_token = ch["token"] if ch else None
+
+        # Analyze story media smartly (image OR video thumbnail)
+        if replied_story_id and replied_story_media_url:
+            story_context = _analyze_story(
+                replied_story_media_url, replied_story_id,
+                restaurant_id, access_token or "", "instagram"
+            )
+            logger.info(f"[instagram] story_context: {story_context[:80]}")
 
         customer = _find_or_create_customer(
             conn, restaurant_id, "instagram", sender_id, "Instagram User", ""
@@ -458,6 +681,7 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             "replied_story_id": replied_story_id,
             "replied_story_text": replied_story_text,
             "replied_story_media_url": replied_story_media_url,
+            "story_context": story_context,
         }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
@@ -489,6 +713,9 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
 
     media_type_fb = ""
     media_url_fb = ""
+    replied_story_id_fb = ""
+    replied_story_media_url_fb = ""
+    story_context_fb = ""
 
     # Handle image attachments
     attachments = message.get("attachments", [])
@@ -506,6 +733,19 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
                     text = text + " " + image_text
             break
 
+    # Detect story reply (Facebook uses same structure as Instagram)
+    reply_to_fb = message.get("reply_to", {})
+    if reply_to_fb:
+        story_fb = reply_to_fb.get("story", {})
+        if story_fb:
+            replied_story_id_fb = story_fb.get("id", "")
+            replied_story_media_url_fb = story_fb.get("url", "")
+        if not text:
+            text = reply_to_fb.get("text", "").strip()
+
+    if replied_story_id_fb and not text:
+        text = "👍"
+
     if not text:
         return
 
@@ -516,6 +756,14 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
             (restaurant_id,)
         ).fetchone()
         page_token = ch["token"] if ch else None
+
+        # Analyze story media
+        if replied_story_id_fb and replied_story_media_url_fb:
+            story_context_fb = _analyze_story(
+                replied_story_media_url_fb, replied_story_id_fb,
+                restaurant_id, page_token or "", "facebook"
+            )
+            logger.info(f"[facebook] story_context: {story_context_fb[:80]}")
 
         customer = _find_or_create_customer(
             conn, restaurant_id, "facebook", sender_id, "Facebook User", ""
@@ -528,7 +776,13 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
             "page_token": page_token,
             "recipient_id": sender_id,
         }
-        extra = {"media_type": media_type_fb, "media_url": media_url_fb}
+        extra = {
+            "media_type": media_type_fb,
+            "media_url": media_url_fb,
+            "replied_story_id": replied_story_id_fb,
+            "replied_story_media_url": replied_story_media_url_fb,
+            "story_context": story_context_fb,
+        }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
         conn.close()
@@ -584,13 +838,11 @@ def _process_incoming(
         mode = conv_row["mode"] if conv_row else "bot"
 
         if mode == "bot":
-            # Build context hint for story replies
+            # Build context for bot — use rich story_context if available
             bot_input = content
             if extra.get("replied_story_id"):
-                hint = f"[المستخدم يرد على قصة (Story)] "
-                if extra.get("replied_story_media_url"):
-                    hint += f"رابط القصة: {extra['replied_story_media_url']} — "
-                bot_input = hint + content
+                story_ctx = extra.get("story_context") or "[العميل يرد على ستوري للمطعم]"
+                bot_input = f"{story_ctx}\nرد العميل: {content}"
 
             # Run AI bot
             result = bot.process_message(restaurant_id, conv_id, bot_input)
