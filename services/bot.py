@@ -19,7 +19,11 @@ ESCALATION_PHRASES_AR = [
     "مشكلة", "ألغ", "إلغ", "مسؤول",
 ]
 
-ORDER_KEYWORDS = ["أريد", "أطلب", "عايز", "بدي", "ابي", "حابب", "اطلب", "ابغى"]
+ORDER_KEYWORDS = [
+    "أريد", "أطلب", "عايز", "بدي", "ابي", "حابب", "اطلب", "ابغى",
+    "اريد", "اطلب", "ابغ", "خذلي", "جيبلي", "وياه", "وياهم", "اضيف",
+    "اخذ", "اشتري", "طلب", "طلبي",
+]
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -168,8 +172,8 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=500,
-            temperature=0.7,
+            max_tokens=800,
+            temperature=0.75,
         )
         reply_text = response.choices[0].message.content.strip()
         logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} reply_len={len(reply_text)}")
@@ -224,40 +228,45 @@ def _build_system_prompt(
         if cat not in menu_by_cat:
             menu_by_cat[cat] = []
         icon = p.get("icon", "🍽️")
-        menu_by_cat[cat].append(f"  {icon} {p['name']} — {p['price']} ريال")
+        price_str = f"{int(p['price']):,}" if p.get("price") else "—"
+        line = f"  {icon} {p['name']} — {price_str} د.ع"
         if p.get("description"):
-            menu_by_cat[cat][-1] += f" ({p['description']})"
+            line += f" ({p['description']})"
+        menu_by_cat[cat].append(line)
 
     menu_text = ""
     for cat, items in menu_by_cat.items():
         menu_text += f"\n### {cat}\n" + "\n".join(items) + "\n"
 
     # Customer info
-    cust_name = customer.get("name") or memory.get("name") or "العميل"
+    cust_name = customer.get("name") or memory.get("name") or ""
     is_vip = bool(customer.get("vip"))
-    vip_note = "\n⭐ هذا العميل VIP — قدم له خدمة مميزة وعروضاً خاصة." if is_vip else ""
+    vip_note = "\n⭐ هذا العميل VIP — قدم له خدمة مميزة واهتمام خاص." if is_vip else ""
 
     # Memory
-    memory_text = ""
+    memory_lines = []
     if memory:
-        prefs = []
         if memory.get("preferences"):
-            prefs.append(f"تفضيلات: {memory['preferences']}")
+            memory_lines.append(f"تفضيلاته: {memory['preferences']}")
         if memory.get("favorite_item"):
-            prefs.append(f"الوجبة المفضلة: {memory['favorite_item']}")
+            memory_lines.append(f"وجبته المفضلة: {memory['favorite_item']}")
         if memory.get("address"):
-            prefs.append(f"عنوان التوصيل المعتاد: {memory['address']}")
+            memory_lines.append(f"عنوان التوصيل المعتاد: {memory['address']}")
         if memory.get("allergies"):
-            prefs.append(f"حساسية: {memory['allergies']}")
-        if prefs:
-            memory_text = "\n### معلومات العميل المحفوظة\n" + "\n".join(f"- {p}" for p in prefs)
+            memory_lines.append(f"حساسية: {memory['allergies']}")
+    memory_text = (
+        "\n### معلومات العميل المحفوظة\n" + "\n".join(f"- {l}" for l in memory_lines)
+        if memory_lines else ""
+    )
 
     # Custom prompts from bot_config
     custom_system = bot_cfg.get("system_prompt") or ""
-    sales_prompt = bot_cfg.get("sales_prompt") or ""
+    sales_prompt_extra = bot_cfg.get("sales_prompt") or ""
 
-    prompt = f"""أنت {bot_name}، مساعد ذكاء اصطناعي احترافي لـ{rest_name}.
-اسم العميل: {cust_name}{vip_note}
+    cust_greeting = f"اسم العميل: {cust_name}" if cust_name else ""
+
+    prompt = f"""أنت {bot_name}، موظف مبيعات محترف ومتحمس يعمل لدى {rest_name}.
+{cust_greeting}{vip_note}
 
 ## معلومات المطعم
 - الاسم: {rest_name}
@@ -265,24 +274,33 @@ def _build_system_prompt(
 - الهاتف: {rest_phone}
 - رسالة الترحيب: {welcome}
 
-## قائمة الطعام
+## قائمة الطعام (الأسعار بالدينار العراقي)
 {menu_text}
 {memory_text}
 
-## تعليمات عامة
-- أجب دائماً بلغة العميل (عربي أو إنجليزي بحسب رسالته).
-- كن ودياً، مختصراً، ومفيداً.
-- عند طلب الغداء أو العشاء اسأل عن العنوان لتسهيل التوصيل.
-- اقترح وجبات مناسبة بناءً على تفضيلات العميل إن وجدت.
-- لا تخترع معلومات غير موجودة في قائمة الطعام أعلاه.
-- إذا لم تستطع الإجابة على سؤال، أخبر العميل بأنك ستحوله لموظف.
+## أسلوب التعامل
+- تحدث بنبرة ودية ومحببة كموظف مبيعات حقيقي، استخدم اللهجة العراقية الدارجة.
+- رحّب بالعميل بحرارة عند بداية المحادثة واعرض قائمة الطعام منظمةً بالأقسام.
+- اسأل العميل عن تفضيلاته (الحجم، الصوص، الإضافات) قبل إتمام الطلب.
+- اقترح وجبات مكملة أو مشروبات بشكل طبيعي دون إلحاح ("بتحب تضيف...؟ يطلع معها زين").
+- عند تأكيد الطلب، اعرض ملخصاً واضحاً بهذا الشكل:
+  ✅ طلبك:
+  • [اسم الوجبة] × [الكمية] — [السعر] د.ع
+  ──────────────
+  💰 المجموع: [الإجمالي] د.ع
+- بعد عرض الملخص، اطلب عنوان التوصيل إذا لم يكن محفوظاً.
+- اذكر طرق الدفع المتاحة (كاش / دفع إلكتروني) بعد تأكيد العنوان.
+- لا تخترع منتجات أو أسعاراً خارج القائمة أعلاه.
+- العملة دائماً: دينار عراقي (د.ع) — لا تذكر ريال أو أي عملة أخرى.
+- إذا سأل العميل عن شيء خارج نطاق المطعم، أعده بلطف لموضوع الطلب.
+- إذا طلب التحدث مع موظف أو أبدى شكوى، أخبره بأنك ستحوله لفريق الدعم.
 """
 
     if custom_system:
-        prompt += f"\n## تعليمات إضافية\n{custom_system}\n"
+        prompt += f"\n## تعليمات إضافية من المطعم\n{custom_system}\n"
 
-    if sales_prompt:
-        prompt += f"\n## المبيعات والعروض\n{sales_prompt}\n"
+    if sales_prompt_extra:
+        prompt += f"\n## عروض وحملات خاصة\n{sales_prompt_extra}\n"
 
     return prompt
 

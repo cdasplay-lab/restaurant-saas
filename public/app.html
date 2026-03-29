@@ -630,10 +630,20 @@
           <!-- Advanced bot config -->
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
             <h3 class="text-white font-semibold">⚙️ إعدادات متقدمة</h3>
-            <div><label class="text-slate-400 text-xs mb-1.5 block">System Prompt — تعليمات شخصية البوت</label>
-              <textarea id="bcSystemPrompt" rows="5" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none font-mono"></textarea></div>
-            <div><label class="text-slate-400 text-xs mb-1.5 block">Sales Prompt — تعليمات تحسين المبيعات</label>
-              <textarea id="bcSalesPrompt" rows="3" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea></div>
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="text-slate-400 text-xs">System Prompt — تعليمات شخصية البوت</label>
+                <button onclick="fillDefaultSystemPrompt()" class="text-xs text-indigo-400 hover:text-indigo-300 transition">✨ استخدم القالب الاحترافي</button>
+              </div>
+              <textarea id="bcSystemPrompt" rows="6" placeholder="اتركه فارغاً لاستخدام السلوك الافتراضي، أو أضف تعليمات إضافية خاصة بمطعمك..." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none font-mono placeholder-slate-600"></textarea>
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="text-slate-400 text-xs">Sales Prompt — عروض وحملات خاصة</label>
+                <button onclick="fillDefaultSalesPrompt()" class="text-xs text-indigo-400 hover:text-indigo-300 transition">✨ قالب العروض</button>
+              </div>
+              <textarea id="bcSalesPrompt" rows="3" placeholder="مثال: اليوم عندنا عرض خاص — وجبتين بسعر وجبة واحدة! اذكر هذا للعميل بشكل طبيعي أثناء الطلب." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none placeholder-slate-600"></textarea>
+            </div>
             <div><label class="text-slate-400 text-xs mb-1.5 block">كلمات التصعيد (مفصولة بفاصلة)</label>
               <input id="bcEscalationKw" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500" placeholder="مدير, شكوى, استرداد..."></div>
             <div><label class="text-slate-400 text-xs mb-1.5 block">رسالة التحويل للموظف</label>
@@ -2267,6 +2277,36 @@ async function markAllRead() {
 }
 
 // ── Bot Config ────────────────────────────────────────────────
+function fillDefaultSystemPrompt() {
+  document.getElementById('bcSystemPrompt').value =
+`أنت موظف مبيعات محترف ومتحمس في هذا المطعم. تحدث بلهجة عراقية دافئة وودية.
+
+عند بداية كل محادثة:
+- رحّب بالعميل بحرارة واسأله عمّا يرغب به.
+- اعرض قائمة الطعام منظمةً بالأقسام مع الأسعار بالدينار العراقي.
+
+عند الطلب:
+- اسأل عن الحجم والصوص والإضافات المتاحة قبل تأكيد الطلب.
+- اقترح وجبة مكملة أو مشروب بشكل طبيعي ("بتحب تضيف...؟ يطلع معها زين 😊").
+- اعرض ملخص الطلب بشكل واضح مع الإجمالي بالدينار العراقي.
+- اطلب عنوان التوصيل ثم أذكر طرق الدفع (كاش / دفع إلكتروني).
+
+قواعد مهمة:
+- العملة دائماً دينار عراقي (د.ع) فقط.
+- لا تخترع منتجات خارج القائمة.
+- إذا طلب العميل التحدث مع موظف، أخبره بأنك ستحوله فوراً.`;
+  toast('تم تحميل القالب الاحترافي', 'success');
+}
+
+function fillDefaultSalesPrompt() {
+  document.getElementById('bcSalesPrompt').value =
+`اذكر للعميل بشكل طبيعي أثناء الطلب:
+- اقترح الإضافات والمشروبات المتاحة ("بتحب تضيف مشروب؟ الكومبو يوفر عليك").
+- إذا طلب وجبة واحدة، اقترح طلب وجبة إضافية للعائلة أو الأصحاب.
+- نبّه على العروض اليومية إذا كانت موجودة.`;
+  toast('تم تحميل قالب العروض', 'success');
+}
+
 async function loadBotConfig() {
   try {
     const d = await api.get('/api/bot-config');
