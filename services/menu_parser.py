@@ -5,8 +5,8 @@ Supported formats:
   Images : .jpg .jpeg .png .gif .webp  → OpenAI Vision (gpt-4o)
   PDF    : .pdf (multi-page)           → PyMuPDF renders pages → Vision
   Word   : .docx                       → python-docx text → GPT-4o
-  Excel  : .xlsx .xls                  → openpyxl → GPT-4o
-  CSV    : .csv                         → direct text → GPT-4o
+  Excel  : .xlsx .xls                  → openpyxl / xlrd → direct mapping → GPT-4o fallback
+  CSV    : .csv                         → direct mapping → GPT-4o fallback
   Text   : .txt                         → direct text → GPT-4o
 
 Confidence scoring:
@@ -17,6 +17,7 @@ Confidence scoring:
 """
 
 import os
+import re
 import json
 import uuid
 import base64
@@ -270,51 +271,134 @@ def _parse_docx(path: str, client) -> List[Dict]:
         return []
 
 
-# ── Arabic + English column header synonyms ───────────────────────────────────
-# Keys are normalised (lowercase, no spaces/underscores/dashes) — matched via _norm_header()
-_COL_NAME     = {
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║               SPREADSHEET PARSER — DEFINITIONS & CONSTANTS                  ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# Column synonym sets are stored in normalised form (lowercase, separators
+# removed) to be matched after _norm_header() is applied to the actual cell.
+
+# ── Name column synonyms ──────────────────────────────────────────────────────
+_COL_NAME = {
+    # English
     "name", "productname", "itemname", "product", "item", "title",
+    "dish", "meal", "menuitem", "fooditem", "food", "dishname", "foodname",
+    "itemtitle", "mealdescription",
+    # Arabic
     "اسم", "الاسم", "المنتج", "اسمالمنتج", "اسمالصنف", "الصنف",
-    "الوجبة", "اسمالوجبة", "الطبق", "اسمالطبق",
+    "الوجبة", "اسمالوجبة", "الطبق", "اسمالطبق", "العنصر",
+    "اسمالعنصر", "عنصرالقائمة",
 }
+
+# ── Category column synonyms ──────────────────────────────────────────────────
 _COL_CATEGORY = {
-    "category", "cat", "section", "group", "type",
+    # English
+    "category", "cat", "section", "group", "type", "class",
+    "subsection", "department", "course",
+    # Arabic
     "قسم", "فئة", "القسم", "الفئة", "التصنيف", "النوع", "المجموعة",
+    "التقسيم", "الفئةالرئيسية", "قسمالمنتج",
 }
-_COL_PRICE    = {
+
+# ── Price column synonyms ─────────────────────────────────────────────────────
+_COL_PRICE = {
+    # English
     "price", "cost", "amount", "rate", "value", "unitprice",
+    "listprice", "sellingprice", "saleprice", "retail", "retailprice",
+    # Arabic
     "سعر", "السعر", "الثمن", "ثمن", "قيمة", "التكلفة", "سعرالوحدة",
+    "سعربيع", "سعرالبيع", "سعرالتجزئة", "المبلغ", "التكلفه",
 }
-_COL_DESC     = {
-    "description", "desc", "details", "notes", "note",
+
+# ── Description column synonyms ───────────────────────────────────────────────
+_COL_DESC = {
+    # English
+    "description", "desc", "details", "notes", "note", "info",
+    "ingredients", "about", "summary",
+    # Arabic
     "وصف", "الوصف", "تفاصيل", "ملاحظات", "ملاحظة",
+    "المكونات", "مكونات", "معلومات",
 }
-_COL_ICON     = {"icon", "emoji", "أيقونة", "رمز", "صورة"}
-_COL_AVAIL    = {"available", "active", "enabled", "status", "متاح", "نشط", "الحالة"}
 
-# Normalised row-name patterns that indicate non-product rows (total/footer/etc.)
+# ── Icon / image column synonyms ──────────────────────────────────────────────
+_COL_ICON  = {"icon", "emoji", "image", "img", "photo", "أيقونة", "رمز", "صورة"}
+
+# ── Availability column synonyms ──────────────────────────────────────────────
+_COL_AVAIL = {
+    "available", "active", "enabled", "status", "instock", "visible",
+    "متاح", "نشط", "الحالة", "مفعل", "متوفر",
+}
+
+# ── Row names that indicate non-product rows (normalised) ─────────────────────
 _SKIP_ROW_NAMES = {
+    # English
     "total", "subtotal", "grandtotal", "discount", "tax", "vat",
-    "note", "notes", "remark", "sum",
+    "note", "notes", "remark", "remarks", "sum", "footer", "header",
+    "page", "pagetotal", "nettotal",
+    # Arabic
     "المجموع", "الإجمالي", "مجموع", "إجمالي", "ملاحظة", "ملاحظات",
-    "خصم", "ضريبة",
+    "خصم", "ضريبة", "ضريبةالقيمةالمضافة", "صفحة",
 }
 
+# ── Tokens that block partial header matching (ID/code columns, not name) ─────
+_PARTIAL_MATCH_BLOCK = {
+    "code", "id", "no", "num", "number", "ref", "sku",
+    "barcode", "serial", "seq", "sequence", "index", "rank",
+    "كود", "رقم", "مسلسل",
+}
+
+# ── Currency symbols to strip before numeric parsing (longest first) ──────────
+_CURRENCY_SYMS = [
+    "IQD", "EGP", "AED", "BHD", "QAR", "JOD", "LBP", "KWD", "OMR", "YER",
+    "SAR", "MAD", "TND", "DZD", "SDG", "USD", "EUR", "GBP",
+    "ر.س", "ريال", "ر.ع", "د.ك", "د.ع", "ج.م", "د.إ", "د.أ", "ل.ل", "ر.ق",
+    "$", "€", "£", "﷼", "¥", "₺",
+]
+
+# Direct-parse quality threshold — below this score we also try OpenAI
+_SHEET_QUALITY_FALLBACK = 0.30
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                        NORMALISATION HELPERS                                ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def _norm_header(h: str) -> str:
-    """Normalise a cell for column matching: strip BOM/control chars, lowercase,
-    remove spaces / underscores / dashes / dots."""
+    """Normalise a cell for column matching.
+    Strips BOM / zero-width / control chars → lowercase → removes separators."""
     import unicodedata
-    h = h.replace('\ufeff', '').replace('\xa0', ' ')
-    h = ''.join(c for c in h if not unicodedata.category(c).startswith('C'))
+    # Remove BOM and invisible Unicode characters
+    h = h.replace('\ufeff', '').replace('\u200b', '').replace('\u200c', '')
+    h = h.replace('\u200d', '').replace('\xa0', ' ')
+    # Drop control (Cc) and format (Cf) characters, keep all printable Unicode
+    h = ''.join(c for c in h if unicodedata.category(c) not in ('Cc', 'Cf'))
     h = h.strip().lower()
-    for sep in (' ', '_', '-', '.', '/'):
+    # Remove separator characters so "product_name" == "productname" == "product name"
+    for sep in (' ', '_', '-', '.', '/', '\\', '(', ')', '[', ']', ':'):
         h = h.replace(sep, '')
     return h
 
 
+def _clean_cell(v: str) -> str:
+    """Strip BOM, zero-width spaces, and control chars from any cell value.
+    Preserves Arabic / Unicode text content completely."""
+    import unicodedata
+    v = v.replace('\ufeff', '').replace('\u200b', '').replace('\u200c', '')
+    v = v.replace('\u200d', '').replace('\u200e', '').replace('\u200f', '')
+    v = v.replace('\xa0', ' ')
+    # Remove only actual control characters (Cc); keep all printable Unicode
+    v = ''.join(c for c in v if unicodedata.category(c) != 'Cc')
+    return v.strip()
+
+
 def _header_to_field(hn: str) -> Optional[str]:
-    """Map a normalised header string to a field key, or None if unrecognised."""
+    """Map a normalised header string to a field key, or None if unrecognised.
+
+    Strategy:
+    1. Exact match against all synonym sets.
+    2. Blocklist: if header contains an ID/code token, skip partial matching.
+    3. Controlled substring match (keyword ≥ 4 chars to avoid noise).
+    """
     pairs = (
         (_COL_NAME,     "name"),
         (_COL_CATEGORY, "category"),
@@ -323,27 +407,105 @@ def _header_to_field(hn: str) -> Optional[str]:
         (_COL_ICON,     "icon"),
         (_COL_AVAIL,    "available"),
     )
-    # Exact match first
+    # ── Exact match ───────────────────────────────────────────────────────────
     for col_set, field in pairs:
         if hn in col_set:
             return field
-    # Substring / partial match for compound column names (e.g. "productname" ↔ "name")
-    for col_set, field in pairs[:4]:
+
+    # ── Blocklist: refuse partial match for ID/code/serial columns ────────────
+    for block_tok in _PARTIAL_MATCH_BLOCK:
+        if block_tok in hn:
+            return None
+
+    # ── Controlled substring / partial match ──────────────────────────────────
+    # Keyword must be ≥ 4 chars; header must be ≥ 3 chars to reduce false positives
+    for col_set, field in pairs[:4]:   # only name / category / price / description
         for kw in col_set:
-            if len(kw) >= 3 and len(hn) >= 3 and (kw in hn or hn in kw):
+            if len(kw) >= 4 and len(hn) >= 3 and (kw in hn or hn in kw):
                 return field
     return None
 
 
-# ── Low-level file readers ─────────────────────────────────────────────────────
+# ── Comprehensive price parser ────────────────────────────────────────────────
+
+def _parse_price(raw: str) -> Optional[float]:
+    """Parse a price string to float.
+
+    Handles:
+    - Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) and separators (٫ decimal, ٬ thousands)
+    - All common currency symbols and codes (SAR, IQD, EGP, AED, د.ع, ر.س, etc.)
+    - Smart comma: "5,000" → 5000.0 (thousands) vs "12,5" → 12.5 (decimal)
+    - Broken formats like "5..0", multiple spaces, stray characters
+
+    Returns None on failure or for negative values.
+    """
+    if not raw or not raw.strip():
+        return None
+
+    # Translate Eastern Arabic numerals and separator chars to ASCII equivalents
+    # ٫ = Arabic decimal separator, ٬ = Arabic thousands separator
+    _ea = str.maketrans("٠١٢٣٤٥٦٧٨٩٫٬", "0123456789.,")
+    s = raw.strip().translate(_ea)
+
+    # Strip currency symbols (longest first to avoid partial strip)
+    for sym in _CURRENCY_SYMS:
+        s = s.replace(sym, "")
+
+    s = s.strip()
+    if not s:
+        return None
+
+    # Smart comma disambiguation:
+    #   "5,000"     → thousands (comma before exactly 3 digits at end) → 5000
+    #   "1,234,567" → thousands → 1234567
+    #   "12,5"      → decimal  → 12.5
+    #   "12,50"     → decimal  → 12.50
+    thousands_re = re.compile(r'^\d{1,3}(,\d{3})+(\.\d+)?$')
+    decimal_comma_re = re.compile(r'^\d+,\d{1,2}$')
+
+    if thousands_re.match(s):
+        s = s.replace(',', '')          # "5,000" → "5000"
+    elif decimal_comma_re.match(s):
+        s = s.replace(',', '.')         # "12,5"  → "12.5"
+    else:
+        # Default: remaining commas treated as decimal separator
+        s = s.replace(',', '.')
+
+    # Strip non-numeric characters except dot and minus
+    s = re.sub(r'[^\d.\-]', '', s)
+
+    # Collapse multiple consecutive dots (e.g. "5..0" → "5.0")
+    while '..' in s:
+        s = s.replace('..', '.')
+
+    # Handle edge cases like lone "." or "-"
+    if not s or s in ('.', '-', '-.', '0.'):
+        return None
+
+    try:
+        val = float(s)
+        return val if val >= 0 else None
+    except ValueError:
+        return None
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                        LOW-LEVEL FILE READERS                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def _read_csv(path: str) -> List[List[str]]:
-    """Read CSV with auto-encoding detection and delimiter sniffing."""
+    """Read CSV with auto-encoding detection and delimiter sniffing.
+
+    Encoding order: utf-8-sig → utf-8 → cp1256 → windows-1252 → latin-1
+    Delimiters tried: comma, semicolon, tab, pipe
+    Falls back to utf-8 lossy if all strict encodings fail.
+    """
     import csv, io as _io
 
     raw: Optional[str] = None
     used_enc = "utf-8"
-    for enc in ("utf-8-sig", "utf-8", "cp1256", "latin-1"):
+    # windows-1252 is very common for Excel-exported Arabic CSVs on Windows
+    for enc in ("utf-8-sig", "utf-8", "cp1256", "windows-1252", "latin-1"):
         try:
             with open(path, "r", encoding=enc, errors="strict") as fh:
                 raw = fh.read()
@@ -351,62 +513,123 @@ def _read_csv(path: str) -> List[List[str]]:
             break
         except (UnicodeDecodeError, UnicodeError):
             continue
+
     if raw is None:
+        logger.warning("[csv] all strict encodings failed — using utf-8 lossy replacement")
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             raw = fh.read()
         used_enc = "utf-8(lossy)"
 
-    # Sniff delimiter from first 4 KB
-    snippet = raw[:4096]
+    # Manual BOM strip (shouldn't be needed with utf-8-sig but belt-and-suspenders)
+    if raw.startswith('\ufeff'):
+        raw = raw[1:]
+
+    # ── Delimiter sniffing ────────────────────────────────────────────────────
+    # Score each delimiter by: mean column count × (1 / coefficient_of_variation + 1)
+    # High mean + low variation = consistent split = correct delimiter
+    snippet = raw[:8192]
     best_delim, best_score = ",", 0.0
+    delim_scores: Dict[str, str] = {}
+
     for d in (",", ";", "\t", "|"):
-        reader = csv.reader(_io.StringIO(snippet), delimiter=d)
-        sample = [r for _, r in zip(range(8), reader)]
-        widths = [len(r) for r in sample if r]
-        if not widths or max(widths) <= 1:
-            continue
-        mean_w = sum(widths) / len(widths)
-        variance = sum((w - mean_w) ** 2 for w in widths) / len(widths)
-        score = mean_w / (variance ** 0.5 + 1.0)
-        if score > best_score:
-            best_score = score
-            best_delim = d
+        try:
+            reader = csv.reader(_io.StringIO(snippet), delimiter=d)
+            sample: List[List[str]] = []
+            for row in reader:
+                if any(c.strip() for c in row):
+                    sample.append(row)
+                if len(sample) >= 12:
+                    break
+            if not sample:
+                delim_scores[repr(d)] = "no_rows"
+                continue
+            widths = [len(r) for r in sample]
+            if max(widths) <= 1:
+                delim_scores[repr(d)] = "no_split"
+                continue
+            mean_w   = sum(widths) / len(widths)
+            variance = sum((w - mean_w) ** 2 for w in widths) / len(widths)
+            cv       = (variance ** 0.5) / (mean_w + 0.001)
+            score    = mean_w / (cv + 1.0)
+            delim_scores[repr(d)] = f"{score:.2f}"
+            if score > best_score:
+                best_score = score
+                best_delim = d
+        except Exception as ex:
+            delim_scores[repr(d)] = f"err:{ex}"
+
+    logger.info(f"[csv] enc={used_enc} delim_scores={delim_scores} → selected={best_delim!r}")
 
     rows = list(csv.reader(_io.StringIO(raw), delimiter=best_delim))
-    logger.info(f"[csv] enc={used_enc} delim={best_delim!r} rows={len(rows)}")
-    return [[c.strip() for c in r] for r in rows]
+    clean_rows = [[_clean_cell(c) for c in r] for r in rows]
+    logger.info(f"[csv] total_rows={len(clean_rows)}")
+    return clean_rows
 
 
 def _read_xlsx(path: str) -> List[List[List[str]]]:
-    """Read all non-empty sheets from .xlsx; return list-of-sheets, each a list-of-rows."""
+    """Read all non-empty sheets from .xlsx using openpyxl.
+
+    Returns list-of-sheets; each sheet is a list-of-rows; each row is a list of
+    stripped string cells.  Leading and trailing all-empty rows are trimmed.
+    """
     import openpyxl
-    wb  = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception as e:
+        logger.error(f"[xlsx] openpyxl failed to open '{path}': {e}", exc_info=True)
+        raise
+
     out: List[List[List[str]]] = []
     for ws in wb.worksheets:
         rows: List[List[str]] = []
         for row in ws.iter_rows():
-            cells = [str(c.value if c.value is not None else "").strip() for c in row]
+            cells = [_clean_cell(str(c.value if c.value is not None else "")) for c in row]
             rows.append(cells)
+        # Trim trailing all-empty rows
         while rows and not any(c for c in rows[-1]):
             rows.pop()
+        # Trim leading all-empty rows
+        while rows and not any(c for c in rows[0]):
+            rows.pop(0)
         if rows:
+            max_cols = max(len(r) for r in rows)
             out.append(rows)
-            logger.info(f"[xlsx] sheet='{ws.title}' rows={len(rows)}")
+            logger.info(f"[xlsx] sheet='{ws.title}' rows={len(rows)} max_cols={max_cols}")
+        else:
+            logger.debug(f"[xlsx] sheet='{ws.title}' is entirely empty — skipped")
     wb.close()
+
+    if not out:
+        logger.warning(f"[xlsx] workbook '{path}' has no non-empty sheets")
     return out
 
 
 def _read_xls(path: str) -> List[List[List[str]]]:
-    """Read all sheets from legacy .xls (uses xlrd if installed, else openpyxl fallback)."""
+    """Read all sheets from legacy .xls using xlrd.
+
+    Falls back to openpyxl only if xlrd is not installed (openpyxl ≥ 3.x cannot
+    read true .xls, so the fallback is a best-effort for xlsx-named-as-xls).
+    """
     try:
         import xlrd
     except ImportError:
-        logger.warning("[xls] xlrd not installed — trying openpyxl (may fail for old .xls format)")
+        logger.warning(
+            "[xls] xlrd not installed — falling back to openpyxl (may fail for true .xls). "
+            "Install: pip install xlrd>=2.0.0"
+        )
         return _read_xlsx(path)
 
-    wb  = xlrd.open_workbook(path)
+    try:
+        wb = xlrd.open_workbook(path)
+    except Exception as e:
+        logger.error(f"[xls] xlrd failed to open '{path}': {e}", exc_info=True)
+        raise
+
     out: List[List[List[str]]] = []
     for ws in wb.sheets():
+        if ws.nrows == 0:
+            logger.debug(f"[xls] sheet='{ws.name}' empty — skipped")
+            continue
         rows: List[List[str]] = []
         for ri in range(ws.nrows):
             row: List[str] = []
@@ -414,88 +637,277 @@ def _read_xls(path: str) -> List[List[List[str]]]:
                 ctype = ws.cell_type(ri, ci)
                 val   = ws.cell_value(ri, ci)
                 if ctype == xlrd.XL_CELL_NUMBER:
-                    row.append(str(int(val)) if float(val) == int(val) else str(val))
+                    # xlrd returns all numbers as float; display whole numbers without ".0"
+                    cell_str = (
+                        str(int(val))
+                        if (float(val) == int(val) and abs(val) < 1e15)
+                        else str(val)
+                    )
+                elif ctype == xlrd.XL_CELL_DATE:
+                    # Keep date cells as raw string; don't parse as price
+                    cell_str = str(val)
+                elif ctype == xlrd.XL_CELL_BOOLEAN:
+                    cell_str = "نعم" if val else "لا"
+                elif ctype == xlrd.XL_CELL_ERROR:
+                    cell_str = ""
                 else:
-                    row.append(str(val).strip())
+                    cell_str = str(val)
+                row.append(_clean_cell(cell_str))
             rows.append(row)
+        # Trim trailing / leading all-empty rows
         while rows and not any(c for c in rows[-1]):
             rows.pop()
+        while rows and not any(c for c in rows[0]):
+            rows.pop(0)
         if rows:
             out.append(rows)
-            logger.info(f"[xls] sheet='{ws.name}' rows={len(rows)}")
+            logger.info(f"[xls] sheet='{ws.name}' rows={len(rows)} cols={ws.ncols}")
+
+    if not out:
+        logger.warning(f"[xls] workbook '{path}' has no non-empty sheets")
     return out
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                      SPREADSHEET ORCHESTRATOR                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _score_sheet_quality(items: List[Dict]) -> float:
+    """Score the quality of items extracted from one sheet (0.0–1.0).
+
+    Combines four signals:
+    - item count (saturates at 10+)
+    - price coverage (fraction of items with a valid price)
+    - average confidence
+    - name quality (items with a meaningful, non-numeric name)
+
+    Used to decide whether direct-parse results are production-worthy
+    or we should fall back to OpenAI.
+    """
+    if not items:
+        return 0.0
+    n = len(items)
+    if n < 2:
+        return 0.15   # single item is suspicious — low but nonzero
+
+    count_score  = min(n / 10.0, 1.0)
+    price_score  = sum(1 for i in items if i.get("price") is not None) / n
+    avg_conf     = sum(i.get("confidence", 0.0) for i in items) / n
+    good_names   = sum(
+        1 for i in items
+        if len(i.get("name", "")) >= 2
+        and not i.get("name", "").replace(" ", "").isdigit()
+    )
+    name_score = good_names / n
+
+    score = (
+        0.25 * count_score +
+        0.30 * price_score +
+        0.20 * avg_conf    +
+        0.25 * name_score
+    )
+    return round(score, 3)
 
 
 def _parse_spreadsheet(path: str, client, file_name: str = "") -> List[Dict]:
     """Parse .xlsx / .xls / .csv → product list.
-    • Reads ALL sheets (multi-sheet Excel supported).
-    • Tries direct column mapping on each sheet (no OpenAI cost).
-    • Falls back to OpenAI text parse if no recognised headers found anywhere.
+
+    Flow:
+    1. Route to correct reader based on extension.
+    2. Read ALL sheets.
+    3. Run direct column mapping on each sheet (_spreadsheet_direct).
+    4. Score each sheet; keep sheets at ≥ 50% of the best sheet's score.
+    5. Deduplicate items across sheets.
+    6. If no items OR quality too low → fall back to OpenAI text parse.
+       If OpenAI also returns nothing → return direct results anyway.
+
+    Every major decision is logged for production diagnostics.
     """
     ext = Path(file_name).suffix.lower() if file_name else Path(path).suffix.lower()
-    logger.info(f"[spreadsheet] START file='{file_name or path}' ext='{ext}'")
+    logger.info(f"[spreadsheet] ═══ START  file='{file_name or path}'  ext='{ext}' ═══")
 
+    # ── Step 1: Read file ──────────────────────────────────────────────────────
     try:
         if ext == ".csv":
+            logger.info("[spreadsheet] parser → csv reader")
             sheets: List[List[List[str]]] = [_read_csv(path)]
         elif ext == ".xlsx":
+            logger.info("[spreadsheet] parser → openpyxl (.xlsx)")
             sheets = _read_xlsx(path)
         elif ext == ".xls":
+            logger.info("[spreadsheet] parser → xlrd (.xls)")
             sheets = _read_xls(path)
         else:
+            logger.warning(f"[spreadsheet] unknown ext='{ext}' — trying xlsx then csv")
             try:
                 sheets = _read_xlsx(path)
+                logger.info("[spreadsheet] sniff → openpyxl succeeded")
             except Exception:
                 sheets = [_read_csv(path)]
+                logger.info("[spreadsheet] sniff → csv reader succeeded")
     except Exception as e:
-        logger.error(f"[spreadsheet] read error: {e}", exc_info=True)
-        return []
+        logger.error(f"[spreadsheet] FATAL read error: {e}", exc_info=True)
+        return _error_item(f"فشل قراءة الملف: {e}")
 
     sheets = [s for s in sheets if s]
     if not sheets:
-        logger.error("[spreadsheet] no data read from file")
-        return []
+        msg = "الملف فارغ أو لا يحتوي على بيانات قابلة للقراءة"
+        logger.error(f"[spreadsheet] {msg}")
+        return _error_item(msg)
 
     total_rows = sum(len(s) for s in sheets)
-    logger.info(f"[spreadsheet] {len(sheets)} sheet(s) loaded, {total_rows} total rows")
+    logger.info(
+        f"[spreadsheet] loaded  sheets={len(sheets)}  total_rows={total_rows}  "
+        f"rows_per_sheet={[len(s) for s in sheets]}"
+    )
 
-    all_items: List[Dict] = []
+    # ── Step 2: Direct mapping on each sheet ──────────────────────────────────
+    sheet_results: List[Dict] = []
     for idx, rows in enumerate(sheets):
         label = f"sheet{idx + 1}"
         items = _spreadsheet_direct(rows, sheet_label=label)
-        if items:
-            all_items.extend(items)
+        score = _score_sheet_quality(items)
+        logger.info(
+            f"[spreadsheet] {label}: direct_items={len(items)}  quality={score:.3f}"
+        )
+        sheet_results.append({"label": label, "items": items, "score": score})
 
-    if all_items:
-        logger.info(f"[spreadsheet] direct parse total: {len(all_items)} items (no OpenAI)")
-        return all_items
+    # ── Step 3: Collect sheets that meet quality bar ───────────────────────────
+    best_score = max((r["score"] for r in sheet_results), default=0.0)
+    all_items: List[Dict] = []
+    used_sheets: List[str] = []
 
-    logger.info("[spreadsheet] no recognised headers in any sheet — falling back to OpenAI")
-    text_parts: List[str] = []
-    for idx, rows in enumerate(sheets):
-        if len(sheets) > 1:
-            text_parts.append(f"=== Sheet {idx + 1} ===")
-        text_parts.extend(" | ".join(r) for r in rows[:300])
-    text = "\n".join(text_parts)[:12000]
-    return _call_text(text, client)
+    for r in sheet_results:
+        # Include this sheet only if:
+        #   • it has items, AND
+        #   • its score is at least 50% of the best sheet's score (avoids garbage sheets)
+        quality_floor = max(best_score * 0.50, 0.10)
+        if r["items"] and r["score"] >= quality_floor:
+            all_items.extend(r["items"])
+            used_sheets.append(r["label"])
+        elif r["items"]:
+            logger.info(
+                f"[spreadsheet] {r['label']} excluded "
+                f"(score={r['score']:.3f} < floor={quality_floor:.3f})"
+            )
+
+    logger.info(
+        f"[spreadsheet] direct total: items={len(all_items)}  "
+        f"from={used_sheets}  best_quality={best_score:.3f}"
+    )
+
+    # ── Step 4: Dedup across sheets (same item extracted from multiple sheets) ─
+    dup_count = 0
+    if len(used_sheets) > 1 and all_items:
+        before = len(all_items)
+        seen: Dict[str, Dict] = {}
+        for item in all_items:
+            key = _norm_header(item.get("name", ""))
+            if key not in seen or item.get("confidence", 0) > seen[key].get("confidence", 0):
+                seen[key] = item
+        all_items = list(seen.values())
+        dup_count = before - len(all_items)
+        if dup_count:
+            logger.info(f"[spreadsheet] cross-sheet dedup: removed {dup_count} duplicates")
+
+    # ── Step 5: Decide whether to use direct results or fall back to OpenAI ───
+    fallback_reason: Optional[str] = None
+    if not all_items:
+        fallback_reason = "no_items_extracted_from_any_sheet"
+    elif best_score < _SHEET_QUALITY_FALLBACK:
+        fallback_reason = (
+            f"best_quality_score={best_score:.3f} < threshold={_SHEET_QUALITY_FALLBACK}"
+        )
+
+    if fallback_reason:
+        logger.info(f"[spreadsheet] → OpenAI fallback  reason={fallback_reason}")
+        text_parts: List[str] = []
+        for idx, rows in enumerate(sheets):
+            if len(sheets) > 1:
+                text_parts.append(f"=== Sheet {idx + 1} ===")
+            text_parts.extend(" | ".join(r) for r in rows[:300])
+        text = "\n".join(text_parts)[:12000]
+        openai_items = _call_text(text, client)
+        logger.info(f"[spreadsheet] OpenAI returned {len(openai_items)} items")
+
+        # If OpenAI also returns nothing, keep our low-quality direct results
+        if not openai_items and all_items:
+            logger.warning(
+                "[spreadsheet] OpenAI returned empty — keeping low-quality direct results"
+            )
+            return all_items
+        return openai_items
+
+    logger.info(
+        f"[spreadsheet] ═══ DONE  items={len(all_items)}  dups_removed={dup_count}  "
+        f"openai_used=False ═══"
+    )
+    return all_items
 
 
-# ── Direct spreadsheet → product mapping ──────────────────────────────────────
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                    DIRECT SPREADSHEET → PRODUCT MAPPER                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# Known food section / category keywords (normalised).
+# Rows whose name matches one of these are treated as section-dividers and their
+# name is carried forward as the running category for subsequent rows.
+_SECTION_HEADER_PATTERNS = {
+    # English
+    "appetizer", "appetizers", "starter", "starters", "salad", "salads",
+    "soup", "soups", "maincourse", "mainmenu", "main", "mains",
+    "dessert", "desserts", "drink", "drinks", "beverage", "beverages",
+    "sandwich", "sandwiches", "pizza", "burger", "burgers", "grill",
+    "grills", "breakfast", "specials", "special", "kids", "kidsmenu",
+    "sidedish", "sides", "combo", "combos", "set", "sets",
+    # Arabic
+    "مقبلات", "سلطات", "شوربات", "أطباقرئيسية", "وجباترئيسية",
+    "حلويات", "مشروبات", "عصائر", "مشاوي", "بيتزا", "برغر",
+    "سندويشات", "افطار", "وجباتخفيفة", "إضافات", "وجباتاطفال",
+    "مقليات", "مخبوزات", "أرز", "معكرونة", "دجاج", "لحوم", "أسماك",
+}
+
+
+def _looks_like_section_header(name: str) -> bool:
+    """Return True if the name matches a known food section keyword,
+    or is a short ALL-CAPS ASCII string (English section divider style)."""
+    hn = _norm_header(name)
+    if hn in _SECTION_HEADER_PATTERNS:
+        return True
+    # Short ALL-CAPS ASCII name with no price → likely an English section header
+    stripped = name.strip()
+    if (
+        len(stripped) <= 30
+        and stripped == stripped.upper()
+        and all(c.isascii() for c in stripped)
+        and stripped.replace(' ', '').replace('-', '').replace('/', '').isalpha()
+    ):
+        return True
+    return False
+
 
 def _spreadsheet_direct(rows: List[List[str]], sheet_label: str = "") -> List[Dict]:
-    """Map rows to products via column headers.
+    """Map spreadsheet rows to product dicts using column headers.
 
-    1. Scan first 15 rows for the best header row (must include a 'name' column).
-    2. If no header found, use a no-header heuristic for 2–4 column sheets.
-    3. Delegate actual row conversion to _extract_data_rows.
+    Algorithm:
+    1. Scan the first 15 rows for the best header row (must include a name column;
+       more recognised columns = better).
+    2. If no header found → apply a no-header heuristic:
+       a) Requires 2–5 consistent columns and ≥ 3 data rows.
+       b) Identifies price column (most numeric values).
+       c) Identifies name column (most text values, not price column).
+       d) Requires ≥ 30% of rows to be numeric in the price column.
+       e) Requires ≥ 50% of rows to be text in the name column.
+    3. Delegate row conversion to _extract_data_rows.
     """
     prefix = f"[direct/{sheet_label}]" if sheet_label else "[direct]"
     if not rows:
         return []
 
-    # ── Find best header row ───────────────────────────────────────────────────
-    best_idx     = -1
+    # ── Step 1: Find best header row (scan first 15 rows) ─────────────────────
+    best_idx      = -1
     best_col_map: Dict[str, int] = {}
+    best_mapped   = 0
 
     for i, row in enumerate(rows[:15]):
         if not any(c.strip() for c in row):
@@ -505,59 +917,89 @@ def _spreadsheet_direct(rows: List[List[str]], sheet_label: str = "") -> List[Di
             field = _header_to_field(_norm_header(cell))
             if field and field not in col_map:
                 col_map[field] = ci
-        if "name" in col_map and len(col_map) >= len(best_col_map):
+        if "name" in col_map and len(col_map) > best_mapped:
+            best_mapped  = len(col_map)
             best_col_map = col_map
-            best_idx = i
+            best_idx     = i
 
-    logger.info(f"{prefix} header_idx={best_idx} col_map={best_col_map}")
+    logger.info(f"{prefix} header_scan → idx={best_idx}  col_map={best_col_map}")
 
     if best_idx >= 0:
-        return _extract_data_rows(rows, best_idx + 1, best_col_map, prefix, rows[best_idx])
+        data_rows = [r for r in rows[best_idx + 1:] if any(c.strip() for c in r)]
+        if not data_rows:
+            logger.warning(f"{prefix} header at row {best_idx} but zero data rows follow")
+            return []
+        return _extract_data_rows(rows, best_idx + 1, best_col_map, prefix, rows[best_idx], sheet_label)
 
-    # ── No-header heuristic ────────────────────────────────────────────────────
-    # Works for simple sheets: Name|Price or Name|Category|Price
-    sample = [r for r in rows[:20] if any(c.strip() for c in r)]
-    if not sample:
+    # ── Step 2: No-header heuristic ────────────────────────────────────────────
+    logger.info(f"{prefix} no recognised header — attempting no-header heuristic")
+
+    sample = [r for r in rows[:30] if any(c.strip() for c in r)]
+    if len(sample) < 3:
+        logger.warning(f"{prefix} only {len(sample)} non-empty rows — too few for heuristic")
         return []
 
     col_widths = [len([c for c in r if c.strip()]) for r in sample]
     min_w, max_w = min(col_widths), max(col_widths)
 
     if min_w < 2 or max_w > 6:
-        logger.warning(f"{prefix} no recognised headers, sheet width {min_w}–{max_w} cols is inconclusive")
+        logger.warning(f"{prefix} column width {min_w}–{max_w} — heuristic inconclusive")
         return []
 
-    # Detect which column is most likely the price (highest fraction of numeric values)
-    _ea = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    # Score each column for numeric (price) vs text (name) content
     price_hits = [0] * (max_w + 1)
+    text_hits  = [0] * (max_w + 1)
+
     for r in sample:
         for ci, val in enumerate(r[:max_w + 1]):
-            cleaned = val.translate(_ea).replace(",", ".").replace(" ", "")
-            for sym in ("ر.س", "ريال", "SAR", "$", "€"):
-                cleaned = cleaned.replace(sym, "")
-            try:
-                float(cleaned)
+            if not val.strip():
+                continue
+            if _parse_price(val) is not None:
                 price_hits[ci] += 1
-            except ValueError:
-                pass
+            else:
+                text_hits[ci] += 1
 
-    price_ci = max(range(len(price_hits)), key=lambda i: price_hits[i]) if max(price_hits) > 0 else -1
-    name_ci  = 1 if price_ci == 0 else 0
+    max_price_hits = max(price_hits) if price_hits else 0
+    # Require ≥ 30% of sample rows to be numeric in some column
+    if max_price_hits < max(len(sample) * 0.30, 2):
+        logger.warning(
+            f"{prefix} no column is sufficiently numeric "
+            f"(max_price_hits={max_price_hits}/{len(sample)}) — heuristic skipped"
+        )
+        return []
+
+    price_ci = max(range(len(price_hits)), key=lambda i: price_hits[i])
+
+    # Name column: best text-rich column that is NOT the price column
+    text_hits_excl = [
+        (text_hits[i] if i != price_ci else -1)
+        for i in range(len(text_hits))
+    ]
+    name_ci = max(range(len(text_hits_excl)), key=lambda i: text_hits_excl[i])
+
+    # Require ≥ 50% text values in the name column
+    name_text_frac = text_hits[name_ci] / max(len(sample), 1)
+    if name_text_frac < 0.50:
+        logger.warning(
+            f"{prefix} name column has only {name_text_frac:.0%} text — heuristic skipped"
+        )
+        return []
+
     cat_ci: Optional[int] = None
     if max_w >= 3:
-        rem = [i for i in range(max_w) if i not in (name_ci, price_ci)]
+        rem = [i for i in range(min(max_w, len(text_hits))) if i not in (name_ci, price_ci)]
         if rem:
-            cat_ci = rem[0]
+            cat_ci = max(rem, key=lambda i: text_hits[i])
 
-    heuristic_map: Dict[str, int] = {"name": name_ci}
-    if price_ci >= 0:
-        heuristic_map["price"] = price_ci
+    heuristic_map: Dict[str, int] = {"name": name_ci, "price": price_ci}
     if cat_ci is not None:
         heuristic_map["category"] = cat_ci
 
-    logger.info(f"{prefix} no-header heuristic col_map={heuristic_map}")
-    return _extract_data_rows(rows, 0, heuristic_map, prefix, header_row=None)
+    logger.info(f"{prefix} heuristic col_map={heuristic_map}")
+    return _extract_data_rows(rows, 0, heuristic_map, prefix, header_row=None, sheet_label=sheet_label)
 
+
+# ── Row extraction (core data loop) ───────────────────────────────────────────
 
 def _extract_data_rows(
     rows: List[List[str]],
@@ -565,12 +1007,36 @@ def _extract_data_rows(
     col_map: Dict[str, int],
     prefix: str,
     header_row: Optional[List[str]],
+    sheet_label: str = "",
 ) -> List[Dict]:
-    """Convert spreadsheet data rows to product dicts, skipping blanks/totals/repeated headers."""
+    """Convert spreadsheet data rows to product dicts.
+
+    Skips:
+    - Blank rows
+    - Decoration rows (---, ===, ***)
+    - Pure-numeric names (likely row indices)
+    - Repeated header rows
+    - Known total / footer / metadata rows (_SKIP_ROW_NAMES)
+    - Section-header rows (carried forward as implicit category instead)
+
+    Scores each item with a 4-factor confidence:
+    - price present (weight 0.50)
+    - name length quality (weight 0.25)
+    - category present (weight 0.15)
+    - description present (weight 0.10)
+
+    Adds source_sheet and source_row to every item for preview traceability.
+    """
     items:   List[Dict] = []
     skipped: int = 0
+    skip_reasons: Dict[str, int] = {}
 
-    # Normalised header cells, used to detect repeated header rows in data
+    def _bump(reason: str) -> None:
+        nonlocal skipped
+        skipped += 1
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+    # Normalised header tokens (for repeated-header row detection)
     header_norm: set = set()
     if header_row:
         for c in header_row:
@@ -578,62 +1044,110 @@ def _extract_data_rows(
             if hn:
                 header_norm.add(hn)
 
-    _ea_trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    # Running category context (updated by section-header rows)
+    current_category = "عام"
 
-    for row in rows[start_idx:]:
+    for row_offset, row in enumerate(rows[start_idx:]):
+        abs_row = start_idx + row_offset + 2  # 1-based, +1 for header, +1 for 0-index
+
+        # ── Blank row ──────────────────────────────────────────────────────────
         if not row or not any(c.strip() for c in row):
-            skipped += 1
+            _bump("blank")
             continue
 
+        # ── Cell accessor with closure capture ────────────────────────────────
         def _cell(key: str, default: str = "", _cm=col_map, _r=row) -> str:
             i = _cm.get(key)
             if i is None or i >= len(_r):
                 return default
-            return str(_r[i]).strip()
+            return _clean_cell(str(_r[i]))
 
         name = _cell("name")
+
+        # ── Short / empty name ─────────────────────────────────────────────────
         if not name or len(name) < 2:
-            skipped += 1
+            _bump("name_too_short")
             continue
 
-        # Skip repeated header rows
-        if header_norm and _norm_header(name) in header_norm:
-            skipped += 1
+        # ── Decoration rows (lines of dashes, equals, asterisks, underscores) ─
+        stripped_decoration = (
+            name.replace(' ', '').replace('-', '').replace('=', '')
+                .replace('*', '').replace('#', '').replace('_', '')
+                .replace('~', '').replace('.', '')
+        )
+        if not stripped_decoration:
+            _bump("decoration")
             continue
 
-        # Skip total / footer / metadata rows
-        if _norm_header(name) in _SKIP_ROW_NAMES:
-            skipped += 1
+        # ── Pure-numeric name (row index like 1, 2, 3, …) ─────────────────────
+        if name.replace(' ', '').replace('.', '').replace(',', '').isdigit():
+            _bump("numeric_name")
             continue
 
-        # Parse price — handles Eastern Arabic numerals, comma-thousands, currency symbols
-        price_raw = _cell("price")
-        price: Optional[float] = None
-        if price_raw:
-            cleaned = price_raw.translate(_ea_trans).replace(",", ".").replace(" ", "")
-            for sym in ("ر.س", "ريال", "SAR", "$", "€", "£", "﷼"):
-                cleaned = cleaned.replace(sym, "")
-            try:
-                val = float(cleaned.strip())
-                price = val if val >= 0 else None
-            except ValueError:
-                price = None
+        name_norm = _norm_header(name)
 
-        conf         = 1.0 if price is not None else 0.55
-        needs_review = price is None
+        # ── Repeated header row ────────────────────────────────────────────────
+        if header_norm and name_norm in header_norm:
+            _bump("repeated_header")
+            continue
+
+        # ── Known total / footer / metadata patterns ───────────────────────────
+        if name_norm in _SKIP_ROW_NAMES:
+            _bump("skip_pattern")
+            continue
+
+        # ── Section-header carry-forward ───────────────────────────────────────
+        # If this row has no price AND looks like a section header,
+        # update running category and skip it as a product row.
+        price_raw   = _cell("price")
+        parsed_price = _parse_price(price_raw) if price_raw else None
+
+        if parsed_price is None and _looks_like_section_header(name):
+            current_category = name
+            logger.debug(f"{prefix} row={abs_row} section_header → category='{name}'")
+            _bump("section_header")
+            continue
+
+        # ── Build product item ─────────────────────────────────────────────────
+        cat_raw  = _cell("category")
+        category = cat_raw if cat_raw else current_category
+
+        desc = _cell("description")
+
+        # Multi-factor confidence score
+        conf = round(
+            0.50 * (1.0 if parsed_price is not None else 0.0)
+            + 0.25 * min(len(name) / 8.0, 1.0)          # ≥ 8 chars → full weight
+            + 0.15 * (1.0 if category and category != "عام" else 0.5)
+            + 0.10 * (1.0 if desc else 0.7),
+            2,
+        )
+        needs_review = conf < REVIEW_THRESHOLD or parsed_price is None
+
+        # Build human-readable source note
+        notes: List[str] = []
+        if price_raw and parsed_price is None:
+            notes.append(f"سعر غير صالح: '{price_raw}'")
+        elif parsed_price is None:
+            notes.append("السعر مفقود")
 
         items.append({
             "name":         name,
-            "category":     _cell("category") or "عام",
-            "price":        price,
-            "description":  _cell("description"),
+            "category":     category,
+            "price":        parsed_price,
+            "description":  desc,
             "variants":     [],
             "confidence":   conf,
             "needs_review": needs_review,
-            "source_note":  "" if price is not None else "السعر مفقود",
+            "source_note":  "; ".join(notes),
+            "source_sheet": sheet_label,
+            "source_row":   abs_row,
         })
 
-    logger.info(f"{prefix} extracted={len(items)} skipped={skipped}")
+    logger.info(
+        f"{prefix} extracted={len(items)}  skipped={skipped}  "
+        f"skip_reasons={skip_reasons}"
+    )
     return items
 
 
@@ -654,6 +1168,7 @@ def _normalize(raw_items: List[Dict], session_id: str) -> List[Dict]:
     - Coerce types, cap confidence
     - Flag items needing review
     - Deduplicate by name (keep highest confidence)
+    - Preserve source_sheet / source_row from direct-parse items
     """
     by_name: Dict[str, Dict] = {}  # name_lower → item
 
@@ -711,6 +1226,8 @@ def _normalize(raw_items: List[Dict], session_id: str) -> List[Dict]:
             "needs_review": needs_review,
             "source_note":  str(raw.get("source_note") or "").strip(),
             "source_page":  int(raw.get("source_page") or 1),
+            "source_sheet": str(raw.get("source_sheet") or ""),
+            "source_row":   int(raw.get("source_row") or 0),
             "action":       "create",   # create | skip | update_existing
             "existing_match": None,
             "image_url":    "",
