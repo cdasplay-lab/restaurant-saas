@@ -881,8 +881,15 @@ def _process_incoming(
             # Send reply via platform
             _send_reply(channel_data, reply_text)
 
-            # Create new_order notification if order extracted
-            if extracted_order:
+            # Auto-create order in DB when bot confirmed a complete order (✅ summary)
+            confirmed_order = result.get("confirmed_order")
+            if confirmed_order and confirmed_order.get("items"):
+                _auto_create_order(
+                    conn, restaurant_id, customer, platform, confirmed_order
+                )
+
+            # Fallback keyword-based notification (no DB order record, just alert)
+            elif extracted_order:
                 _create_notification(
                     conn, restaurant_id,
                     "new_order",
@@ -1123,6 +1130,81 @@ def _log_activity(
         )
     except Exception as e:
         print(f"[webhooks] _log_activity error: {e}")
+
+
+def _auto_create_order(
+    conn,
+    restaurant_id: str,
+    customer: dict,
+    platform: str,
+    order_data: dict,
+) -> Optional[str]:
+    """
+    Automatically create an order + order_items record when the bot confirms an order.
+    Returns the new order_id, or None if skipped (duplicate).
+    """
+    customer_id = customer["id"]
+    total = order_data.get("total", 0)
+    items = order_data.get("items", [])
+    address = order_data.get("address", "")
+
+    if not items or total <= 0:
+        return None
+
+    # Dedup: skip if exact same order (same customer + total) placed in last 5 minutes
+    existing = conn.execute("""
+        SELECT id FROM orders
+        WHERE restaurant_id=? AND customer_id=? AND total=?
+        AND created_at > datetime('now', '-5 minutes')
+    """, (restaurant_id, customer_id, total)).fetchone()
+    if existing:
+        logger.info(f"[order] duplicate skipped — customer={customer_id} total={total}")
+        return None
+
+    order_id = str(uuid.uuid4())
+    conn.execute("""
+        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, status)
+        VALUES (?, ?, ?, ?, 'delivery', ?, ?, 'pending')
+    """, (order_id, restaurant_id, customer_id, platform, total, address))
+
+    for item in items:
+        conn.execute("""
+            INSERT INTO order_items (id, order_id, product_id, name, price, quantity)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            str(uuid.uuid4()), order_id,
+            item.get("product_id"), item.get("name", ""),
+            item.get("price", 0), item.get("quantity", 1),
+        ))
+        if item.get("product_id"):
+            conn.execute(
+                "UPDATE products SET order_count=COALESCE(order_count,0)+? WHERE id=?",
+                (item.get("quantity", 1), item["product_id"])
+            )
+
+    # Update customer lifetime stats
+    conn.execute("""
+        UPDATE customers
+        SET total_orders=COALESCE(total_orders,0)+1,
+            total_spent=COALESCE(total_spent,0)+?
+        WHERE id=?
+    """, (total, customer_id))
+
+    conn.commit()
+    logger.info(
+        f"[order] AUTO-CREATED order_id={order_id} total={total} "
+        f"items={len(items)} platform={platform} customer={customer_id}"
+    )
+
+    _create_notification(
+        conn, restaurant_id,
+        "new_order",
+        "🛒 طلب جديد",
+        f"طلب جديد من {customer.get('name', '')} عبر {platform} — المجموع: {int(total):,} د.ع",
+        "order", order_id,
+    )
+    conn.commit()
+    return order_id
 
 
 def _create_notification(

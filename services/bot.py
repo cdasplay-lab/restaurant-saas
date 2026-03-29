@@ -182,17 +182,27 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
 
-    # Extract order if enabled
+    # Extract order if enabled (keyword-based, from customer message)
     extracted_order = None
     order_enabled = (bot_cfg["order_extraction_enabled"] if bot_cfg else 1)
     if order_enabled and any(kw in customer_message for kw in ORDER_KEYWORDS):
         extracted_order = _extract_order_from_message(customer_message, [dict(p) for p in products])
 
+    # Auto-detect confirmed order from bot's own reply (✅ summary block)
+    confirmed_order = None
+    if order_enabled:
+        confirmed_order = _parse_confirmed_order(reply_text, memory, [dict(p) for p in products])
+
     # Update customer memory
     if customer and bot_cfg and bot_cfg.get("memory_enabled", 1):
         _update_memory_from_conversation(restaurant_id, conv["customer_id"], customer_message)
 
-    return {"reply": reply_text, "action": "reply", "extracted_order": extracted_order}
+    return {
+        "reply": reply_text,
+        "action": "reply",
+        "extracted_order": extracted_order,
+        "confirmed_order": confirmed_order,
+    }
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -390,6 +400,62 @@ def _update_memory_from_conversation(restaurant_id: str, customer_id: str, messa
         conn.commit()
     finally:
         conn.close()
+
+
+def _parse_confirmed_order(reply_text: str, memory: dict, products: list) -> Optional[dict]:
+    """
+    Parse a confirmed order from the bot's own reply when it contains the ✅ summary block.
+    Returns {"items": [...], "total": float, "address": str} or None.
+    """
+    if "✅" not in reply_text or "المجموع" not in reply_text:
+        return None
+
+    # Parse line items:  • name × qty — price د.ع  OR  • name — price د.ع
+    items = []
+    item_pat = re.compile(
+        r'•\s+(.+?)(?:\s+[×x]\s*(\d+))?\s+—\s+([\d,٠-٩٬\.]+)\s+د\.ع',
+        re.MULTILINE
+    )
+    _ar_en = str.maketrans('٠١٢٣٤٥٦٧٨٩٬', '0123456789,')
+    for m in item_pat.finditer(reply_text):
+        name = m.group(1).strip()
+        qty = int(m.group(2)) if m.group(2) else 1
+        price_raw = m.group(3).translate(_ar_en).replace(',', '')
+        try:
+            price = float(price_raw)
+        except ValueError:
+            continue
+        product_id = next((p["id"] for p in products if p.get("name", "").strip() == name), None)
+        items.append({"name": name, "quantity": qty, "price": price, "product_id": product_id})
+
+    if not items:
+        return None
+
+    # Parse total
+    total = 0.0
+    total_m = re.search(r'المجموع[:\s]+([\d,٠-٩٬\.]+)\s+د\.ع', reply_text)
+    if total_m:
+        try:
+            total = float(total_m.group(1).translate(_ar_en).replace(',', ''))
+        except ValueError:
+            total = sum(i["price"] * i["quantity"] for i in items)
+    else:
+        total = sum(i["price"] * i["quantity"] for i in items)
+
+    # Extract delivery address from reply or memory
+    address = ""
+    for pat in [
+        r'(?:توصيل الطلب إلى|التوصيل إلى|سيصلك إلى|عنوان التوصيل)[:\s]+([^\n.!؟]+)',
+    ]:
+        am = re.search(pat, reply_text)
+        if am:
+            address = am.group(1).strip()
+            break
+    if not address:
+        address = memory.get("address", "")
+
+    logger.info(f"[bot] confirmed_order parsed: items={len(items)} total={total} address={address[:30]}")
+    return {"items": items, "total": total, "address": address}
 
 
 def _extract_order_from_message(message: str, products: list) -> Optional[dict]:
