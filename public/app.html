@@ -370,6 +370,10 @@
           </select>
           <input id="ordersSearch" type="text" placeholder="بحث..." onkeyup="loadOrders()"
             class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2 w-40 focus:border-indigo-500">
+          <button onclick="exportCSV('orders')"
+            class="bg-green-700 hover:bg-green-600 text-white text-xs px-3 py-2 rounded-lg transition flex items-center gap-1.5">
+            <i class="fa-solid fa-file-csv"></i> تصدير
+          </button>
         </div>
       </div>
 
@@ -488,7 +492,13 @@
       <div class="flex items-center justify-between mb-5">
         <input id="custSearch" type="text" placeholder="بحث بالاسم أو الجوال..." onkeyup="loadCustomers()"
           class="bg-slate-700 border border-slate-600 text-slate-300 text-sm rounded-lg px-4 py-2 w-64 focus:border-indigo-500">
-        <span id="custCount" class="text-slate-500 text-sm"></span>
+        <div class="flex items-center gap-3">
+          <span id="custCount" class="text-slate-500 text-sm"></span>
+          <button onclick="exportCSV('customers')"
+            class="bg-green-700 hover:bg-green-600 text-white text-xs px-3 py-2 rounded-lg transition flex items-center gap-1.5">
+            <i class="fa-solid fa-file-csv"></i> تصدير
+          </button>
+        </div>
       </div>
 
       <div id="custsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
@@ -1995,6 +2005,24 @@ async function deleteCustomer(id) {
     await api.del(`/api/customers/${id}`);
     toast('تم الحذف', 'success');
     closeModal(); loadCustomers();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Export CSV ────────────────────────────────────────────────
+async function exportCSV(type) {
+  try {
+    const token = localStorage.getItem('token');
+    const res = await fetch(`${window.API_BASE || ''}/api/export/${type}`, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) throw new Error('فشل التصدير');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = type + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
   } catch(e) { toast(e.message, 'error'); }
 }
 

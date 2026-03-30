@@ -10,7 +10,7 @@ from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -1210,6 +1210,68 @@ async def delete_customer(cid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"message": "تم الحذف"}
+
+
+@app.get("/api/export/orders")
+async def export_orders(user=Depends(current_user)):
+    """Export all orders as CSV."""
+    import csv, io
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            """SELECT o.id, o.status, o.total, o.address, o.notes, o.created_at,
+                      c.name as customer_name, c.phone as customer_phone
+               FROM orders o
+               LEFT JOIN customers c ON o.customer_id = c.id
+               WHERE o.restaurant_id=?
+               ORDER BY o.created_at DESC""",
+            (rid,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["رقم الطلب", "الحالة", "الإجمالي", "العنوان", "الملاحظات", "التاريخ", "اسم العميل", "جوال العميل"])
+    for r in rows:
+        writer.writerow([r["id"], r["status"], r["total"], r["address"] or "", r["notes"] or "",
+                         r["created_at"], r["customer_name"] or "", r["customer_phone"] or ""])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=orders.csv"}
+    )
+
+
+@app.get("/api/export/customers")
+async def export_customers(user=Depends(current_user)):
+    """Export all customers as CSV."""
+    import csv, io
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT name, phone, platform, vip, orders_count, total_spent, last_seen, preferences FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC",
+            (rid,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["الاسم", "الجوال", "المنصة", "VIP", "عدد الطلبات", "إجمالي الإنفاق", "آخر ظهور", "التفضيلات"])
+    for r in rows:
+        writer.writerow([r["name"] or "", r["phone"] or "", r["platform"] or "",
+                         "نعم" if r["vip"] else "لا", r["orders_count"] or 0,
+                         r["total_spent"] or 0, r["last_seen"] or "", r["preferences"] or ""])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=customers.csv"}
+    )
 
 
 @app.post("/api/broadcast")
