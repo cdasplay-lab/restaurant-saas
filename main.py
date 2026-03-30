@@ -1298,8 +1298,105 @@ async def create_order(data: OrderCreate, user=Depends(current_user)):
     return dict(row)
 
 
+async def _notify_customer_confirmed(order: dict, restaurant_id: str) -> None:
+    """Send a confirmation message to the customer on their platform (non-fatal)."""
+    try:
+        import httpx as _httpx
+        conn = database.get_db()
+        try:
+            customer_id = order.get("customer_id", "")
+            # Get the platform/channel from customers table
+            cust_row = conn.execute(
+                "SELECT platform, phone FROM customers WHERE id=?", (customer_id,)
+            ).fetchone()
+            if not cust_row:
+                return
+            platform = cust_row["platform"] or ""
+
+            # Get the customer's external_id from conversation_memory
+            mem_row = conn.execute(
+                "SELECT memory_value FROM conversation_memory WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
+                (restaurant_id, customer_id)
+            ).fetchone()
+            external_id = mem_row["memory_value"] if mem_row else cust_row["phone"] or ""
+            if not external_id:
+                return
+
+            # Get delivery_time from settings
+            settings_row = conn.execute(
+                "SELECT delivery_time FROM settings WHERE restaurant_id=?", (restaurant_id,)
+            ).fetchone()
+            delivery_time = settings_row["delivery_time"] if settings_row and "delivery_time" in settings_row.keys() else ""
+
+            # Build message
+            msg_lines = ["✅ طلبك وصلنا وصار بالتجهيز!"]
+            if delivery_time:
+                msg_lines.append(f"⏱️ الوقت التقريبي للتوصيل: {delivery_time}")
+            msg_lines.append("شكراً لك، نشوفك قريب 😊")
+            message_text = "\n".join(msg_lines)
+
+            if platform == "telegram":
+                ch = conn.execute(
+                    "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'",
+                    (restaurant_id,)
+                ).fetchone()
+                bot_token = ch["token"] if ch else ""
+                if not bot_token or not external_id:
+                    return
+                async with _httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={"chat_id": external_id, "text": message_text}
+                    )
+
+            elif platform == "whatsapp":
+                ch = conn.execute(
+                    "SELECT token, phone_number_id FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+                    (restaurant_id,)
+                ).fetchone()
+                if not ch:
+                    return
+                access_token = ch["token"] if ch else ""
+                phone_number_id = ch["phone_number_id"] if "phone_number_id" in ch.keys() else ""
+                if not access_token or not phone_number_id or not external_id:
+                    return
+                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": external_id,
+                    "type": "text",
+                    "text": {"body": message_text}
+                }
+                async with _httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://graph.facebook.com/v19.0/{phone_number_id}/messages",
+                        headers=headers, json=payload
+                    )
+
+            elif platform in ("instagram", "facebook"):
+                ch_type = platform
+                ch = conn.execute(
+                    "SELECT token FROM channels WHERE restaurant_id=? AND type=?",
+                    (restaurant_id, ch_type)
+                ).fetchone()
+                page_token = ch["token"] if ch else ""
+                if not page_token or not external_id:
+                    return
+                payload = {"recipient": {"id": external_id}, "message": {"text": message_text}}
+                async with _httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        "https://graph.facebook.com/v19.0/me/messages",
+                        params={"access_token": page_token},
+                        json=payload
+                    )
+        finally:
+            conn.close()
+    except Exception as _e:
+        logger.warning(f"[order] customer confirmed notify failed (non-fatal): {_e}")
+
+
 @app.patch("/api/orders/{oid}/status")
-async def update_order_status(oid: str, req: Request, user=Depends(current_user)):
+async def update_order_status(oid: str, req: Request, background_tasks: BackgroundTasks, user=Depends(current_user)):
     body = await req.json()
     action = body.get("action", "advance")
     conn = database.get_db()
@@ -1331,6 +1428,11 @@ async def update_order_status(oid: str, req: Request, user=Depends(current_user)
         create_notification(conn, user["restaurant_id"], "new_order",
                             "طلب جديد في الانتظار",
                             f"الطلب #{oid[:8]} في انتظار التأكيد", "order", oid)
+
+    # Notify customer when order is confirmed
+    if new_status == "confirmed":
+        order_dict = dict(order)
+        background_tasks.add_task(_notify_customer_confirmed, order_dict, user["restaurant_id"])
 
     conn.commit()
     conn.close()

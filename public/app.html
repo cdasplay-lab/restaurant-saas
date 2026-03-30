@@ -158,6 +158,10 @@
     background: #f4f6ff; border-color: #dde4f5; color: #4f46e5;
   }
   html.light .theme-toggle-header:hover { background: #e8edf8; }
+  @media print {
+    body > *:not(#printArea) { display: none !important; }
+    #printArea { display: block !important; font-family: Arial, sans-serif; direction: rtl; }
+  }
 </style>
 <script src="/config.js"></script>
 </head>
@@ -1161,6 +1165,7 @@ async function openOrderModal(id) {
     const o = await api.get(`/api/orders/${id}`);
     const canAdvance = ['pending','confirmed','preparing','on_way'].includes(o.status);
     const canCancel = !['delivered','cancelled'].includes(o.status);
+    window._currentOrderPrint = o;
     openModal(`
       <div class="flex items-center justify-between mb-5">
         <h2 class="text-white font-bold text-lg">تفاصيل الطلب</h2>
@@ -1195,6 +1200,7 @@ async function openOrderModal(id) {
       <div class="flex gap-2">
         ${canAdvance ? `<button onclick="advanceOrder('${o.id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2.5 rounded-xl transition">تقديم الحالة ▶</button>` : ''}
         ${canCancel ? `<button onclick="cancelOrder('${o.id}')" class="flex-1 bg-red-600/20 hover:bg-red-600/40 border border-red-500/50 text-red-400 text-sm py-2.5 rounded-xl transition">إلغاء الطلب</button>` : ''}
+        <button onclick="printOrder(window._currentOrderPrint)" class="bg-slate-700 hover:bg-slate-600 text-white text-sm py-2.5 px-4 rounded-xl transition">🖨️ طباعة</button>
         <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white text-sm py-2.5 px-4 rounded-xl transition">إغلاق</button>
       </div>
     `);
@@ -1204,7 +1210,11 @@ async function openOrderModal(id) {
 async function advanceOrder(id) {
   try {
     const r = await api.patch(`/api/orders/${id}/status`, { action: 'advance' });
-    toast(`الحالة: ${r.status}`, 'success');
+    if (r.status === 'confirmed') {
+      toast('تم التأكيد وإرسال إشعار للزبون ✅', 'success');
+    } else {
+      toast(`الحالة: ${r.status}`, 'success');
+    }
     closeModal(); loadOrders();
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -1224,6 +1234,46 @@ async function saveOrderInfo(id) {
     });
     toast('تم الحفظ', 'success');
   } catch(e) { toast(e.message, 'error'); }
+}
+
+function printOrder(o) {
+  if (!o) return;
+  const existing = document.getElementById('printArea');
+  if (existing) existing.remove();
+  const itemsRows = (o.items || []).map(i =>
+    `<tr>
+      <td style="padding:4px 0; border-bottom:1px solid #eee">${i.name}${i.variant ? ' - ' + i.variant : ''}</td>
+      <td style="text-align:center; padding:4px; border-bottom:1px solid #eee">${i.quantity}</td>
+      <td style="text-align:left; padding:4px; border-bottom:1px solid #eee">${Math.round((i.price||0)*(i.quantity||1)).toLocaleString('en')} د.ع</td>
+    </tr>`
+  ).join('');
+  const notesHtml = o.notes ? `<p style="margin-top:12px; color:#555">ملاحظات: ${o.notes}</p>` : '';
+  const div = document.createElement('div');
+  div.id = 'printArea';
+  div.style.display = 'none';
+  div.innerHTML = `
+    <div style="padding:20px; font-family:Arial; direction:rtl; max-width:400px; margin:0 auto">
+      <h2 style="text-align:center; border-bottom:2px solid #000; padding-bottom:8px">طلب #${(o.id||'').substring(0,8)}</h2>
+      <p>التاريخ: ${o.created_at ? new Date(o.created_at).toLocaleString('ar-IQ') : '—'}</p>
+      <p>العميل: ${o.customer_name || '—'}</p>
+      <p>القناة: ${o.channel || '—'}</p>
+      <p>العنوان: ${o.address || '—'}</p>
+      <hr>
+      <table style="width:100%; border-collapse:collapse">
+        <tr>
+          <th style="text-align:right; padding:4px 0">المنتج</th>
+          <th style="text-align:center; padding:4px">الكمية</th>
+          <th style="text-align:left; padding:4px">السعر</th>
+        </tr>
+        ${itemsRows}
+      </table>
+      <hr>
+      <p style="font-size:18px; font-weight:bold">الإجمالي: ${Math.round(o.total||0).toLocaleString('en')} د.ع</p>
+      ${notesHtml}
+    </div>`;
+  document.body.appendChild(div);
+  window.print();
+  div.remove();
 }
 
 // ── Conversations ─────────────────────────────────────────────
