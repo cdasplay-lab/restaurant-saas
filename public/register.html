@@ -29,15 +29,30 @@
       </svg>
     </div>
     <h1 class="text-white text-2xl font-bold">ابدأ الآن مجاناً</h1>
-    <p class="text-slate-400 text-sm mt-1">أنشئ حساب مطعمك في ثوانٍ</p>
+    <p id="subTitle" class="text-slate-400 text-sm mt-1">أنشئ حساب مطعمك في ثوانٍ</p>
   </div>
 
   <!-- Form -->
   <form id="registerForm" class="space-y-4">
 
+    <!-- Business Type -->
+    <div>
+      <label class="block text-slate-300 text-sm mb-3">نوع المنشأة <span class="text-red-400">*</span></label>
+      <div class="grid grid-cols-2 gap-2">
+        <div id="type-restaurant" onclick="selectType('restaurant')" class="type-card selected border-2 border-green-500 bg-green-500/10 rounded-xl p-3 text-center cursor-pointer transition">
+          <div class="text-2xl mb-1">🍽️</div>
+          <div class="text-white font-semibold text-sm">مطعم</div>
+        </div>
+        <div id="type-cafe" onclick="selectType('cafe')" class="type-card border-2 border-white/10 rounded-xl p-3 text-center cursor-pointer transition hover:border-white/25">
+          <div class="text-2xl mb-1">☕</div>
+          <div class="text-white font-semibold text-sm">كافيه</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Restaurant name -->
     <div>
-      <label class="block text-slate-300 text-sm mb-2">اسم المطعم <span class="text-red-400">*</span></label>
+      <label id="typeLabel" class="block text-slate-300 text-sm mb-2">اسم المطعم <span class="text-red-400">*</span></label>
       <input id="restaurantName" type="text" maxlength="80"
         class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
                focus:border-green-500 focus:bg-white/15 transition placeholder-slate-500"
@@ -138,6 +153,24 @@
   }
 
   let selectedPlan = 'trial';
+  let selectedType = 'restaurant';
+
+  function selectType(type) {
+    selectedType = type;
+    ['restaurant','cafe'].forEach(t => {
+      const el = document.getElementById('type-' + t);
+      if (t === type) {
+        el.className = 'type-card selected border-2 border-green-500 bg-green-500/10 rounded-xl p-3 text-center cursor-pointer transition';
+      } else {
+        el.className = 'type-card border-2 border-white/10 rounded-xl p-3 text-center cursor-pointer transition hover:border-white/25';
+      }
+    });
+    // Update dynamic text
+    const isRest = type === 'restaurant';
+    document.getElementById('typeLabel').innerHTML = (isRest ? 'اسم المطعم' : 'اسم الكافيه') + ' <span class="text-red-400">*</span>';
+    document.getElementById('restaurantName').placeholder = isRest ? 'مطعم النخبة' : 'كافيه النخبة';
+    document.getElementById('subTitle').textContent = isRest ? 'أنشئ حساب مطعمك في ثوانٍ' : 'أنشئ حساب كافيهك في ثوانٍ';
+  }
 
   function selectPlan(plan) {
     selectedPlan = plan;
@@ -165,6 +198,7 @@
           email: document.getElementById('email').value.trim(),
           password: document.getElementById('password').value,
           plan: selectedPlan,
+          business_type: selectedType,
         }),
       });
       const data = await res.json();

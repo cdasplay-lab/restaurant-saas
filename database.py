@@ -478,6 +478,11 @@ def _migrate_db(conn):
         ("settings", "payment_methods", "TEXT DEFAULT 'كاش'"),
         # super_admins — support PIN for restaurant owner recovery
         ("super_admins", "support_pin", "TEXT DEFAULT ''"),
+        # business type: restaurant or cafe
+        ("restaurants", "business_type", "TEXT DEFAULT 'restaurant'"),
+        ("settings", "business_type", "TEXT DEFAULT 'restaurant'"),
+        # products — sold out today flag
+        ("products", "sold_out_date", "TEXT DEFAULT ''"),
     ]
 
     if IS_POSTGRES:

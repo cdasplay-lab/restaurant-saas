@@ -573,9 +573,9 @@
         <!-- Restaurant tab -->
         <div id="stab-content-restaurant" class="settings-tab-content space-y-4">
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
-            <h3 class="text-white font-semibold">🏪 بيانات المطعم</h3>
+            <h3 id="settingsRestHeader" class="text-white font-semibold">🏪 بيانات المطعم</h3>
             <div class="grid grid-cols-1 gap-4">
-              <div><label class="text-slate-400 text-xs mb-1.5 block">اسم المطعم</label>
+              <div><label id="settingsNameLabel" class="text-slate-400 text-xs mb-1.5 block">اسم المطعم</label>
                 <input id="sRestName" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
               <div><label class="text-slate-400 text-xs mb-1.5 block">الوصف</label>
                 <textarea id="sRestDesc" rows="2" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea></div>
@@ -588,6 +588,19 @@
                 <input id="sPaymentMethods" placeholder="مثال: كاش، ماستر كارد العراق، فيزا الرافدين، زين كاش"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
                 <p class="text-slate-500 text-xs mt-1">سيذكرها البوت تلقائياً عند سؤال الزبون عن طريقة الدفع</p>
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs mb-2 block">نوع المنشأة</label>
+                <div class="grid grid-cols-2 gap-2">
+                  <button onclick="_applyBusinessType('restaurant'); saveSettings()" id="btnTypeRest"
+                    class="py-2 rounded-xl text-sm border transition border-indigo-500 bg-indigo-500/20 text-indigo-300">
+                    🍽️ مطعم
+                  </button>
+                  <button onclick="_applyBusinessType('cafe'); saveSettings()" id="btnTypeCafe"
+                    class="py-2 rounded-xl text-sm border transition border-white/10 text-slate-400 hover:border-white/25">
+                    ☕ كافيه
+                  </button>
+                </div>
               </div>
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
@@ -1488,7 +1501,11 @@ function renderProducts() {
       <div class="p-4">
         <div class="flex items-start justify-between mb-3">
           <span class="text-3xl">${p.icon}</span>
-          <div class="flex items-center gap-1">
+          <div class="flex items-center gap-2">
+            <button onclick="toggleSoldOut('${p.id}')" title="نفد اليوم — يرجع غداً تلقائياً"
+              class="text-xs px-2 py-0.5 rounded-lg border transition ${_isSoldOutToday(p) ? 'bg-orange-500/20 text-orange-400 border-orange-500/40' : 'bg-slate-700/50 text-slate-500 border-slate-600/40 hover:border-orange-500/40 hover:text-orange-400'}">
+              نفد
+            </button>
             <label class="relative cursor-pointer" title="${p.available ? 'متوفر' : 'غير متوفر'}">
               <input type="checkbox" ${p.available ? 'checked' : ''} onchange="toggleProduct('${p.id}')" class="sr-only peer">
               <div class="w-9 h-5 bg-slate-700 rounded-full peer peer-checked:bg-green-600 transition"></div>
@@ -1496,7 +1513,7 @@ function renderProducts() {
             </label>
           </div>
         </div>
-        <h3 class="text-white font-semibold text-sm mb-1">${p.name}</h3>
+        <h3 class="text-white font-semibold text-sm mb-1">${p.name}${_isSoldOutToday(p) ? ' <span class="text-orange-400 text-xs">(نفد اليوم)</span>' : ''}</h3>
         <p class="text-slate-500 text-xs mb-2 line-clamp-2">${p.description || '—'}</p>
         <div class="flex items-center justify-between">
           <span class="badge bg-indigo-500/20 text-indigo-400">${p.category}</span>
@@ -1514,6 +1531,20 @@ function renderProducts() {
 async function toggleProduct(id) {
   try {
     await api.patch(`/api/products/${id}/availability`);
+    S.products = await api.get('/api/products');
+    renderProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function _isSoldOutToday(p) {
+  if (!p.sold_out_date) return false;
+  const today = new Date().toISOString().split('T')[0];
+  return p.sold_out_date === today;
+}
+
+async function toggleSoldOut(id) {
+  try {
+    await api.patch(`/api/products/${id}/sold-out-today`);
     S.products = await api.get('/api/products');
     renderProducts();
   } catch(e) { toast(e.message, 'error'); }
@@ -2025,6 +2056,20 @@ async function saveWorkingHours() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+function _applyBusinessType(type) {
+  window._businessType = type;
+  const isRest = type === 'restaurant';
+  // Settings tab label
+  const stab = document.getElementById('stab-restaurant');
+  if (stab) stab.textContent = isRest ? '🏪 المطعم' : '☕ الكافيه';
+  // Settings section header
+  const sh = document.getElementById('settingsRestHeader');
+  if (sh) sh.textContent = isRest ? '🏪 بيانات المطعم' : '☕ بيانات الكافيه';
+  // Restaurant name label
+  const nl = document.getElementById('settingsNameLabel');
+  if (nl) nl.textContent = isRest ? 'اسم المطعم' : 'اسم الكافيه';
+}
+
 async function loadSettings() {
   document.getElementById('settingsLoading').classList.remove('hidden');
   document.getElementById('settingsContent').classList.add('hidden');
@@ -2035,6 +2080,8 @@ async function loadSettings() {
     if (s.restaurant_phone) document.getElementById('sRestPhone').value = s.restaurant_phone;
     if (s.restaurant_address) document.getElementById('sRestAddress').value = s.restaurant_address;
     if (s.payment_methods) document.getElementById('sPaymentMethods').value = s.payment_methods;
+    if (s.business_type) window._businessType = s.business_type;
+    _applyBusinessType(s.business_type || 'restaurant');
     if (s.bot_name) document.getElementById('sBotName').value = s.bot_name;
     if (s.bot_personality) document.getElementById('sBotPersonality').value = s.bot_personality;
     if (s.bot_language) document.getElementById('sBotLanguage').value = s.bot_language;
@@ -2072,6 +2119,7 @@ async function saveSettings() {
       restaurant_phone: document.getElementById('sRestPhone').value,
       restaurant_address: document.getElementById('sRestAddress').value,
       payment_methods: document.getElementById('sPaymentMethods').value,
+      business_type: window._businessType || 'restaurant',
       bot_name: document.getElementById('sBotName').value,
       bot_personality: document.getElementById('sBotPersonality').value,
       bot_language: document.getElementById('sBotLanguage').value,

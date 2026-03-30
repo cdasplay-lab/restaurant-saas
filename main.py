@@ -369,6 +369,7 @@ class SettingsUpdate(BaseModel):
     security_2fa: Optional[bool] = None
     security_session_timeout: Optional[int] = None
     payment_methods: Optional[str] = None
+    business_type: Optional[str] = None
 
 
 class ChannelUpdate(BaseModel):
@@ -491,6 +492,7 @@ class RegisterReq(BaseModel):
     email: str
     password: str
     plan: Optional[str] = "trial"
+    business_type: Optional[str] = "restaurant"
 
 
 @app.post("/api/auth/register")
@@ -512,9 +514,10 @@ async def register(request: Request, data: RegisterReq):
         rid = str(uuid.uuid4())
         uid = str(uuid.uuid4())
 
+        _btype = data.business_type if data.business_type in ("restaurant", "cafe") else "restaurant"
         conn.execute(
-            "INSERT INTO restaurants (id, name, phone, address, plan, status) VALUES (?,?,?,?,?,'active')",
-            (rid, data.restaurant_name.strip(), "", "", plan),
+            "INSERT INTO restaurants (id, name, phone, address, plan, status, business_type) VALUES (?,?,?,?,?,'active',?)",
+            (rid, data.restaurant_name.strip(), "", "", plan, _btype),
         )
         pw_hash = _bcrypt.hashpw(data.password.encode(), _bcrypt.gensalt()).decode()
         conn.execute(
@@ -527,8 +530,8 @@ async def register(request: Request, data: RegisterReq):
                 (str(uuid.uuid4()), rid, ch_type, f"قناة {ch_type}"),
             )
         conn.execute(
-            "INSERT INTO settings (id, restaurant_id, restaurant_name, bot_enabled) VALUES (?,?,?,1)",
-            (str(uuid.uuid4()), rid, data.restaurant_name.strip()),
+            "INSERT INTO settings (id, restaurant_id, restaurant_name, bot_enabled, business_type) VALUES (?,?,?,1,?)",
+            (str(uuid.uuid4()), rid, data.restaurant_name.strip(), _btype),
         )
         conn.execute(
             "INSERT INTO bot_config (id, restaurant_id, system_prompt, sales_prompt) VALUES (?,?,?,?)",
@@ -883,6 +886,25 @@ async def toggle_availability(pid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"available": bool(new_val)}
+
+
+@app.patch("/api/products/{product_id}/sold-out-today")
+async def toggle_sold_out_today(product_id: str, user=Depends(require_role("owner","manager","staff"))):
+    from datetime import date as _date
+    conn = database.get_db()
+    try:
+        p = conn.execute("SELECT * FROM products WHERE id=? AND restaurant_id=?",
+                         (product_id, user["restaurant_id"])).fetchone()
+        if not p:
+            raise HTTPException(404, "المنتج غير موجود")
+        today = _date.today().isoformat()
+        current = p["sold_out_date"] if "sold_out_date" in p.keys() else ""
+        new_val = today if current != today else ""
+        conn.execute("UPDATE products SET sold_out_date=? WHERE id=?", (new_val, product_id))
+        conn.commit()
+        return {"sold_out_today": new_val == today}
+    finally:
+        conn.close()
 
 
 @app.delete("/api/products/{pid}")
@@ -1488,6 +1510,7 @@ async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
     if data.security_2fa is not None: upd["security_2fa"] = int(data.security_2fa)
     if data.security_session_timeout is not None: upd["security_session_timeout"] = data.security_session_timeout
     if data.payment_methods is not None: upd["payment_methods"] = data.payment_methods
+    if data.business_type is not None: upd["business_type"] = data.business_type
     if upd:
         conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])

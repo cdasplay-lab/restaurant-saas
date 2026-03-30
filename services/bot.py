@@ -231,8 +231,46 @@ def _build_system_prompt(
     rest_phone = restaurant.get("phone") or settings.get("restaurant_phone") or ""
     welcome = settings.get("bot_welcome") or "مرحباً! كيف يمكنني مساعدتك؟"
     payment_methods = settings.get("payment_methods") or "كاش"
+    business_type = settings.get("business_type") or "restaurant"
+
+    # Working hours awareness
+    import json as _json
+    from datetime import datetime as _dt
+
+    working_hours_raw = settings.get("working_hours") or restaurant.get("working_hours") or "{}"
+    working_hours_status = ""
+    try:
+        wh = _json.loads(working_hours_raw) if isinstance(working_hours_raw, str) else working_hours_raw
+        now = _dt.now()
+        day_names = ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"]
+        today_key = day_names[now.weekday()]
+        day_info = wh.get(today_key, {})
+        if day_info and day_info.get("open"):
+            open_t = day_info.get("from", "")
+            close_t = day_info.get("to", "")
+            if open_t and close_t:
+                working_hours_status = f"اليوم ({today_key}) مفتوحون من {open_t} إلى {close_t}."
+            else:
+                working_hours_status = f"اليوم ({today_key}) مفتوحون."
+        elif day_info and not day_info.get("open"):
+            working_hours_status = f"اليوم ({today_key}) مغلقون."
+        # Build full schedule text
+        schedule_lines = []
+        for day in day_names:
+            d = wh.get(day, {})
+            if d.get("open"):
+                schedule_lines.append(f"{day}: {d.get('from','')} - {d.get('to','')}")
+            else:
+                schedule_lines.append(f"{day}: مغلق")
+        if schedule_lines:
+            working_hours_status += "\nجدول أوقات العمل الكامل:\n" + "\n".join(schedule_lines)
+    except Exception:
+        pass
 
     # Build menu by category
+    from datetime import date as _date_today
+    _today_str = _date_today.today().isoformat()
+
     menu_by_cat: dict[str, list] = {}
     for p in products:
         cat = p.get("category", "عام")
@@ -240,9 +278,13 @@ def _build_system_prompt(
             menu_by_cat[cat] = []
         icon = p.get("icon", "🍽️")
         price_str = f"{int(p['price']):,}" if p.get("price") else "—"
-        line = f"  {icon} {p['name']} — {price_str} د.ع"
-        if p.get("description"):
-            line += f" ({p['description']})"
+        sold_out = p.get("sold_out_date", "") == _today_str
+        if sold_out:
+            line = f"  {icon} {p['name']} — (نفد اليوم ❌)"
+        else:
+            line = f"  {icon} {p['name']} — {price_str} د.ع"
+            if p.get("description"):
+                line += f" ({p['description']})"
         menu_by_cat[cat].append(line)
 
     menu_text = ""
@@ -284,6 +326,7 @@ def _build_system_prompt(
 - العنوان: {rest_address}
 - الهاتف: {rest_phone}
 - رسالة الترحيب: {welcome}
+- أوقات العمل: {working_hours_status if working_hours_status else "غير محددة"}
 
 ## قائمة الطعام (الأسعار بالدينار العراقي)
 {menu_text}
@@ -305,6 +348,9 @@ def _build_system_prompt(
 - العملة دائماً: دينار عراقي (د.ع) — لا تذكر ريال أو أي عملة أخرى.
 - إذا سأل العميل عن شيء خارج نطاق المطعم، أعده بلطف لموضوع الطلب.
 - إذا طلب التحدث مع موظف أو أبدى شكوى، أخبره بأنك ستحوله لفريق الدعم.
+- إذا سأل العميل عن أوقات العمل، أجبه بالأوقات المذكورة أعلاه بدقة.
+- إذا كان المطعم مغلقاً الآن، أخبر العميل بأوقات الفتح ولكن استمر في استقبال الطلبات.
+- إذا طلب العميل منتجاً مكتوب بجانبه (نفد اليوم ❌)، اعتذر منه بلطف وقل "خلص هذا المنتج اليوم، يرجع بكره إن شاء الله" واقترح بديلاً من القائمة.
 
 ## ردود الستوري (Story Replies)
 إذا جاءت الرسالة تبدأ بـ [العميل يرد على ستوري...]:
@@ -315,6 +361,19 @@ def _build_system_prompt(
 - إذا سأل عن السعر → أجبه مباشرة واقترح الطلب.
 - إذا كان ستوري فيديو بدون تحديد منتج → رحّب واسأله بشكل طبيعي عما يرغب به.
 - حوّل كل رد على ستوري إلى فرصة بيع طبيعية وغير متكلفة.
+"""
+
+    if business_type == "cafe":
+        prompt += """
+## تعليمات خاصة بالكافيه
+- أنت باريستا ذكي وودود، مو موظف مطعم.
+- عند طلب أي مشروب اسأل عن:
+  • الحجم: صغير (S) / وسط (M) / كبير (L)
+  • نوع الحليب: عادي / سكيم / نباتي (oat/soy)
+  • السكر: بدون / خفيف / عادي / زيادة
+- بدل "توصيل" اسأل: هنا (Dine-in) أم Takeaway؟
+- لا تسأل عن صوص أو إضافات — هذي للمطاعم.
+- اقترح كيك أو سندويش مع المشروب بشكل طبيعي.
 """
 
     if custom_system:
