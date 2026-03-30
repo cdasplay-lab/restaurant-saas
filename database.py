@@ -502,6 +502,18 @@ def _migrate_db(conn):
         ("settings", "report_last_sent", "TEXT DEFAULT ''"),
     ]
 
+    # Create reply_templates table if not exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reply_templates (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
     if IS_POSTGRES:
         # PostgreSQL supports ADD COLUMN IF NOT EXISTS
         for table, column, col_def in migrations:

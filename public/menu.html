@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>منيو</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: linear-gradient(135deg, #0f172a 0%, #0f2a1e 100%); min-height: 100vh; }
+  .cat-tab.active { background: #16a34a; color: #fff; }
+  .cat-tab:not(.active) { background: rgba(255,255,255,.07); color: #94a3b8; }
+  .sold-out { opacity: .45; }
+</style>
+</head>
+<body class="pb-10">
+
+<!-- Header -->
+<div id="header" class="bg-green-900/40 border-b border-green-500/20 px-4 py-5 text-center">
+  <div class="text-4xl mb-2" id="hEmoji">🍽️</div>
+  <h1 id="hName" class="text-white text-2xl font-bold"></h1>
+  <p id="hDesc" class="text-slate-400 text-sm mt-1"></p>
+  <div id="hContact" class="flex justify-center gap-4 mt-3 text-xs text-slate-400"></div>
+</div>
+
+<!-- Category tabs -->
+<div id="catTabs" class="flex gap-2 overflow-x-auto px-4 py-3 no-scrollbar sticky top-0 z-10 bg-slate-900/90 backdrop-blur border-b border-white/5"></div>
+
+<!-- Products -->
+<div id="productsWrap" class="px-4 pt-4 space-y-8"></div>
+
+<!-- Loading -->
+<div id="loadingWrap" class="flex justify-center items-center py-20">
+  <div class="w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div>
+</div>
+
+<!-- Error -->
+<div id="errorWrap" class="hidden text-center py-20 text-slate-500">
+  <p class="text-5xl mb-3">😕</p>
+  <p id="errorMsg">تعذر تحميل المنيو</p>
+</div>
+
+<script src="/config.js"></script>
+<script>
+const rid = location.pathname.split('/menu/')[1];
+let allProducts = [];
+let activeCategory = 'all';
+
+async function loadMenu() {
+  try {
+    const base = window.API_BASE || '';
+    const data = await fetch(`${base}/api/public/menu/${rid}`).then(r => {
+      if (!r.ok) throw new Error('not found');
+      return r.json();
+    });
+
+    document.title = data.restaurant_name || 'منيو';
+    document.getElementById('hName').textContent = data.restaurant_name || '';
+    document.getElementById('hDesc').textContent = data.restaurant_description || '';
+    document.getElementById('hEmoji').textContent = data.business_type === 'cafe' ? '☕' : '🍽️';
+
+    const contactParts = [];
+    if (data.restaurant_phone) contactParts.push(`📞 ${data.restaurant_phone}`);
+    if (data.restaurant_address) contactParts.push(`📍 ${data.restaurant_address}`);
+    document.getElementById('hContact').innerHTML = contactParts.map(p => `<span>${p}</span>`).join('');
+
+    allProducts = data.products || [];
+    buildCategoryTabs();
+    renderProducts('all');
+  } catch(e) {
+    document.getElementById('errorMsg').textContent = 'تعذر تحميل المنيو، تأكد من الرابط';
+    document.getElementById('errorWrap').classList.remove('hidden');
+  } finally {
+    document.getElementById('loadingWrap').classList.add('hidden');
+  }
+}
+
+function buildCategoryTabs() {
+  const cats = ['الكل', ...new Set(allProducts.map(p => p.category))];
+  const container = document.getElementById('catTabs');
+  container.innerHTML = cats.map((c, i) => {
+    const val = i === 0 ? 'all' : c;
+    return `<button onclick="renderProducts('${val}')" data-cat="${val}"
+      class="cat-tab flex-shrink-0 px-4 py-1.5 rounded-full text-sm font-medium transition ${i===0?'active':''}">${c}</button>`;
+  }).join('');
+}
+
+function renderProducts(cat) {
+  activeCategory = cat;
+  document.querySelectorAll('.cat-tab').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
+
+  const filtered = cat === 'all' ? allProducts : allProducts.filter(p => p.category === cat);
+  const grouped = {};
+  filtered.forEach(p => {
+    if (!grouped[p.category]) grouped[p.category] = [];
+    grouped[p.category].push(p);
+  });
+
+  const wrap = document.getElementById('productsWrap');
+  if (!filtered.length) { wrap.innerHTML = '<p class="text-center text-slate-500 py-10">لا توجد منتجات</p>'; return; }
+
+  wrap.innerHTML = Object.entries(grouped).map(([catName, prods]) => `
+    <div>
+      <h2 class="text-green-400 font-bold text-base mb-3 border-b border-green-500/20 pb-1">${catName}</h2>
+      <div class="space-y-3">
+        ${prods.map(p => {
+          const hasSub = p.variants && p.variants.length;
+          const subText = hasSub ? p.variants.map(g =>
+            `${g.name}: ${(g.options||[]).map(o => o.name + (o.price ? ` (+${o.price.toLocaleString('en')} د.ع)` : '')).join('، ')}`
+          ).join(' | ') : '';
+          return `
+          <div class="bg-white/5 border border-white/10 rounded-2xl p-4 flex gap-3 ${p.sold_out ? 'sold-out' : ''}">
+            <div class="text-3xl flex-shrink-0 mt-0.5">${p.icon}</div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-start justify-between gap-2">
+                <p class="text-white font-semibold text-sm">${p.name}${p.sold_out ? ' <span class="text-orange-400 text-xs font-normal">(نفد اليوم)</span>' : ''}</p>
+                <span class="text-green-400 font-bold text-sm flex-shrink-0">${Math.round(p.price).toLocaleString('en')} د.ع</span>
+              </div>
+              ${p.description ? `<p class="text-slate-400 text-xs mt-1">${p.description}</p>` : ''}
+              ${subText ? `<p class="text-slate-500 text-xs mt-1">⚙️ ${subText}</p>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+loadMenu();
+</script>
+</body>
+</html>

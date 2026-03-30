@@ -1489,6 +1489,51 @@ async def broadcast_message(req: Request, background_tasks: BackgroundTasks, use
     return {"queued": len(targets), "message": f"تم إرسال الرسالة لـ {len(targets)} زبون"}
 
 
+# ── Reply Templates ───────────────────────────────────────────────────────────
+
+@app.get("/api/reply-templates")
+async def list_reply_templates(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM reply_templates WHERE restaurant_id=? ORDER BY created_at ASC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/reply-templates", status_code=201)
+async def create_reply_template(req: Request, user=Depends(current_user)):
+    body = await req.json()
+    title = (body.get("title") or "").strip()
+    content = (body.get("content") or "").strip()
+    if not title or not content:
+        raise HTTPException(400, "العنوان والمحتوى مطلوبان")
+    tid = str(uuid.uuid4())
+    conn = database.get_db()
+    conn.execute(
+        "INSERT INTO reply_templates (id, restaurant_id, title, content) VALUES (?,?,?,?)",
+        (tid, user["restaurant_id"], title, content)
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM reply_templates WHERE id=?", (tid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/reply-templates/{tid}")
+async def delete_reply_template(tid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM reply_templates WHERE id=? AND restaurant_id=?",
+                        (tid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404)
+    conn.execute("DELETE FROM reply_templates WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 STATUS_FLOW = {
@@ -1504,6 +1549,8 @@ async def list_orders(
     status: Optional[str] = None,
     channel: Optional[str] = None,
     search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     user=Depends(current_user),
 ):
     conn = database.get_db()
@@ -1520,6 +1567,10 @@ async def list_orders(
         q += " AND o.channel=?"; params.append(channel)
     if search:
         q += " AND (c.name LIKE ? OR o.id LIKE ?)"; params += [f"%{search}%", f"%{search}%"]
+    if date_from:
+        q += " AND DATE(o.created_at) >= ?"; params.append(date_from)
+    if date_to:
+        q += " AND DATE(o.created_at) <= ?"; params.append(date_to)
     q += " ORDER BY o.created_at DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()
@@ -3718,6 +3769,60 @@ async def super_login_page():
 @app.get("/super")
 async def super_admin_page():
     return FileResponse("public/super.html")
+
+
+@app.get("/menu/{restaurant_id}")
+async def public_menu_page(restaurant_id: str):
+    return FileResponse("public/menu.html")
+
+
+@app.get("/api/public/menu/{restaurant_id}")
+async def public_menu_data(restaurant_id: str):
+    """Public menu endpoint — no authentication required."""
+    conn = database.get_db()
+    try:
+        rest = conn.execute(
+            "SELECT name, description, address, phone FROM restaurants WHERE id=?",
+            (restaurant_id,)
+        ).fetchone()
+        if not rest:
+            raise HTTPException(404, "المطعم غير موجود")
+        settings_row = conn.execute(
+            "SELECT business_type, restaurant_name, restaurant_description, restaurant_phone, restaurant_address FROM settings WHERE restaurant_id=?",
+            (restaurant_id,)
+        ).fetchone()
+        s = dict(settings_row) if settings_row else {}
+
+        products = conn.execute(
+            "SELECT name, price, category, description, icon, available, sold_out_date, variants FROM products WHERE restaurant_id=? AND available=1 ORDER BY category, name",
+            (restaurant_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from datetime import date as _date
+    today = str(_date.today())
+    items = []
+    for p in products:
+        sold_out = (p["sold_out_date"] or "") == today
+        items.append({
+            "name": p["name"],
+            "price": p["price"],
+            "category": p["category"],
+            "description": p["description"] or "",
+            "icon": p["icon"] or "🍽️",
+            "sold_out": sold_out,
+            "variants": json.loads(p["variants"] or "[]"),
+        })
+
+    return {
+        "restaurant_name": s.get("restaurant_name") or dict(rest).get("name", ""),
+        "restaurant_description": s.get("restaurant_description") or dict(rest).get("description", ""),
+        "restaurant_phone": s.get("restaurant_phone") or dict(rest).get("phone", ""),
+        "restaurant_address": s.get("restaurant_address") or dict(rest).get("address", ""),
+        "business_type": s.get("business_type", "restaurant"),
+        "products": items,
+    }
 
 
 if __name__ == "__main__":

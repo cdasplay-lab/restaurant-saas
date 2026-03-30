@@ -164,6 +164,7 @@
   }
 </style>
 <script src="/config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-200">
 
@@ -360,7 +361,13 @@
           <button onclick="filterOrders('delivered')" data-status="delivered" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">تم التسليم</button>
           <button onclick="filterOrders('cancelled')" data-status="cancelled" class="status-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">ملغي</button>
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-2 flex-wrap">
+          <div class="flex gap-1" id="dateTabs">
+            <button onclick="filterDate('all')" data-date="all" class="date-tab px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-600 text-white">كل الأوقات</button>
+            <button onclick="filterDate('today')" data-date="today" class="date-tab px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">اليوم</button>
+            <button onclick="filterDate('week')" data-date="week" class="date-tab px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">هذا الأسبوع</button>
+            <button onclick="filterDate('month')" data-date="month" class="date-tab px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">هذا الشهر</button>
+          </div>
           <select id="channelFilter" onchange="loadOrders()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2">
             <option value="">كل القنوات</option>
             <option value="telegram">Telegram</option>
@@ -419,7 +426,7 @@
             <i class="fa-solid fa-comments text-5xl mb-3"></i>
             <p>اختر محادثة من القائمة</p>
           </div>
-          <div id="chatActive" class="hidden flex-col h-full">
+          <div id="chatActive" class="hidden flex-col h-full relative">
             <!-- Chat header -->
             <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
               <div class="flex items-center gap-3">
@@ -444,8 +451,22 @@
             </div>
             <!-- Messages -->
             <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+            <!-- Templates popup -->
+            <div id="templatesPopup" class="hidden absolute bottom-20 right-4 left-4 bg-slate-900 border border-slate-700 rounded-2xl shadow-xl z-20 max-h-64 overflow-y-auto">
+              <div class="flex items-center justify-between p-3 border-b border-slate-700">
+                <span class="text-white text-sm font-semibold">⚡ ردود جاهزة</span>
+                <button onclick="document.getElementById('templatesPopup').classList.add('hidden')" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+              <div id="templatesList" class="p-2 space-y-1"></div>
+              <div class="p-3 border-t border-slate-700">
+                <button onclick="openTemplatesManager()" class="text-indigo-400 text-xs hover:text-indigo-300 transition">+ إدارة الردود الجاهزة</button>
+              </div>
+            </div>
             <!-- Input -->
-            <div class="p-3 border-t border-slate-700 flex gap-2">
+            <div class="p-3 border-t border-slate-700 flex gap-2 relative">
+              <button onclick="toggleTemplatesPopup()" title="ردود جاهزة" class="bg-amber-600/20 border border-amber-500/50 text-amber-300 px-3 rounded-xl hover:bg-amber-600/40 transition">
+                <i class="fa-solid fa-bolt"></i>
+              </button>
               <input id="chatInput" type="text" placeholder="اكتب رسالتك..."
                 onkeydown="if(event.key==='Enter')sendMessage()"
                 class="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
@@ -684,6 +705,21 @@
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
           </div>
+          <!-- Public Menu Link -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-green-500/30 space-y-4">
+            <h3 class="text-white font-semibold">🔗 رابط المنيو العام</h3>
+            <p class="text-slate-400 text-sm">شارك هذا الرابط مع زبائنك — لا يحتاج تسجيل دخول.</p>
+            <div class="flex gap-2 items-center">
+              <input id="menuPublicUrl" readonly class="flex-1 bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-xl px-4 py-2.5 focus:outline-none">
+              <button onclick="copyMenuLink()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2.5 rounded-xl transition">نسخ</button>
+              <a id="menuPublicOpen" href="#" target="_blank" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-4 py-2.5 rounded-xl transition">فتح</a>
+            </div>
+            <div class="flex flex-col items-center gap-3 pt-2">
+              <div id="menuQR" class="bg-white p-3 rounded-xl"></div>
+              <p class="text-slate-500 text-xs">QR كود للمنيو</p>
+            </div>
+          </div>
+
           <!-- Working Hours -->
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
             <h3 class="text-white font-semibold">🕐 أوقات العمل</h3>
@@ -1174,6 +1210,32 @@ function renderChannelChart(canvasId, data) {
 }
 
 // ── Orders ────────────────────────────────────────────────────
+function _dateRangeForFilter(f) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const today = fmt(now);
+  if (f === 'today') return { date_from: today, date_to: today };
+  if (f === 'week') {
+    const d = new Date(now); d.setDate(d.getDate() - 6);
+    return { date_from: fmt(d), date_to: today };
+  }
+  if (f === 'month') {
+    const d = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { date_from: fmt(d), date_to: today };
+  }
+  return {};
+}
+
+function filterDate(f) {
+  S.orderDateFilter = f;
+  document.querySelectorAll('.date-tab').forEach(b => {
+    const active = b.dataset.date === f;
+    b.className = `date-tab px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${active ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`;
+  });
+  loadOrders();
+}
+
 async function loadOrders() {
   const params = new URLSearchParams();
   if (S.orderStatus !== 'all') params.set('status', S.orderStatus);
@@ -1181,6 +1243,9 @@ async function loadOrders() {
   if (ch) params.set('channel', ch);
   const sr = document.getElementById('ordersSearch')?.value;
   if (sr) params.set('search', sr);
+  const dr = _dateRangeForFilter(S.orderDateFilter || 'all');
+  if (dr.date_from) params.set('date_from', dr.date_from);
+  if (dr.date_to) params.set('date_to', dr.date_to);
 
   document.getElementById('ordersLoading').classList.remove('hidden');
   document.getElementById('ordersTable').classList.add('hidden');
@@ -1463,6 +1528,83 @@ async function sendMessage() {
     const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
     renderMessages(msgs);
     await loadConversations();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Reply Templates ──────────────────────────────────────────
+let _templates = [];
+
+async function _loadTemplates() {
+  try { _templates = await api.get('/api/reply-templates'); } catch(e) { _templates = []; }
+}
+
+async function toggleTemplatesPopup() {
+  const popup = document.getElementById('templatesPopup');
+  if (!popup.classList.contains('hidden')) { popup.classList.add('hidden'); return; }
+  await _loadTemplates();
+  const list = document.getElementById('templatesList');
+  if (!_templates.length) {
+    list.innerHTML = '<p class="text-slate-500 text-xs text-center py-3">لا توجد ردود جاهزة بعد</p>';
+  } else {
+    list.innerHTML = _templates.map(t => `
+      <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl hover:bg-slate-800 cursor-pointer group"
+           onclick="useTemplate('${t.id}')">
+        <div class="min-w-0">
+          <p class="text-white text-xs font-medium">${t.title}</p>
+          <p class="text-slate-500 text-xs truncate">${t.content}</p>
+        </div>
+      </div>`).join('');
+  }
+  popup.classList.remove('hidden');
+}
+
+function useTemplate(id) {
+  const t = _templates.find(x => x.id === id);
+  if (!t) return;
+  document.getElementById('chatInput').value = t.content;
+  document.getElementById('chatInput').focus();
+  document.getElementById('templatesPopup').classList.add('hidden');
+}
+
+function openTemplatesManager() {
+  document.getElementById('templatesPopup').classList.add('hidden');
+  const existing = _templates.map(t => `
+    <div class="flex items-center justify-between gap-2 p-3 bg-slate-700/50 rounded-xl">
+      <div class="min-w-0">
+        <p class="text-white text-sm font-medium">${t.title}</p>
+        <p class="text-slate-400 text-xs mt-0.5">${t.content}</p>
+      </div>
+      <button onclick="deleteTemplate('${t.id}')" class="text-red-400 hover:text-red-300 flex-shrink-0 px-2"><i class="fa-solid fa-trash text-xs"></i></button>
+    </div>`).join('') || '<p class="text-slate-500 text-sm text-center py-4">لا توجد ردود بعد</p>';
+  openModal(`
+    <h2 class="text-white font-bold text-lg mb-4">⚡ إدارة الردود الجاهزة</h2>
+    <div class="space-y-2 mb-4 max-h-48 overflow-y-auto">${existing}</div>
+    <div class="border-t border-slate-700 pt-4 space-y-3">
+      <input id="tmplTitle" type="text" placeholder="اسم الرد (مثال: ترحيب، شكر...)"
+        class="w-full bg-slate-700 border border-slate-600 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+      <textarea id="tmplContent" rows="3" placeholder="نص الرد الجاهز..."
+        class="w-full bg-slate-700 border border-slate-600 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none"></textarea>
+      <button onclick="addTemplate()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2.5 rounded-xl transition">+ إضافة رد</button>
+    </div>
+  `);
+}
+
+async function addTemplate() {
+  const title = document.getElementById('tmplTitle')?.value.trim();
+  const content = document.getElementById('tmplContent')?.value.trim();
+  if (!title || !content) { toast('أدخل الاسم والنص', 'error'); return; }
+  try {
+    await api.post('/api/reply-templates', { title, content });
+    toast('تمت الإضافة', 'success');
+    closeModal();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteTemplate(id) {
+  try {
+    await api.del(`/api/reply-templates/${id}`);
+    toast('تم الحذف', 'success');
+    closeModal();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -2017,6 +2159,16 @@ async function deleteCustomer(id) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+function copyMenuLink() {
+  const url = document.getElementById('menuPublicUrl')?.value;
+  if (!url) return;
+  navigator.clipboard.writeText(url).then(() => toast('تم نسخ الرابط ✅', 'success')).catch(() => {
+    document.getElementById('menuPublicUrl').select();
+    document.execCommand('copy');
+    toast('تم نسخ الرابط ✅', 'success');
+  });
+}
+
 // ── Export CSV ────────────────────────────────────────────────
 async function exportCSV(type) {
   try {
@@ -2396,6 +2548,19 @@ async function loadSettings() {
     let wh = {};
     try { wh = typeof s.working_hours === 'string' ? JSON.parse(s.working_hours||'{}') : (s.working_hours||{}); } catch(e) {}
     renderWorkingHoursGrid(wh);
+    // Public menu link + QR
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const rid = user.restaurant_id || '';
+    if (rid) {
+      const base = (window.API_BASE || window.location.origin);
+      const menuUrl = base + '/menu/' + rid;
+      document.getElementById('menuPublicUrl').value = menuUrl;
+      document.getElementById('menuPublicOpen').href = menuUrl;
+      const qrEl = document.getElementById('menuQR');
+      qrEl.innerHTML = '';
+      new QRCode(qrEl, { text: menuUrl, width: 160, height: 160, colorDark: '#000', colorLight: '#fff' });
+    }
+
     document.getElementById('settingsLoading').classList.add('hidden');
     document.getElementById('settingsContent').classList.remove('hidden');
     loadBotConfig();
