@@ -131,10 +131,128 @@ async def _subscription_cleanup_job():
         await asyncio.sleep(3600)  # run every hour
 
 
+async def _send_report_to_telegram(bot_token: str, chat_id: str, text: str) -> None:
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        )
+
+
+async def _report_job():
+    """Send daily/weekly stats reports to restaurant owners via Telegram."""
+    await asyncio.sleep(60)  # wait 1 min after startup
+    while True:
+        try:
+            now = datetime.utcnow()
+            conn = database.get_db()
+            try:
+                rows = conn.execute(
+                    """SELECT s.restaurant_id, s.report_frequency, s.report_last_sent,
+                              s.notify_chat_id, s.restaurant_name,
+                              ch.token as tg_token
+                       FROM settings s
+                       LEFT JOIN channels ch ON ch.restaurant_id=s.restaurant_id AND ch.type='telegram'
+                       WHERE s.report_frequency IN ('daily','weekly')
+                         AND s.notify_chat_id != ''
+                         AND (ch.token IS NOT NULL AND ch.token != '')"""
+                ).fetchall()
+            finally:
+                conn.close()
+
+            for row in rows:
+                freq = row["report_frequency"]
+                last_sent_str = row["report_last_sent"] or ""
+                chat_id = row["notify_chat_id"]
+                bot_token = row["tg_token"] or ""
+                rid = row["restaurant_id"]
+                rest_name = row["restaurant_name"] or "المطعم"
+
+                # Check if it's time
+                hours_since = 9999.0
+                if last_sent_str:
+                    try:
+                        last_dt = datetime.fromisoformat(last_sent_str)
+                        hours_since = (now - last_dt).total_seconds() / 3600
+                    except Exception:
+                        pass
+
+                if freq == "daily" and hours_since < 23:
+                    continue
+                if freq == "weekly" and hours_since < 167:
+                    continue
+
+                # Build stats
+                try:
+                    conn2 = database.get_db()
+                    try:
+                        if freq == "daily":
+                            period_label = "اليوم"
+                            since = (now - timedelta(hours=24)).isoformat(sep=' ', timespec='seconds')
+                        else:
+                            period_label = "هذا الأسبوع"
+                            since = (now - timedelta(days=7)).isoformat(sep=' ', timespec='seconds')
+
+                        orders_row = conn2.execute(
+                            "SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE restaurant_id=? AND created_at >= ? AND status != 'cancelled'",
+                            (rid, since)
+                        ).fetchone()
+                        new_custs = conn2.execute(
+                            "SELECT COUNT(*) as cnt FROM customers WHERE restaurant_id=? AND created_at >= ?",
+                            (rid, since)
+                        ).fetchone()
+                        top_prod = conn2.execute(
+                            """SELECT oi.name, SUM(oi.quantity) as qty FROM order_items oi
+                               JOIN orders o ON oi.order_id=o.id
+                               WHERE o.restaurant_id=? AND o.created_at >= ? AND o.status != 'cancelled'
+                               GROUP BY oi.name ORDER BY qty DESC LIMIT 1""",
+                            (rid, since)
+                        ).fetchone()
+                    finally:
+                        conn2.close()
+
+                    orders_count = orders_row["cnt"] if orders_row else 0
+                    revenue = int(orders_row["rev"]) if orders_row else 0
+                    new_c = new_custs["cnt"] if new_custs else 0
+                    top_name = top_prod["name"] if top_prod else "—"
+                    top_qty = top_prod["qty"] if top_prod else 0
+
+                    text = (
+                        f"📊 <b>تقرير {rest_name} — {period_label}</b>\n\n"
+                        f"🛍️ الطلبات: {orders_count}\n"
+                        f"💰 الإيرادات: {revenue:,} د.ع\n"
+                        f"👤 عملاء جدد: {new_c}\n"
+                        f"⭐ أكثر طلباً: {top_name} ({top_qty} مرة)\n\n"
+                        f"<i>تقرير تلقائي من منصة إدارة {rest_name}</i>"
+                    )
+                    await _send_report_to_telegram(bot_token, chat_id, text)
+
+                    # Update last_sent
+                    conn3 = database.get_db()
+                    try:
+                        conn3.execute(
+                            "UPDATE settings SET report_last_sent=? WHERE restaurant_id=?",
+                            (now.isoformat(sep=' ', timespec='seconds'), rid)
+                        )
+                        conn3.commit()
+                    finally:
+                        conn3.close()
+
+                    logger.info(f"[report] sent {freq} report to {rest_name} ({rid})")
+                except Exception as e:
+                    logger.warning(f"[report] failed for {rid}: {e}")
+
+        except Exception as exc:
+            logger.error(f"report_job error: {exc}")
+        await asyncio.sleep(3600)  # check every hour
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
     asyncio.create_task(_subscription_cleanup_job())
+    asyncio.create_task(_report_job())
     yield
 
 
@@ -374,6 +492,7 @@ class SettingsUpdate(BaseModel):
     notify_chat_id: Optional[str] = None
     delivery_fee: Optional[int] = None
     min_order: Optional[int] = None
+    report_frequency: Optional[str] = None  # none / daily / weekly
 
 
 class ChannelUpdate(BaseModel):
@@ -1809,6 +1928,8 @@ async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
     if data.notify_chat_id is not None: upd["notify_chat_id"] = data.notify_chat_id
     if data.delivery_fee is not None: upd["delivery_fee"] = data.delivery_fee
     if data.min_order is not None: upd["min_order"] = data.min_order
+    if data.report_frequency is not None and data.report_frequency in ("none", "daily", "weekly"):
+        upd["report_frequency"] = data.report_frequency
     if upd:
         conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])

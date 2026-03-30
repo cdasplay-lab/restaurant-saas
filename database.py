@@ -496,6 +496,10 @@ def _migrate_db(conn):
         ("settings", "delivery_fee", "INTEGER DEFAULT 0"),
         # settings — minimum order amount (Iraqi Dinar)
         ("settings", "min_order", "INTEGER DEFAULT 0"),
+        # settings — automated report: none / daily / weekly
+        ("settings", "report_frequency", "TEXT DEFAULT 'none'"),
+        # settings — timestamp of last sent report (ISO string)
+        ("settings", "report_last_sent", "TEXT DEFAULT ''"),
     ]
 
     if IS_POSTGRES:
