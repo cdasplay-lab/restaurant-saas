@@ -928,7 +928,11 @@ async function viewRestaurant(rid) {
           <div class="grid grid-cols-2 gap-2 text-center">
             <div><div class="text-white font-bold">${r.total_orders || 0}</div><div class="text-slate-500 text-xs">طلبات</div></div>
             <div><div class="text-white font-bold">${r.total_conversations || 0}</div><div class="text-slate-500 text-xs">محادثات</div></div>
-            <div><div class="text-white font-bold">${r.total_products || 0}</div><div class="text-slate-500 text-xs">منتجات</div></div>
+            <div>
+              <div class="text-white font-bold">${r.total_products || 0}</div>
+              <div class="text-slate-500 text-xs">منتجات</div>
+              ${(r.products_with_variants > 0) ? `<div class="text-purple-400 text-xs mt-0.5">${r.products_with_variants} بخيارات</div>` : ''}
+            </div>
             <div><div class="text-white font-bold">${r.total_staff || 0}</div><div class="text-slate-500 text-xs">موظفين</div></div>
           </div>
         </div>

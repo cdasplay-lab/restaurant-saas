@@ -1591,6 +1591,7 @@ function renderProducts() {
         <div class="flex items-center justify-between">
           <span class="badge bg-indigo-500/20 text-indigo-400">${p.category}</span>
           <span class="text-green-400 font-bold text-sm">${cur(p.price)}</span>
+          ${(p.variants && p.variants.length) ? `<span class="text-xs text-purple-400">+${p.variants.length} خيار</span>` : ''}
         </div>
         <p class="text-slate-600 text-xs mt-1">${p.order_count} طلب</p>
         <div class="flex gap-2 mt-3">
@@ -1621,6 +1622,53 @@ async function toggleSoldOut(id) {
     S.products = await api.get('/api/products');
     renderProducts();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Variants editor helpers ──────────────────────────────────
+let _variantsData = [];
+
+function _renderVariantsEditor(variants) {
+  _variantsData = JSON.parse(JSON.stringify(variants || []));
+  _refreshVariantsUI();
+}
+
+function _refreshVariantsUI() {
+  const el = document.getElementById('variantsEditor');
+  if (!el) return;
+  el.innerHTML = _variantsData.map((g, gi) => `
+    <div class="bg-slate-900 rounded-xl p-3 border border-slate-700">
+      <div class="flex items-center gap-2 mb-2">
+        <input value="${h(g.name)}" onchange="_variantsData[${gi}].name=this.value"
+          placeholder="اسم المجموعة (مثال: الحجم)"
+          class="flex-1 bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-1.5 text-xs focus:border-indigo-500">
+        <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+          <input type="checkbox" ${g.required ? 'checked' : ''} onchange="_variantsData[${gi}].required=this.checked" class="accent-indigo-500">
+          إلزامي
+        </label>
+        <button onclick="_variantsData.splice(${gi},1);_refreshVariantsUI()" class="text-red-400 hover:text-red-300 text-xs px-1">✕</button>
+      </div>
+      <div class="space-y-1 mb-2">
+        ${g.options.map((o, oi) => `
+          <div class="flex items-center gap-2">
+            <input value="${h(o.label)}" onchange="_variantsData[${gi}].options[${oi}].label=this.value"
+              placeholder="الخيار"
+              class="flex-1 bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-1 text-xs focus:border-indigo-500">
+            <input type="number" value="${o.price}" onchange="_variantsData[${gi}].options[${oi}].price=+this.value"
+              placeholder="0" min="0"
+              class="w-24 bg-slate-800 border border-slate-600 text-white rounded-lg px-2 py-1 text-xs focus:border-indigo-500">
+            <span class="text-slate-500 text-xs">د.ع</span>
+            <button onclick="_variantsData[${gi}].options.splice(${oi},1);_refreshVariantsUI()" class="text-slate-500 hover:text-red-400 text-xs">✕</button>
+          </div>
+        `).join('')}
+      </div>
+      <button onclick="_variantsData[${gi}].options.push({label:'',price:0});_refreshVariantsUI()" class="text-xs text-slate-500 hover:text-slate-300 transition">+ أضف خيار</button>
+    </div>
+  `).join('');
+}
+
+function _addVariantGroup() {
+  _variantsData.push({ name: '', required: false, options: [{ label: '', price: 0 }] });
+  _refreshVariantsUI();
 }
 
 function openProductModal(id) {
@@ -1661,11 +1709,20 @@ function openProductModal(id) {
         </label>
       </div>
     </div>
+    <!-- Variants -->
+    <div class="border-t border-slate-700 pt-3 mt-1">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-slate-400 text-xs font-semibold">🔧 الخيارات والإضافات</label>
+        <button type="button" onclick="_addVariantGroup()" class="text-xs text-indigo-400 hover:text-indigo-300 transition">+ أضف مجموعة</button>
+      </div>
+      <div id="variantsEditor" class="space-y-2"></div>
+    </div>
     <div class="flex gap-2 mt-5">
       <button onclick="saveProduct('${id||''}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition font-semibold">حفظ</button>
       <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إلغاء</button>
     </div>
   `);
+  _renderVariantsEditor(p?.variants || []);
 }
 
 async function saveProduct(id) {
@@ -1677,6 +1734,7 @@ async function saveProduct(id) {
     description: document.getElementById('pDesc').value,
     available: document.getElementById('pAvail').checked,
     image_url: document.getElementById('pImageUrl')?.value || '',
+    variants: _variantsData.filter(g => g.name && g.options.length),
   };
   if (!data.name || !data.price) { toast('الاسم والسعر مطلوبان', 'error'); return; }
   try {

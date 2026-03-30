@@ -2408,6 +2408,10 @@ async def super_get_restaurant(rid: str, admin=Depends(current_super_admin)):
         orders_count = conn.execute("SELECT COUNT(*) FROM orders WHERE restaurant_id=?", (rid,)).fetchone()[0]
         convs_count = conn.execute("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", (rid,)).fetchone()[0]
         channels = conn.execute("SELECT type, enabled, verified, connection_status, last_error, last_tested_at FROM channels WHERE restaurant_id=?", (rid,)).fetchall()
+        products_with_variants_count = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE restaurant_id=? AND variants IS NOT NULL AND variants != '[]' AND variants != ''",
+            (rid,)
+        ).fetchone()[0]
 
         d["stats"] = {
             "products": products_count,
@@ -2415,6 +2419,11 @@ async def super_get_restaurant(rid: str, admin=Depends(current_super_admin)):
             "orders": orders_count,
             "conversations": convs_count,
         }
+        d["total_products"] = products_count
+        d["total_orders"] = orders_count
+        d["total_conversations"] = convs_count
+        d["total_staff"] = len([u for u in staff])
+        d["products_with_variants"] = products_with_variants_count
         d["channels"] = [dict(c) for c in channels]
 
         bot_cfg = conn.execute("SELECT * FROM bot_config WHERE restaurant_id=?", (rid,)).fetchone()

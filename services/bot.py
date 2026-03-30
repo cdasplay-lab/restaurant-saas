@@ -299,6 +299,19 @@ def _build_system_prompt(
             if p.get("description"):
                 line += f" ({p['description']})"
         menu_by_cat[cat].append(line)
+        # Append variant groups indented under this product
+        variants = p.get("variants") or []
+        if isinstance(variants, str):
+            import json as _json
+            variants = _json.loads(variants) if variants else []
+        if variants:
+            for vg in variants:
+                opts = ", ".join(
+                    f"{o['label']}" + (f" (+{int(o['price']):,} د.ع)" if o.get('price', 0) > 0 else "")
+                    for o in vg.get("options", [])
+                )
+                req_label = "(إلزامي)" if vg.get("required") else "(اختياري)"
+                menu_by_cat[cat].append(f"    ↳ {vg['name']} {req_label}: {opts}")
 
     menu_text = ""
     for cat, items in menu_by_cat.items():
@@ -373,6 +386,14 @@ def _build_system_prompt(
 - إذا سأل عن السعر → أجبه مباشرة واقترح الطلب.
 - إذا كان ستوري فيديو بدون تحديد منتج → رحّب واسأله بشكل طبيعي عما يرغب به.
 - حوّل كل رد على ستوري إلى فرصة بيع طبيعية وغير متكلفة.
+"""
+
+    # Variants instructions
+    prompt += """
+## تعليمات الخيارات
+- عند الطلب، اسأل عن الخيارات الإلزامية قبل تأكيد أي منتج.
+- للخيارات الاختيارية، اقترحها بشكل طبيعي ("بتحب تضيف...؟").
+- أضف سعر الخيار المختار على سعر المنتج الأساسي في المجموع.
 """
 
     # Smart Closed Mode: only block ORDERS when closed, allow general conversation
