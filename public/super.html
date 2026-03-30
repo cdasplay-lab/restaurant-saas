@@ -746,7 +746,7 @@ function renderSubs(list) {
       <td class="px-4 py-3 text-white text-sm">${h(s.restaurant_name || s.restaurant_id.slice(0,8))}</td>
       <td class="px-4 py-3">${planBadge(s.plan)}</td>
       <td class="px-4 py-3">${statusBadge(s.status)}</td>
-      <td class="px-4 py-3 text-slate-300 text-sm">${s.price ? Math.round(s.price).toLocaleString('ar-IQ') + ' د.ع' : '—'}</td>
+      <td class="px-4 py-3 text-slate-300 text-sm">${s.price ? Math.round(s.price).toLocaleString('en') + ' د.ع' : '—'}</td>
       <td class="px-4 py-3 text-slate-400 text-xs">${s.end_date ? s.end_date.slice(0,10) : '—'}</td>
       <td class="px-4 py-3">
         <span class="text-sm ${(s.days_remaining ?? 999) <= 7 ? 'text-red-400' : (s.days_remaining ?? 999) <= 30 ? 'text-yellow-400' : 'text-slate-300'}">
@@ -1082,7 +1082,7 @@ function planBadge(p) {
 
 function formatCurrency(n) {
   if (!n && n !== 0) return '—';
-  return Math.round(+n).toLocaleString('ar-IQ') + ' د.ع';
+  return Math.round(+n).toLocaleString('en') + ' د.ع';
 }
 
 let _toastTimeout;
@@ -1213,7 +1213,7 @@ async function savePIN() {
 
 function fmtDate(dt) {
   if (!dt) return '—';
-  try { return new Date(dt).toLocaleString('ar', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); } catch(e) { return dt; }
+  try { return new Date(dt).toLocaleString('en-GB', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); } catch(e) { return dt; }
 }
 
 // Close modals on backdrop click

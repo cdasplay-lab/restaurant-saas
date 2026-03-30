@@ -879,11 +879,11 @@ const api = {
 };
 
 // ── Utils ─────────────────────────────────────────────────────
-function cur(n) { return `${Math.round(+n||0).toLocaleString('ar-IQ')} د.ع`; }
+function cur(n) { return `${Math.round(+n||0).toLocaleString('en')} د.ع`; }
 function dt(s) {
   if (!s) return '—';
   const d = new Date(s);
-  return isNaN(d) ? s : d.toLocaleDateString('ar-SA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return isNaN(d) ? s : d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 function statusBadge(s) {
   const map = {
@@ -937,7 +937,7 @@ function logout() {
 
 function updateClock() {
   document.getElementById('currentTime').textContent =
-    new Date().toLocaleTimeString('ar-SA');
+    new Date().toLocaleTimeString('en-GB');
 }
 
 // ── Router ────────────────────────────────────────────────────
@@ -1051,7 +1051,7 @@ function renderWeeklyChart(canvasId, data) {
   S.charts[canvasId] = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: data.map(d => new Date(d.date).toLocaleDateString('ar-SA', { weekday: 'short' })),
+      labels: data.map(d => new Date(d.date).toLocaleDateString('en-GB', { weekday: 'short' })),
       datasets: [{ label: 'الإيرادات', data: data.map(d => d.revenue),
         backgroundColor: 'rgba(99,102,241,0.5)', borderColor: '#6366f1',
         borderWidth: 2, borderRadius: 6 }],
@@ -1985,7 +1985,7 @@ async function loadChannels() {
               <span class="${ch.token ? 'text-green-400' : 'text-yellow-400'}">
                 ${ch.token ? '🔑 توكن محفوظ' : '⚠️ لا يوجد توكن — أدخل التوكن واضغط حفظ'}
               </span>
-              ${ch.last_tested_at ? `<span class="text-slate-600">• آخر اختبار: ${new Date(ch.last_tested_at).toLocaleString('ar')}</span>` : ''}
+              ${ch.last_tested_at ? `<span class="text-slate-600">• آخر اختبار: ${new Date(ch.last_tested_at).toLocaleString('en-GB')}</span>` : ''}
             </div>
             ${ch.last_error ? `<div class="bg-red-900/30 border border-red-800 rounded-lg px-3 py-1.5 text-red-300 text-xs font-mono break-all">${ch.last_error}</div>` : ''}
           </div>
