@@ -1204,6 +1204,42 @@ def _auto_create_order(
         "order", order_id,
     )
     conn.commit()
+
+    # Send Telegram notification to owner if notify_chat_id is configured
+    try:
+        settings_row = conn.execute(
+            "SELECT notify_chat_id FROM settings WHERE restaurant_id=?", (restaurant_id,)
+        ).fetchone()
+        notify_chat_id = settings_row["notify_chat_id"] if settings_row else ""
+        if notify_chat_id:
+            tg_channel = conn.execute(
+                "SELECT bot_token FROM channels WHERE restaurant_id=? AND type='telegram' AND bot_token != '' LIMIT 1",
+                (restaurant_id,)
+            ).fetchone()
+            tg_token = tg_channel["bot_token"] if tg_channel else ""
+            if tg_token:
+                rest_row = conn.execute(
+                    "SELECT name FROM restaurants WHERE id=?", (restaurant_id,)
+                ).fetchone()
+                rest_name = rest_row["name"] if rest_row else "المطعم"
+                items_summary = "\n".join(
+                    f"  • {it.get('name','')} × {it.get('quantity',1)} — {int(it.get('price',0)):,} د.ع"
+                    for it in items
+                )
+                msg_text = (
+                    f"🔔 طلب جديد!\n"
+                    f"👤 {customer.get('name','مجهول')} — {platform}\n"
+                    f"📦 {items_summary}\n"
+                    f"💰 المجموع: {int(total):,} د.ع"
+                )
+                httpx.post(
+                    f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                    json={"chat_id": notify_chat_id, "text": msg_text},
+                    timeout=5,
+                )
+    except Exception as _tg_err:
+        logger.warning(f"[order] Telegram notify failed (non-fatal): {_tg_err}")
+
     return order_id
 
 

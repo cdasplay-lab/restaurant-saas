@@ -488,6 +488,14 @@ def _migrate_db(conn):
         ("settings", "business_type", "TEXT DEFAULT 'restaurant'"),
         # products — sold out today flag
         ("products", "sold_out_date", "TEXT DEFAULT ''"),
+        # settings — delivery time estimate shown to bot
+        ("settings", "delivery_time", "TEXT DEFAULT ''"),
+        # settings — owner Telegram chat ID for order notifications
+        ("settings", "notify_chat_id", "TEXT DEFAULT ''"),
+        # settings — delivery fee (Iraqi Dinar)
+        ("settings", "delivery_fee", "INTEGER DEFAULT 0"),
+        # settings — minimum order amount (Iraqi Dinar)
+        ("settings", "min_order", "INTEGER DEFAULT 0"),
     ]
 
     if IS_POSTGRES:

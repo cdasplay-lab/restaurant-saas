@@ -589,6 +589,30 @@
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
                 <p class="text-slate-500 text-xs mt-1">سيذكرها البوت تلقائياً عند سؤال الزبون عن طريقة الدفع</p>
               </div>
+              <div>
+                <label class="text-slate-400 text-xs mb-1.5 block">⏱️ وقت التوصيل التقريبي</label>
+                <input id="sDeliveryTime" placeholder="مثال: 30-45 دقيقة"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
+                <p class="text-slate-500 text-xs mt-1">سيذكره البوت للزبون عند تأكيد الطلب</p>
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs mb-1.5 block">🛵 رسوم التوصيل (د.ع)</label>
+                <input id="sDeliveryFee" type="number" placeholder="0" min="0"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
+                <p class="text-slate-500 text-xs mt-1">سيضيفها البوت على مجموع الطلب ويُعلم الزبون بها</p>
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs mb-1.5 block">💰 الحد الأدنى للطلب (د.ع)</label>
+                <input id="sMinOrder" type="number" placeholder="0" min="0"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
+                <p class="text-slate-500 text-xs mt-1">البوت سيرفض الطلبات التي أقل من هذا المبلغ بلطف</p>
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs mb-1.5 block">📲 Chat ID تيليكرام للإشعارات</label>
+                <input id="sNotifyChatId" placeholder="مثال: 123456789"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
+                <p class="text-slate-500 text-xs mt-1">أرسل /start لـ @userinfobot على تيليكرام للحصول على Chat ID</p>
+              </div>
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
           </div>
@@ -2129,6 +2153,10 @@ async function loadSettings() {
     if (s.restaurant_phone) document.getElementById('sRestPhone').value = s.restaurant_phone;
     if (s.restaurant_address) document.getElementById('sRestAddress').value = s.restaurant_address;
     if (s.payment_methods) document.getElementById('sPaymentMethods').value = s.payment_methods;
+    if (s.delivery_time) document.getElementById('sDeliveryTime').value = s.delivery_time;
+    if (s.delivery_fee) document.getElementById('sDeliveryFee').value = s.delivery_fee;
+    if (s.min_order) document.getElementById('sMinOrder').value = s.min_order;
+    if (s.notify_chat_id) document.getElementById('sNotifyChatId').value = s.notify_chat_id;
     if (s.business_type) window._businessType = s.business_type;
     _applyBusinessType(s.business_type || 'restaurant');
     if (s.bot_name) document.getElementById('sBotName').value = s.bot_name;
@@ -2168,6 +2196,10 @@ async function saveSettings() {
       restaurant_phone: document.getElementById('sRestPhone').value,
       restaurant_address: document.getElementById('sRestAddress').value,
       payment_methods: document.getElementById('sPaymentMethods').value,
+      delivery_time: document.getElementById('sDeliveryTime').value,
+      delivery_fee: parseInt(document.getElementById('sDeliveryFee').value) || 0,
+      min_order: parseInt(document.getElementById('sMinOrder').value) || 0,
+      notify_chat_id: document.getElementById('sNotifyChatId').value,
       business_type: window._businessType || 'restaurant',
       bot_name: document.getElementById('sBotName').value,
       bot_personality: document.getElementById('sBotPersonality').value,

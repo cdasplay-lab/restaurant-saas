@@ -232,6 +232,9 @@ def _build_system_prompt(
     welcome = settings.get("bot_welcome") or "مرحباً! كيف يمكنني مساعدتك؟"
     payment_methods = settings.get("payment_methods") or "كاش"
     business_type = settings.get("business_type") or "restaurant"
+    delivery_time = settings.get("delivery_time") or ""
+    delivery_fee = settings.get("delivery_fee") or 0
+    min_order = settings.get("min_order") or 0
 
     # Working hours awareness
     import json as _json
@@ -239,6 +242,8 @@ def _build_system_prompt(
 
     working_hours_raw = settings.get("working_hours") or restaurant.get("working_hours") or "{}"
     working_hours_status = ""
+    is_currently_closed = False
+    next_open_info = ""
     try:
         wh = _json.loads(working_hours_raw) if isinstance(working_hours_raw, str) else working_hours_raw
         now = _dt.now()
@@ -254,6 +259,14 @@ def _build_system_prompt(
                 working_hours_status = f"اليوم ({today_key}) مفتوحون."
         elif day_info and not day_info.get("open"):
             working_hours_status = f"اليوم ({today_key}) مغلقون."
+            is_currently_closed = True
+            # Find next open day
+            for i in range(1, 8):
+                next_day = day_names[(now.weekday() + i) % 7]
+                nd = wh.get(next_day, {})
+                if nd.get("open"):
+                    next_open_info = f"{next_day} من {nd.get('from','')} إلى {nd.get('to','')}"
+                    break
         # Build full schedule text
         schedule_lines = []
         for day in day_names:
@@ -349,7 +362,6 @@ def _build_system_prompt(
 - إذا سأل العميل عن شيء خارج نطاق المطعم، أعده بلطف لموضوع الطلب.
 - إذا طلب التحدث مع موظف أو أبدى شكوى، أخبره بأنك ستحوله لفريق الدعم.
 - إذا سأل العميل عن أوقات العمل، أجبه بالأوقات المذكورة أعلاه بدقة.
-- إذا كان المطعم مغلقاً الآن، أخبر العميل بأوقات الفتح ولكن استمر في استقبال الطلبات.
 - إذا طلب العميل منتجاً مكتوب بجانبه (نفد اليوم ❌)، اعتذر منه بلطف وقل "خلص هذا المنتج اليوم، يرجع بكره إن شاء الله" واقترح بديلاً من القائمة.
 
 ## ردود الستوري (Story Replies)
@@ -362,6 +374,29 @@ def _build_system_prompt(
 - إذا كان ستوري فيديو بدون تحديد منتج → رحّب واسأله بشكل طبيعي عما يرغب به.
 - حوّل كل رد على ستوري إلى فرصة بيع طبيعية وغير متكلفة.
 """
+
+    # Smart Closed Mode: only block ORDERS when closed, allow general conversation
+    if is_currently_closed:
+        next_open_text = f" سيفتح {next_open_info}" if next_open_info else ""
+        prompt += f"""
+## تنبيه: المطعم مغلق الآن
+- المطعم مغلق في الوقت الحالي.{next_open_text}
+- إذا حاول العميل تقديم طلب أو طلب منتجاً → أخبره بلطف أن المطعم مغلق الآن{f' وسيفتح {next_open_info}' if next_open_info else ''} وادعُه للطلب حين يفتح.
+- إذا كان العميل يسأل سؤالاً عاماً، يتحدث، يرد على ستوري، أو يستفسر عن المنتجات أو الأسعار → أجبه بشكل طبيعي ودي، ولا ترفض المحادثة.
+- الفرق: الأسئلة والحديث العام ✅ مسموح — تقديم الطلبات ❌ مرفوض حتى فتح المطعم.
+"""
+
+    # Delivery time estimate
+    if delivery_time:
+        prompt += f"\n## وقت التوصيل\nوقت التوصيل التقريبي: {delivery_time} — اذكره للزبون عند تأكيد الطلب.\n"
+
+    # Delivery fee
+    if delivery_fee and int(delivery_fee) > 0:
+        prompt += f"\n## رسوم التوصيل\nرسوم التوصيل: {int(delivery_fee):,} د.ع — أضفها على مجموع الطلب وأعلم الزبون بها.\n"
+
+    # Minimum order amount
+    if min_order and int(min_order) > 0:
+        prompt += f"\n## الحد الأدنى للطلب\nالحد الأدنى للطلب: {int(min_order):,} د.ع — إذا كان مجموع الطلب أقل من هذا المبلغ، أخبر الزبون بلطف أن الحد الأدنى هو {int(min_order):,} د.ع.\n"
 
     if business_type == "cafe":
         prompt += """

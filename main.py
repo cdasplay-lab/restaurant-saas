@@ -370,6 +370,10 @@ class SettingsUpdate(BaseModel):
     security_session_timeout: Optional[int] = None
     payment_methods: Optional[str] = None
     business_type: Optional[str] = None
+    delivery_time: Optional[str] = None
+    notify_chat_id: Optional[str] = None
+    delivery_fee: Optional[int] = None
+    min_order: Optional[int] = None
 
 
 class ChannelUpdate(BaseModel):
@@ -1541,6 +1545,10 @@ async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
     if data.security_session_timeout is not None: upd["security_session_timeout"] = data.security_session_timeout
     if data.payment_methods is not None: upd["payment_methods"] = data.payment_methods
     if data.business_type is not None: upd["business_type"] = data.business_type
+    if data.delivery_time is not None: upd["delivery_time"] = data.delivery_time
+    if data.notify_chat_id is not None: upd["notify_chat_id"] = data.notify_chat_id
+    if data.delivery_fee is not None: upd["delivery_fee"] = data.delivery_fee
+    if data.min_order is not None: upd["min_order"] = data.min_order
     if upd:
         conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])
