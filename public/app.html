@@ -1555,7 +1555,7 @@ function openProductModal(id) {
         <div><label class="text-slate-400 text-xs mb-1 block">الفئة</label>
           <input id="pCategory" value="${p?.category||'Main'}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
         <div><label class="text-slate-400 text-xs mb-1 block">الأيقونة</label>
-          <input id="pIcon" value="${p?.icon||''}" placeholder="🍔 🍕 ☕ (اختياري)" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+          <input id="pIcon" value="${p?.icon||'🍽️'}" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
       </div>
       <div><label class="text-slate-400 text-xs mb-1 block">الوصف</label>
         <textarea id="pDesc" rows="2" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 resize-none">${p?.description||''}</textarea></div>
@@ -1587,7 +1587,7 @@ async function saveProduct(id) {
     name: document.getElementById('pName').value,
     price: parseFloat(document.getElementById('pPrice').value),
     category: document.getElementById('pCategory').value,
-    icon: document.getElementById('pIcon').value || '🍽️',
+    icon: document.getElementById('pIcon').value,
     description: document.getElementById('pDesc').value,
     available: document.getElementById('pAvail').checked,
     image_url: document.getElementById('pImageUrl')?.value || '',
