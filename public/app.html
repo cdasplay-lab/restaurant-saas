@@ -198,6 +198,9 @@
       <a href="#customers"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-users w-4 text-center"></i> العملاء
       </a>
+      <a href="#broadcast"    class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-bullhorn w-4 text-center"></i> بث الرسائل
+      </a>
       <a href="#team" id="navTeam" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-user-tie w-4 text-center"></i> الفريق
       </a>
@@ -508,6 +511,48 @@
           </thead>
           <tbody id="custsBody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- ═══ BROADCAST ═══ -->
+    <section id="sec-broadcast" class="section">
+      <div class="max-w-xl">
+        <h2 class="text-white font-bold text-lg mb-1">📣 بث رسالة للزبائن</h2>
+        <p class="text-slate-400 text-sm mb-6">ترسل الرسالة لجميع الزبائن الذين تواصلوا معك سابقاً عبر المنصات المفعّلة.</p>
+
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
+          <!-- Platform filter -->
+          <div>
+            <label class="block text-slate-300 text-sm mb-2">المنصة</label>
+            <select id="bcPlatform" class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
+              <option value="">الكل (جميع المنصات)</option>
+              <option value="telegram">Telegram</option>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="instagram">Instagram</option>
+              <option value="facebook">Facebook</option>
+            </select>
+          </div>
+
+          <!-- Message -->
+          <div>
+            <label class="block text-slate-300 text-sm mb-2">نص الرسالة</label>
+            <textarea id="bcMessage" rows="5" placeholder="اكتب رسالتك هنا..."
+              class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-xl px-4 py-3 focus:border-indigo-500 resize-none placeholder-slate-500"></textarea>
+            <div class="text-slate-500 text-xs mt-1 text-left" id="bcCharCount">0 / 1000</div>
+          </div>
+
+          <!-- Result -->
+          <div id="bcResult" class="hidden text-sm rounded-xl px-4 py-3"></div>
+
+          <!-- Submit -->
+          <button onclick="sendBroadcast()"
+            class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl py-3 transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-paper-plane"></i>
+            <span id="bcBtnText">إرسال الرسالة</span>
+          </button>
+
+          <p class="text-slate-500 text-xs text-center">⚠️ لا يمكن التراجع عن الإرسال — تأكد من الرسالة قبل الإرسال</p>
+        </div>
       </div>
     </section>
 
@@ -975,6 +1020,7 @@ const PAGES = {
   conversations: { title: 'المحادثات',      load: loadConversations },
   products:      { title: 'المنتجات',       load: loadProducts },
   customers:     { title: 'العملاء',        load: loadCustomers },
+  broadcast:     { title: 'بث الرسائل',     load: () => {} },
   team:          { title: 'الفريق',         load: loadTeam },
   analytics:     { title: 'التحليلات',      load: loadAnalytics },
   channels:      { title: 'القنوات',        load: loadChannels },
@@ -1950,6 +1996,40 @@ async function deleteCustomer(id) {
     toast('تم الحذف', 'success');
     closeModal(); loadCustomers();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Broadcast ─────────────────────────────────────────────────
+document.getElementById('bcMessage')?.addEventListener('input', function() {
+  document.getElementById('bcCharCount').textContent = this.value.length + ' / 1000';
+});
+
+async function sendBroadcast() {
+  const msg = (document.getElementById('bcMessage').value || '').trim();
+  const platform = document.getElementById('bcPlatform').value;
+  const resultEl = document.getElementById('bcResult');
+  if (!msg) { toast('الرسالة فارغة', 'error'); return; }
+  if (msg.length > 1000) { toast('الرسالة طويلة جداً (الحد 1000 حرف)', 'error'); return; }
+
+  const btn = document.getElementById('bcBtnText');
+  btn.textContent = 'جارٍ الإرسال...';
+  resultEl.classList.add('hidden');
+
+  try {
+    const body = { message: msg };
+    if (platform) body.platform = platform;
+    const r = await api.post('/api/broadcast', body);
+    resultEl.className = 'text-sm rounded-xl px-4 py-3 bg-green-500/20 border border-green-500/30 text-green-300';
+    resultEl.textContent = '✅ ' + r.message;
+    resultEl.classList.remove('hidden');
+    document.getElementById('bcMessage').value = '';
+    document.getElementById('bcCharCount').textContent = '0 / 1000';
+  } catch(e) {
+    resultEl.className = 'text-sm rounded-xl px-4 py-3 bg-red-500/20 border border-red-500/30 text-red-300';
+    resultEl.textContent = '❌ ' + e.message;
+    resultEl.classList.remove('hidden');
+  } finally {
+    btn.textContent = 'إرسال الرسالة';
+  }
 }
 
 // ── Analytics ─────────────────────────────────────────────────

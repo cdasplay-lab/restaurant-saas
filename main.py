@@ -1212,6 +1212,102 @@ async def delete_customer(cid: str, user=Depends(current_user)):
     return {"message": "تم الحذف"}
 
 
+@app.post("/api/broadcast")
+async def broadcast_message(req: Request, background_tasks: BackgroundTasks, user=Depends(current_user)):
+    """Send a broadcast message to all customers who have had a conversation."""
+    body = await req.json()
+    message_text = (body.get("message") or "").strip()
+    platform_filter = body.get("platform")  # optional: "telegram","whatsapp","instagram","facebook"
+    if not message_text:
+        raise HTTPException(400, "الرسالة فارغة")
+
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        # Fetch distinct customers with conversations for this restaurant
+        query = "SELECT DISTINCT c.id, c.platform, c.phone FROM customers c WHERE c.restaurant_id=? AND c.platform IS NOT NULL"
+        params = [rid]
+        if platform_filter:
+            query += " AND c.platform=?"
+            params.append(platform_filter)
+        customers = conn.execute(query, params).fetchall()
+
+        # Fetch channel credentials once per platform
+        channels = {}
+        for ch in conn.execute("SELECT type, token, phone_number_id FROM channels WHERE restaurant_id=?", (rid,)).fetchall():
+            channels[ch["type"]] = dict(ch)
+
+        # Collect (platform, external_id) pairs
+        targets = []
+        for cust in customers:
+            cid = cust["id"]
+            platform = cust["platform"] or ""
+            mem = conn.execute(
+                "SELECT memory_value FROM conversation_memory WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
+                (rid, cid)
+            ).fetchone()
+            external_id = mem["memory_value"] if mem else (cust["phone"] or "")
+            if external_id and platform:
+                targets.append((platform, external_id))
+    finally:
+        conn.close()
+
+    async def _do_broadcast():
+        import httpx as _httpx
+        sent = 0
+        failed = 0
+        async with _httpx.AsyncClient(timeout=10) as client:
+            for platform, external_id in targets:
+                try:
+                    if platform == "telegram":
+                        ch = channels.get("telegram", {})
+                        bot_token = ch.get("token", "")
+                        if not bot_token:
+                            continue
+                        await client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={"chat_id": external_id, "text": message_text}
+                        )
+                        sent += 1
+                    elif platform == "whatsapp":
+                        ch = channels.get("whatsapp", {})
+                        access_token = ch.get("token", "")
+                        phone_number_id = ch.get("phone_number_id", "")
+                        if not access_token or not phone_number_id:
+                            continue
+                        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                        payload = {
+                            "messaging_product": "whatsapp",
+                            "to": external_id,
+                            "type": "text",
+                            "text": {"body": message_text}
+                        }
+                        await client.post(
+                            f"https://graph.facebook.com/v19.0/{phone_number_id}/messages",
+                            headers=headers, json=payload
+                        )
+                        sent += 1
+                    elif platform in ("instagram", "facebook"):
+                        ch = channels.get(platform, {})
+                        page_token = ch.get("token", "")
+                        if not page_token:
+                            continue
+                        payload = {"recipient": {"id": external_id}, "message": {"text": message_text}}
+                        await client.post(
+                            "https://graph.facebook.com/v19.0/me/messages",
+                            params={"access_token": page_token},
+                            json=payload
+                        )
+                        sent += 1
+                except Exception as _e:
+                    failed += 1
+                    logger.warning(f"[broadcast] failed to send to {platform}:{external_id}: {_e}")
+        logger.info(f"[broadcast] restaurant={rid} sent={sent} failed={failed}")
+
+    background_tasks.add_task(_do_broadcast)
+    return {"queued": len(targets), "message": f"تم إرسال الرسالة لـ {len(targets)} زبون"}
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 STATUS_FLOW = {
