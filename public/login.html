@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>تسجيل الدخول — منصة إدارة المطعم</title>
+<title>تسجيل الدخول — منصة إدارة الأعمال</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   body { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); min-height: 100vh; }
@@ -24,13 +24,27 @@
 
 <div class="glass glow rounded-3xl p-8 w-full max-w-md relative z-10">
 
+  <!-- Type Selector -->
+  <div class="flex justify-center gap-3 mb-6">
+    <button onclick="selectType('restaurant')" id="btnRestaurant"
+      class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition
+             bg-indigo-600/30 border-indigo-500/60 text-white">
+      🍽️ مطعم
+    </button>
+    <button onclick="selectType('cafe')" id="btnCafe"
+      class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition
+             bg-white/5 border-white/15 text-slate-400">
+      ☕ كافيه
+    </button>
+  </div>
+
   <!-- Logo & Welcome -->
   <div class="text-center mb-8">
-    <div class="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl mb-5 shadow-lg shadow-indigo-500/30">
-      <span class="text-4xl">🍽️</span>
+    <div id="logoBox" class="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl mb-5 shadow-lg shadow-indigo-500/30">
+      <span id="logoEmoji" class="text-4xl">🍽️</span>
     </div>
     <h1 class="text-white text-2xl font-bold mb-1">أهلاً وسهلاً بك 👋</h1>
-    <p class="text-indigo-300 text-sm font-medium">منصة إدارة مطعمك الذكية</p>
+    <p id="subTitle" class="text-indigo-300 text-sm font-medium">منصة إدارة مطعمك الذكية</p>
     <p class="text-slate-400 text-xs mt-1">سجّل دخولك للوصول إلى لوحة التحكم</p>
   </div>
 
@@ -80,6 +94,23 @@
 </div>
 
 <script>
+  function selectType(type) {
+    const isRestaurant = type === 'restaurant';
+    document.getElementById('btnRestaurant').className =
+      'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition ' +
+      (isRestaurant ? 'bg-indigo-600/30 border-indigo-500/60 text-white' : 'bg-white/5 border-white/15 text-slate-400');
+    document.getElementById('btnCafe').className =
+      'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition ' +
+      (!isRestaurant ? 'bg-amber-600/30 border-amber-500/60 text-white' : 'bg-white/5 border-white/15 text-slate-400');
+    document.getElementById('logoEmoji').textContent = isRestaurant ? '🍽️' : '☕';
+    document.getElementById('logoBox').className =
+      'inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-5 shadow-lg bg-gradient-to-br ' +
+      (isRestaurant ? 'from-indigo-500 to-purple-600 shadow-indigo-500/30' : 'from-amber-500 to-orange-600 shadow-amber-500/30');
+    document.getElementById('subTitle').textContent = isRestaurant
+      ? 'منصة إدارة مطعمك الذكية'
+      : 'منصة إدارة كافيهك الذكية';
+  }
+
   if (localStorage.getItem('token')) {
     window.location.href = '/app';
   }
