@@ -72,7 +72,7 @@
     </div>
     <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('restaurants')">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-2 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
-      المطاعم
+      المنشآت
     </div>
     <div class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 text-sm" onclick="showSection('subscriptions')">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
@@ -137,7 +137,7 @@
           <div id="expiringList" class="space-y-2"></div>
         </div>
         <div class="card p-4">
-          <h3 class="text-slate-300 font-semibold mb-4 text-sm">آخر المطاعم المضافة</h3>
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">آخر المنشآت المضافة</h3>
           <div id="recentRestaurants" class="space-y-2"></div>
         </div>
       </div>
@@ -146,7 +146,7 @@
     <!-- === RESTAURANTS === -->
     <section id="sec-restaurants" class="section space-y-4">
       <div class="flex items-center gap-3 flex-wrap">
-        <input id="restSearch" type="text" placeholder="بحث باسم المطعم أو المالك..." oninput="filterRestaurants()" class="max-w-xs">
+        <input id="restSearch" type="text" placeholder="بحث باسم المنشأة أو المالك..." oninput="filterRestaurants()" class="max-w-xs">
         <select id="restFilter" onchange="filterRestaurants()" class="max-w-xs">
           <option value="">جميع الحالات</option>
           <option value="active">نشط</option>
@@ -155,13 +155,13 @@
           <option value="expired">منتهي</option>
           <option value="archived">مؤرشف</option>
         </select>
-        <button onclick="openCreateRestModal()" class="mr-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg font-semibold transition">+ مطعم جديد</button>
+        <button onclick="openCreateRestModal()" class="mr-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg font-semibold transition">+ منشأة جديدة</button>
       </div>
       <div class="card overflow-hidden">
         <table class="w-full text-sm">
           <thead class="bg-slate-800/50 text-slate-400 text-xs">
             <tr>
-              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">المنشأة</th>
               <th class="px-4 py-3 text-right">المالك</th>
               <th class="px-4 py-3 text-right">الخطة</th>
               <th class="px-4 py-3 text-right">الحالة</th>
@@ -188,7 +188,7 @@
         <table class="w-full text-sm">
           <thead class="bg-slate-800/50 text-slate-400 text-xs">
             <tr>
-              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">المنشأة</th>
               <th class="px-4 py-3 text-right">الخطة</th>
               <th class="px-4 py-3 text-right">الحالة</th>
               <th class="px-4 py-3 text-right">السعر</th>
@@ -264,7 +264,7 @@
           <thead class="bg-slate-800/50 text-slate-400 text-xs">
             <tr>
               <th class="px-4 py-3 text-right">العميل</th>
-              <th class="px-4 py-3 text-right">المطعم</th>
+              <th class="px-4 py-3 text-right">المنشأة</th>
               <th class="px-4 py-3 text-right">الحالة</th>
               <th class="px-4 py-3 text-right">الرسائل</th>
               <th class="px-4 py-3 text-right">آخر رسالة</th>
@@ -363,7 +363,7 @@
           </select>
         </div>
         <div>
-          <label class="block text-slate-400 text-xs mb-1">السعر (د.ع / شهر)</label>
+          <label class="block text-slate-400 text-xs mb-1">السعر ($ / شهر)</label>
           <input type="number" id="subPrice" min="0" step="0.01">
         </div>
         <div>
@@ -388,13 +388,13 @@
 <div id="createRestModal" class="modal-bg hidden">
   <div class="modal-box p-6">
     <div class="flex items-center justify-between mb-5">
-      <h2 class="text-white font-bold text-lg">➕ إنشاء مطعم جديد</h2>
+      <h2 class="text-white font-bold text-lg">➕ إنشاء منشأة جديدة</h2>
       <button onclick="closeModal('createRestModal')" class="text-slate-400 hover:text-white">✕</button>
     </div>
     <form id="createRestForm" class="space-y-4" onsubmit="submitCreateRest(event)">
       <div>
-        <label class="block text-slate-400 text-xs mb-1">اسم المطعم *</label>
-        <input id="crName" type="text" required placeholder="مثال: مطعم الفخر" class="w-full text-sm">
+        <label class="block text-slate-400 text-xs mb-1">اسم المنشأة *</label>
+        <input id="crName" type="text" required placeholder="مثال: مطعم الفخر أو كافيه النخبة" class="w-full text-sm">
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
@@ -433,7 +433,7 @@
       <div id="createRestSuccess" class="hidden bg-green-500/20 text-green-300 rounded-lg px-3 py-2 text-sm"></div>
       <div class="flex gap-2 justify-end">
         <button type="button" onclick="closeModal('createRestModal')" class="btn btn-ghost">إلغاء</button>
-        <button type="submit" id="createRestBtn" class="btn btn-primary">إنشاء المطعم</button>
+        <button type="submit" id="createRestBtn" class="btn btn-primary">إنشاء المنشأة</button>
       </div>
     </form>
   </div>
@@ -443,7 +443,7 @@
 <div id="editRestModal" class="modal-bg hidden">
   <div class="modal-box p-6">
     <div class="flex items-center justify-between mb-5">
-      <h2 class="text-white font-bold text-lg">تعديل المطعم</h2>
+      <h2 class="text-white font-bold text-lg">تعديل المنشأة</h2>
       <button onclick="closeModal('editRestModal')" class="text-slate-400 hover:text-white">✕</button>
     </div>
     <form id="editRestForm" class="space-y-4" onsubmit="saveRest(event)">
@@ -676,8 +676,13 @@ function renderRestaurants(list) {
   tbody.innerHTML = list.map(r => `
     <tr class="table-row border-b border-slate-800">
       <td class="px-4 py-3">
-        <div class="text-white font-medium text-sm">${h(r.name)}</div>
-        <div class="text-slate-500 text-xs">${h(r.id.slice(0,8))}…</div>
+        <div class="flex items-center gap-2">
+          <span title="${r.business_type === 'cafe' ? 'كافيه' : 'مطعم'}">${r.business_type === 'cafe' ? '☕' : '🍽️'}</span>
+          <div>
+            <div class="text-white font-medium text-sm">${h(r.name)}</div>
+            <div class="text-slate-500 text-xs">${h(r.id.slice(0,8))}…</div>
+          </div>
+        </div>
       </td>
       <td class="px-4 py-3">
         <div class="text-slate-300 text-sm">${h(r.owner_name || '—')}</div>
@@ -758,7 +763,7 @@ async function loadAnalytics() {
       type: 'line',
       data: {
         labels: growth.map(g => g.month || g.label || ''),
-        datasets: [{ label: 'مطاعم جديدة', data: growth.map(g => g.count || g.new_restaurants || 0),
+        datasets: [{ label: 'منشآت جديدة', data: growth.map(g => g.count || g.new_restaurants || 0),
           borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,.15)', tension: 0.4, fill: true }]
       },
       options: { responsive: true, plugins: { legend: { labels: { color: '#94a3b8' } } },
@@ -938,7 +943,7 @@ async function viewRestaurant(rid) {
           </div>`).join('') || '<div class="text-slate-500 text-xs">لا يوجد نشاط</div>'}
       </div>
       <div class="flex gap-2 justify-end flex-wrap">
-        <button onclick="impersonate('${r.id}')" class="btn btn-primary">🔑 دخول كمالك المطعم</button>
+        <button onclick="impersonate('${r.id}')" class="btn btn-primary">🔑 دخول كمالك المنشأة</button>
         <button onclick="openEditRest('${r.id}','${r.status||'active'}','${r.plan||'trial'}','${h(r.internal_notes||'')}')" class="btn btn-ghost">✏️ تعديل</button>
         <button onclick="resetRestaurantData('${r.id}','${h(r.name)}')" class="btn btn-danger">🗑️ حذف البيانات التجريبية</button>
       </div>`;
@@ -996,7 +1001,7 @@ async function saveRest(e) {
     });
     closeModal('editRestModal');
     closeModal('restModal');
-    showToast('تم تحديث المطعم', 'success');
+    showToast('تم تحديث المنشأة', 'success');
     loadRestaurants();
   } catch(e) {
     errEl.textContent = e.message;
@@ -1006,7 +1011,7 @@ async function saveRest(e) {
 
 // ---- ARCHIVE ----
 async function archiveRest(rid) {
-  if (!confirm('هل أنت متأكد من أرشفة هذا المطعم؟')) return;
+  if (!confirm('هل أنت متأكد من أرشفة هذه المنشأة؟')) return;
   try {
     await api('/api/super/restaurants/' + rid, { method: 'DELETE' });
     showToast('تمت الأرشفة', 'success');

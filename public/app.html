@@ -589,19 +589,6 @@
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
                 <p class="text-slate-500 text-xs mt-1">سيذكرها البوت تلقائياً عند سؤال الزبون عن طريقة الدفع</p>
               </div>
-              <div>
-                <label class="text-slate-400 text-xs mb-2 block">نوع المنشأة</label>
-                <div class="grid grid-cols-2 gap-2">
-                  <button onclick="_applyBusinessType('restaurant'); saveSettings()" id="btnTypeRest"
-                    class="py-2 rounded-xl text-sm border transition border-indigo-500 bg-indigo-500/20 text-indigo-300">
-                    🍽️ مطعم
-                  </button>
-                  <button onclick="_applyBusinessType('cafe'); saveSettings()" id="btnTypeCafe"
-                    class="py-2 rounded-xl text-sm border transition border-white/10 text-slate-400 hover:border-white/25">
-                    ☕ كافيه
-                  </button>
-                </div>
-              </div>
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
           </div>
@@ -2334,7 +2321,24 @@ async function markAllRead() {
 
 // ── Bot Config ────────────────────────────────────────────────
 function fillDefaultSystemPrompt() {
-  document.getElementById('bcSystemPrompt').value =
+  const isCafe = (window._businessType || 'restaurant') === 'cafe';
+  document.getElementById('bcSystemPrompt').value = isCafe ?
+`أنت باريستا محترف ومتحمس في هذا الكافيه. تحدث بلهجة عراقية دافئة وودية.
+
+عند بداية كل محادثة:
+- رحّب بالعميل بحرارة واسأله عمّا يرغب به.
+- اعرض قائمة المشروبات والمأكولات منظمةً بالأقسام مع الأسعار بالدينار العراقي.
+
+عند الطلب:
+- اسأل عن الحجم (صغير/وسط/كبير) والحليب (عادي/نباتي) والسكر قبل تأكيد الطلب.
+- اقترح طلب مكمل بشكل طبيعي ("بتحب تضيف كيكة معها؟ يطلعون زين مع بعض 😊").
+- اعرض ملخص الطلب بشكل واضح مع الإجمالي بالدينار العراقي.
+- اطلب اسم الزبون للطلب ثم اذكر طرق الدفع.
+
+قواعد مهمة:
+- العملة دائماً دينار عراقي (د.ع) فقط.
+- لا تخترع منتجات خارج القائمة.
+- إذا طلب العميل التحدث مع موظف، أخبره بأنك ستحوله فوراً.` :
 `أنت موظف مبيعات محترف ومتحمس في هذا المطعم. تحدث بلهجة عراقية دافئة وودية.
 
 عند بداية كل محادثة:
@@ -2355,7 +2359,12 @@ function fillDefaultSystemPrompt() {
 }
 
 function fillDefaultSalesPrompt() {
-  document.getElementById('bcSalesPrompt').value =
+  const isCafe = (window._businessType || 'restaurant') === 'cafe';
+  document.getElementById('bcSalesPrompt').value = isCafe ?
+`اذكر للعميل بشكل طبيعي أثناء الطلب:
+- اقترح تحسينات على المشروب ("بتحب تضيف كريمة فوق؟ تعطي طعم أحلى").
+- إذا طلب مشروب واحد، اقترح معه حلى أو كيك اليوم.
+- نبّه على المشروبات الموسمية أو الإصدارات المحدودة إذا كانت موجودة.` :
 `اذكر للعميل بشكل طبيعي أثناء الطلب:
 - اقترح الإضافات والمشروبات المتاحة ("بتحب تضيف مشروب؟ الكومبو يوفر عليك").
 - إذا طلب وجبة واحدة، اقترح طلب وجبة إضافية للعائلة أو الأصحاب.
