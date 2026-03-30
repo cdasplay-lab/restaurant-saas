@@ -920,6 +920,36 @@ async def delete_product(pid: str, user=Depends(current_user)):
     return {"message": "تم الحذف"}
 
 
+@app.patch("/api/categories/rename")
+async def rename_category(data: dict, user=Depends(current_user)):
+    old_name = (data.get("old_name") or "").strip()
+    new_name = (data.get("new_name") or "").strip()
+    if not old_name or not new_name:
+        raise HTTPException(400, "اسم الفئة مطلوب")
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "UPDATE products SET category=? WHERE category=? AND restaurant_id=?",
+            (new_name, old_name, user["restaurant_id"]))
+        conn.commit()
+        return {"message": "تم التعديل"}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/categories/{name}")
+async def delete_category(name: str, user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "UPDATE products SET category='Main' WHERE category=? AND restaurant_id=?",
+            (name, user["restaurant_id"]))
+        conn.commit()
+        return {"message": "تم حذف الفئة ونقل المنتجات إلى Main"}
+    finally:
+        conn.close()
+
+
 @app.post("/api/upload/product-image", status_code=201)
 async def upload_product_image(
     file: UploadFile = File(...),

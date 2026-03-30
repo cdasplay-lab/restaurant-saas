@@ -779,6 +779,24 @@
 <!-- ── TOAST CONTAINER ───────────────────────────────────────── -->
 <div id="toastContainer"></div>
 
+<!-- ── CATEGORY EDIT POPUP ──────────────────────────────────── -->
+<div id="catEditPopup" class="hidden fixed z-50 bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl p-4 w-56"
+     style="min-width:220px">
+  <p class="text-slate-400 text-xs mb-2">تعديل الفئة</p>
+  <input id="catEditInput" type="text"
+    class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-sm focus:border-indigo-500 mb-3">
+  <div class="flex gap-2">
+    <button onclick="saveCatEdit()"
+      class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl py-2 transition">
+      حفظ
+    </button>
+    <button onclick="deleteCat()"
+      class="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-semibold rounded-xl py-2 transition">
+      حذف
+    </button>
+  </div>
+</div>
+
 <!-- ── MODAL ────────────────────────────────────────────────── -->
 <div id="modal" class="hidden modal-overlay" onclick="if(event.target===this)closeModal()">
   <div id="modalBox" class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 shadow-2xl"></div>
@@ -1452,7 +1470,8 @@ async function loadProducts() {
     const cats = ['all', ...new Set(S.products.map(p => p.category).filter(Boolean))];
     const tabsEl = document.getElementById('catTabs');
     tabsEl.innerHTML = cats.map(c => `
-      <button onclick="filterProducts('${c}')" data-cat="${c}"
+      <button onclick="filterProducts('${c}')" ${c !== 'all' ? `ondblclick="openCatEdit(event,'${c}')"` : ''}
+        data-cat="${c}"
         class="cat-tab px-3 py-1.5 rounded-lg text-xs font-medium transition ${c === S.prodCategory ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}">
         ${c === 'all' ? 'الكل' : c}
       </button>`).join('');
@@ -1468,6 +1487,49 @@ function filterProducts(cat) {
   });
   renderProducts();
 }
+
+let _catEditOld = '';
+function openCatEdit(e, catName) {
+  e.stopPropagation();
+  _catEditOld = catName;
+  const pop = document.getElementById('catEditPopup');
+  document.getElementById('catEditInput').value = catName;
+  // Position below the clicked button
+  const rect = e.currentTarget.getBoundingClientRect();
+  pop.style.top = (rect.bottom + window.scrollY + 6) + 'px';
+  pop.style.right = Math.max(8, window.innerWidth - rect.right - window.scrollX) + 'px';
+  pop.classList.remove('hidden');
+  document.getElementById('catEditInput').focus();
+  document.getElementById('catEditInput').select();
+}
+function closeCatPopup() {
+  document.getElementById('catEditPopup').classList.add('hidden');
+  _catEditOld = '';
+}
+async function saveCatEdit() {
+  const newName = document.getElementById('catEditInput').value.trim();
+  if (!newName || newName === _catEditOld) { closeCatPopup(); return; }
+  try {
+    await api.patch('/api/categories/rename', { old_name: _catEditOld, new_name: newName });
+    toast('تم تعديل الفئة', 'success');
+    closeCatPopup();
+    loadProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+async function deleteCat() {
+  if (!confirm(`حذف الفئة "${_catEditOld}"؟\nسيتم نقل منتجاتها إلى Main`)) return;
+  try {
+    await api.del(`/api/categories/${encodeURIComponent(_catEditOld)}`);
+    toast('تم حذف الفئة', 'success');
+    closeCatPopup();
+    loadProducts();
+  } catch(e) { toast(e.message, 'error'); }
+}
+// Close popup when clicking outside
+document.addEventListener('click', e => {
+  const pop = document.getElementById('catEditPopup');
+  if (pop && !pop.classList.contains('hidden') && !pop.contains(e.target)) closeCatPopup();
+});
 
 function renderProducts() {
   const search = document.getElementById('prodSearch')?.value?.toLowerCase() || '';
