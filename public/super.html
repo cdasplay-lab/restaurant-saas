@@ -291,6 +291,15 @@
         </div>
       </div>
       <div class="card p-5 space-y-4">
+        <h3 class="text-white font-semibold">💬 رقم واتساب الدعم الفني</h3>
+        <p class="text-slate-400 text-xs">يظهر في صفحة تسجيل الدخول والتسجيل للعملاء. أدخله بدون + (مثال: 9647710005018)</p>
+        <div class="flex gap-2">
+          <input id="acSupportPhone" type="text" dir="ltr" maxlength="20" placeholder="9647710005018"
+            class="flex-1 text-sm">
+          <button onclick="saveSupportPhone()" class="btn btn-primary btn-sm">حفظ</button>
+        </div>
+      </div>
+      <div class="card p-5 space-y-4">
         <h3 class="text-white font-semibold">🔑 رمز الدعم (PIN)</h3>
         <p class="text-slate-400 text-xs">يُستخدم للتحقق من هوية أصحاب المطاعم عند التواصل مع الدعم الفني. يمكنك إعطاء هذا الرمز للعميل ليؤكد هويته.</p>
         <div>
@@ -1175,6 +1184,19 @@ async function loadAccount() {
       document.getElementById('pinValue').textContent = d.support_pin;
       document.getElementById('pinDisplay').classList.remove('hidden');
     }
+  } catch(e) { showToast(e.message, 'error'); }
+  try {
+    const cfg = await api('/api/platform/config');
+    if (cfg.support_phone) document.getElementById('acSupportPhone').value = cfg.support_phone;
+  } catch(e) {}
+}
+
+async function saveSupportPhone() {
+  const phone = document.getElementById('acSupportPhone').value.trim();
+  if (!phone) { showToast('أدخل رقم الواتساب', 'error'); return; }
+  try {
+    await api('/api/super/platform-config', { method: 'PATCH', body: JSON.stringify({ support_phone: phone }) });
+    showToast('تم حفظ الرقم ✅', 'success');
   } catch(e) { showToast(e.message, 'error'); }
 }
 

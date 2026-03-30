@@ -2912,6 +2912,35 @@ async def super_get_me(admin=Depends(current_super_admin)):
             "support_pin": admin.get("support_pin", ""), "created_at": admin.get("created_at", "")}
 
 
+# ── Platform Config (public) ─────────────────────────────────────────────────
+
+@app.get("/api/platform/config")
+async def get_platform_config():
+    """Public endpoint — returns non-sensitive platform settings."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute("SELECT key, value FROM platform_config").fetchall()
+        return {r["key"]: r["value"] for r in rows}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/super/platform-config")
+async def update_platform_config(data: dict, admin=Depends(current_super_admin)):
+    """Super admin only — update platform config values."""
+    conn = database.get_db()
+    try:
+        for key, value in data.items():
+            conn.execute(
+                "INSERT INTO platform_config (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)))
+        conn.commit()
+        return {"message": "تم التحديث"}
+    finally:
+        conn.close()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ── MENU IMPORT (Smart Upload) ────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════

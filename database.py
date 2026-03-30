@@ -359,6 +359,11 @@ CREATE TABLE IF NOT EXISTS super_admins (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS platform_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS subscriptions (
     id TEXT PRIMARY KEY,
     restaurant_id TEXT NOT NULL UNIQUE,
@@ -521,6 +526,15 @@ def init_db():
     _create_indexes(conn)
     if IS_POSTGRES:
         conn.commit()
+
+    # ── Seed platform_config defaults ────────────────────────────────────────
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO platform_config (key, value) VALUES ('support_phone', '9647710005018')"
+        )
+        conn.commit()
+    except Exception:
+        pass
 
     # ── Seed restaurant data (only if empty) ─────────────────────────────────
     try:
