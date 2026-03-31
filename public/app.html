@@ -667,31 +667,26 @@
                 <label class="text-slate-400 text-xs mb-1.5 block">💳 وسائل الدفع المتاحة</label>
                 <input id="sPaymentMethods" placeholder="مثال: كاش، ماستر كارد العراق، فيزا الرافدين، زين كاش"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
-                <p class="text-slate-500 text-xs mt-1">سيذكرها البوت تلقائياً عند سؤال الزبون عن طريقة الدفع</p>
               </div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">⏱️ وقت التوصيل التقريبي</label>
                 <input id="sDeliveryTime" placeholder="مثال: 30-45 دقيقة"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
-                <p class="text-slate-500 text-xs mt-1">سيذكره البوت للزبون عند تأكيد الطلب</p>
               </div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">🛵 رسوم التوصيل (د.ع)</label>
                 <input id="sDeliveryFee" type="number" placeholder="0" min="0"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
-                <p class="text-slate-500 text-xs mt-1">سيضيفها البوت على مجموع الطلب ويُعلم الزبون بها</p>
               </div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">💰 الحد الأدنى للطلب (د.ع)</label>
                 <input id="sMinOrder" type="number" placeholder="0" min="0"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
-                <p class="text-slate-500 text-xs mt-1">البوت سيرفض الطلبات التي أقل من هذا المبلغ بلطف</p>
               </div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">📲 Chat ID تيليكرام للإشعارات</label>
                 <input id="sNotifyChatId" placeholder="مثال: 123456789"
                   class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600">
-                <p class="text-slate-500 text-xs mt-1">أرسل /start لـ @userinfobot على تيليكرام للحصول على Chat ID</p>
               </div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">📊 تقرير تلقائي على تيليكرام</label>
@@ -700,7 +695,6 @@
                   <option value="daily">يومي (كل 24 ساعة)</option>
                   <option value="weekly">أسبوعي (كل 7 أيام)</option>
                 </select>
-                <p class="text-slate-500 text-xs mt-1">يُرسل ملخص الطلبات والإيرادات على Chat ID أعلاه</p>
               </div>
             </div>
             <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ التغييرات</button>
