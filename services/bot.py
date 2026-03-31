@@ -342,7 +342,7 @@ def _build_system_prompt(
     custom_system = bot_cfg.get("system_prompt") or ""
     sales_prompt_extra = bot_cfg.get("sales_prompt") or ""
 
-    cust_greeting = f"اسم العميل: {cust_name}" if cust_name else ""
+    cust_greeting = f"اسم العميل: {cust_name} — ناديه باسمه بشكل طبيعي أحياناً مثل 'يا {cust_name}' أو '{cust_name} تفضل'" if cust_name else ""
 
     prompt = f"""أنت {bot_name}، موظف مبيعات محترف ومتحمس يعمل لدى {rest_name}.
 {cust_greeting}{vip_note}
