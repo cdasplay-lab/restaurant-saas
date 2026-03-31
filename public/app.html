@@ -413,10 +413,14 @@
       <div class="flex gap-4 h-[calc(100vh-140px)]">
         <!-- List -->
         <div class="w-80 flex-shrink-0 bg-slate-800 rounded-2xl border border-slate-700 flex flex-col">
-          <div class="p-3 border-b border-slate-700 flex gap-2">
-            <button onclick="filterConvs('all')" id="convTab-all" class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600 text-white font-medium">الكل</button>
-            <button onclick="filterConvs('open')" id="convTab-open" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">مفتوح</button>
-            <button onclick="filterConvs('urgent')" id="convTab-urgent" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">عاجل</button>
+          <div class="p-3 border-b border-slate-700 space-y-2">
+            <div class="flex gap-2">
+              <button onclick="filterConvs('all')" id="convTab-all" class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600 text-white font-medium">الكل</button>
+              <button onclick="filterConvs('open')" id="convTab-open" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">مفتوح</button>
+              <button onclick="filterConvs('urgent')" id="convTab-urgent" class="flex-1 text-xs py-1.5 rounded-lg bg-slate-700 text-slate-300">عاجل</button>
+            </div>
+            <input id="convSearch" type="text" placeholder="بحث بالاسم..." oninput="renderConvList()"
+              class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:border-indigo-500 focus:outline-none placeholder-slate-600">
           </div>
           <div id="convList" class="flex-1 overflow-y-auto p-2 space-y-1"></div>
         </div>
@@ -1419,6 +1423,8 @@ function renderConvList() {
   let list = S.convs;
   if (S.convFilter === 'open') list = list.filter(c => c.status === 'open');
   if (S.convFilter === 'urgent') list = list.filter(c => c.urgent);
+  const q = (document.getElementById('convSearch')?.value || '').trim().toLowerCase();
+  if (q) list = list.filter(c => (c.customer_name || '').toLowerCase().includes(q));
 
   const el = document.getElementById('convList');
   if (!list.length) {
@@ -1469,8 +1475,11 @@ async function openConv(id) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-function renderMessages(msgs) {
+function renderMessages(msgs, forceScroll = true) {
   const el = document.getElementById('chatMessages');
+  // If user has scrolled up, don't snap back down on auto-refresh
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  const shouldScroll = forceScroll || nearBottom;
   if (!msgs.length) {
     el.innerHTML = '<p class="text-slate-600 text-xs text-center">لا توجد رسائل بعد</p>';
     return;
@@ -1507,7 +1516,7 @@ function renderMessages(msgs) {
       </div>
     </div>`;
   }).join('');
-  el.scrollTop = el.scrollHeight;
+  if (shouldScroll) el.scrollTop = el.scrollHeight;
 }
 
 async function sendMessage() {
@@ -2916,7 +2925,7 @@ async function init() {
     if (!S.activeConv) return;
     try {
       const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
-      renderMessages(msgs);
+      renderMessages(msgs, false); // false = don't force scroll if user scrolled up
     } catch(e) {}
   }, 8000);
 

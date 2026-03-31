@@ -989,9 +989,10 @@ def _send_reply(channel_data: dict, text: str) -> None:
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
     """Send a message via Telegram Bot API."""
     import re as _re
-    # Strip markdown bold/italic markers that GPT generates (**text** → text, *text* → text)
-    text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=_re.DOTALL)
-    text = _re.sub(r'\*(.+?)\*', r'\1', text, flags=_re.DOTALL)
+    # Strip markdown that GPT generates but Telegram displays as plain symbols
+    text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=_re.DOTALL)   # **bold** → bold
+    text = _re.sub(r'\*(.+?)\*', r'\1', text, flags=_re.DOTALL)        # *italic* → italic
+    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)       # ### Heading → Heading
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     # Do NOT use parse_mode=HTML — unescaped < > & in AI replies causes silent 400 from Telegram
     try:
