@@ -19,6 +19,26 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
 
+# ── Dedup: prevent double-processing of the same Telegram update ──────────────
+# Maps (restaurant_id, update_id) → timestamp; cleaned every 1000 entries
+_processed_updates: dict = {}
+
+def _is_duplicate_update(restaurant_id: str, update_id) -> bool:
+    """Return True if this update was already processed in the last 5 minutes."""
+    import time
+    key = (restaurant_id, str(update_id))
+    now = time.time()
+    if key in _processed_updates:
+        return True
+    _processed_updates[key] = now
+    # Cleanup old entries to avoid unbounded growth
+    if len(_processed_updates) > 1000:
+        cutoff = now - 300
+        stale = [k for k, t in _processed_updates.items() if t < cutoff]
+        for k in stale:
+            _processed_updates.pop(k, None)
+    return False
+
 
 def _get_openai():
     global _openai_client
@@ -40,6 +60,11 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
     """Process an incoming Telegram update (text or voice/audio)."""
     update_id = update.get("update_id", "?")
     logger.info(f"[telegram] incoming update #{update_id} for restaurant {restaurant_id}")
+
+    # Dedup — Telegram retries if we don't respond in time, causing double replies
+    if _is_duplicate_update(restaurant_id, update_id):
+        logger.info(f"[telegram] duplicate update #{update_id} — skipping")
+        return
 
     # Early check: restaurant must exist before we do anything
     _conn = database.get_db()
@@ -1151,12 +1176,13 @@ def _auto_create_order(
     if not items or total <= 0:
         return None
 
-    # Dedup: skip if exact same order (same customer + total) placed in last 5 minutes
-    existing = conn.execute("""
-        SELECT id FROM orders
-        WHERE restaurant_id=? AND customer_id=? AND total=?
-        AND created_at > datetime('now', '-5 minutes')
-    """, (restaurant_id, customer_id, total)).fetchone()
+    # Dedup: skip if same order (same customer + total) placed in last 5 minutes
+    from datetime import datetime as _datetime, timedelta as _td
+    five_min_ago = (_datetime.utcnow() - _td(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    existing = conn.execute(
+        "SELECT id FROM orders WHERE restaurant_id=? AND customer_id=? AND total=? AND created_at >= ?",
+        (restaurant_id, customer_id, total, five_min_ago)
+    ).fetchone()
     if existing:
         logger.info(f"[order] duplicate skipped — customer={customer_id} total={total}")
         return None

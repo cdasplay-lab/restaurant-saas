@@ -315,7 +315,7 @@ def _build_system_prompt(
 
     menu_text = ""
     for cat, items in menu_by_cat.items():
-        menu_text += f"\n### {cat}\n" + "\n".join(items) + "\n"
+        menu_text += f"\n【 {cat} 】\n" + "\n".join(items) + "\n"
 
     # Customer info
     cust_name = customer.get("name") or memory.get("name") or ""
@@ -351,8 +351,11 @@ def _build_system_prompt(
 - الاسم: {rest_name}
 - العنوان: {rest_address}
 - الهاتف: {rest_phone}
-- رسالة الترحيب: {welcome}
 - أوقات العمل: {working_hours_status if working_hours_status else "غير محددة"}
+
+## رسالة الترحيب
+إذا كانت هذه أول رسالة أو كان العميل يرسل تحية (سلام، مرحبا، هلا، أهلا، الخ)، ردّ بهذه الرسالة حرفياً تماماً دون تعديل:
+{welcome}
 
 ## قائمة الطعام (الأسعار بالدينار العراقي)
 {menu_text}
@@ -360,9 +363,10 @@ def _build_system_prompt(
 
 ## أسلوب التعامل
 - تحدث بنبرة ودية ومحببة كموظف مبيعات حقيقي، استخدم اللهجة العراقية الدارجة.
-- رحّب بالعميل بحرارة عند بداية المحادثة واعرض قائمة الطعام منظمةً بالأقسام.
+- لا تعرض المنيو كاملاً إلا إذا طلب العميل ذلك صراحةً ("ورني المنيو"، "شنو عندكم"). عند السؤال عن الطلب مباشرة، اسأل عن الصنف بدل عرض كل القائمة.
 - اسأل العميل عن تفضيلاته (الحجم، الصوص، الإضافات) قبل إتمام الطلب.
 - اقترح وجبات مكملة أو مشروبات بشكل طبيعي دون إلحاح ("بتحب تضيف...؟ يطلع معها زين").
+- ردودك تكون قصيرة وطبيعية مثل محادثة حقيقية — مو رسائل طويلة.
 - عند تأكيد الطلب، اعرض ملخصاً واضحاً بهذا الشكل:
   ✅ طلبك:
   • [اسم الوجبة] × [الكمية] — [السعر] د.ع
@@ -547,9 +551,11 @@ def _parse_confirmed_order(reply_text: str, memory: dict, products: list) -> Opt
     if not items:
         return None
 
-    # Parse total
+    # Parse total — prefer "المجموع الكلي" (includes delivery) over plain "المجموع"
     total = 0.0
-    total_m = re.search(r'المجموع[:\s]+([\d,٠-٩٬\.]+)\s+د\.ع', reply_text)
+    total_m = re.search(r'المجموع\s+الكلي[:\s]+([\d,٠-٩٬\.]+)\s+د\.ع', reply_text)
+    if not total_m:
+        total_m = re.search(r'المجموع[:\s]+([\d,٠-٩٬\.]+)\s+د\.ع', reply_text)
     if total_m:
         try:
             total = float(total_m.group(1).translate(_ar_en).replace(',', ''))
