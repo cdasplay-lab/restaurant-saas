@@ -1,0 +1,29 @@
+═══════════════════════════════════════════════════
+  Day 1 Bot Tests — Baseline Results
+  Date: 2026-04-06
+═══════════════════════════════════════════════════
+
+RESULTS: 140/140 passed  (0 failed, 0 errors)
+
+Category Breakdown:
+  tricky     10/10
+  إيموجي     10/10
+  بيانات     10/10
+  تحية       10/10
+  تخصيص      10/10
+  تغيير      10/10
+  ذاكرة      10/10
+  ستوري      10/10
+  شكوى       10/10
+  طلب        10/10
+  لهجة       10/10
+  مغلق       10/10
+  منيو       10/10
+  هوية       10/10
+
+Score: 100% (stable range: 97–100% due to LLM non-determinism)
+
+Files:
+  test:    scripts/test_bot_day1.py
+  bot:     services/bot.py
+  db:      restaurant.db (hours 00:00-23:59, زينگر added)

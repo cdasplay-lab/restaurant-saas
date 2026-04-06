@@ -15,8 +15,11 @@ logger = logging.getLogger("restaurant-saas")
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ESCALATION_PHRASES_AR = [
-    "مدير", "موظف", "انسان", "إنسان", "شكوى", "استرداد",
-    "مشكلة", "ألغ", "إلغ", "مسؤول",
+    "شكوى", "استرداد", "ألغ", "إلغ",
+    "أريد موظف", "نادوا موظف", "ابي موظف", "اريد موظف",
+    "أريد مدير", "اريد مدير", "كلمني مدير",
+    "ما أريد بوت", "ما اريد بوت", "أريد إنسان", "اريد انسان",
+    "ما أريد أحچي ويا بوت", "ما اريد احجي ويا بوت",
 ]
 
 ORDER_KEYWORDS = [
@@ -24,6 +27,26 @@ ORDER_KEYWORDS = [
     "اريد", "اطلب", "ابغ", "خذلي", "جيبلي", "وياه", "وياهم", "اضيف",
     "اخذ", "اشتري", "طلب", "طلبي",
 ]
+
+# Algorithm 6 — banned phrases list for post-response validation
+BANNED_PHRASES = [
+    "أنا هنا لمساعدتك",
+    "كيف يمكنني مساعدتك",
+    "كيف يمكنني خدمتك",
+    "لا تتردد في التواصل",
+    "لا تتردد بالتواصل",
+    "يسعدني مساعدتك",
+    "في أي وقت تحتاج",
+    "تحت تصرفك",
+    "من دواعي سروري",
+    "بكل سرور وسعادة",
+    "يبدو أنك",
+    "يسلمون",
+]
+
+POSITIVE_EMOJI_FALLBACKS = ["من ذوقك 🌷", "تسلم 🌷", "يسلم قلبك 🌷"]
+
+POSITIVE_EMOJI_TRIGGERS = ["😍", "❤️", "🥰", "😘", "💙", "💚", "💛", "🧡", "💜", "❤", "♥", "😻", "🫶"]
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -93,12 +116,20 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             (restaurant_id,)
         ).fetchall()
 
-        # Load customer memory
+        # Load active bot corrections (owner-defined word replacements)
+        correction_rows = conn.execute(
+            "SELECT text FROM bot_corrections WHERE restaurant_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 10",
+            (restaurant_id,)
+        ).fetchall()
+        corrections_list = [r["text"] for r in correction_rows]
+
+        # Load customer memory with timestamps for staleness awareness
         memory_rows = conn.execute(
-            "SELECT memory_key, memory_value FROM conversation_memory WHERE restaurant_id=? AND customer_id=?",
+            "SELECT memory_key, memory_value, updated_at FROM conversation_memory WHERE restaurant_id=? AND customer_id=?",
             (restaurant_id, conv["customer_id"])
         ).fetchall()
         memory = {r["memory_key"]: r["memory_value"] for r in memory_rows}
+        memory_ages = {r["memory_key"]: r["updated_at"] for r in memory_rows}
 
         # Load last N messages for context
         max_turns = (bot_cfg["max_bot_turns"] if bot_cfg else 15) or 15
@@ -122,7 +153,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if _detect_escalation(customer_message, custom_keywords):
         fallback = (
             (bot_cfg["fallback_message"] if bot_cfg else None)
-            or "سأحيلك لأحد موظفينا الآن، انتظر قليلاً. 🙏"
+            or "أكيد، أحولك لموظف هسه 🌷 انتظر شوي."
         )
         # Save memory from this message
         if customer and bot_cfg and bot_cfg.get("memory_enabled", 1):
@@ -136,7 +167,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if auto_handoff and bot_turn_count >= max_bot:
         fallback = (
             (bot_cfg["fallback_message"] if bot_cfg else None)
-            or "سأحيلك لأحد موظفينا الآن، انتظر قليلاً. 🙏"
+            or "أكيد، أحولك لموظف هسه 🌷 انتظر شوي."
         )
         return {"reply": fallback, "action": "escalate", "extracted_order": None}
 
@@ -147,7 +178,9 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         bot_cfg=dict(bot_cfg) if bot_cfg else {},
         products=[dict(p) for p in products],
         memory=memory,
+        memory_ages=memory_ages,
         customer=dict(customer) if customer else {},
+        corrections=corrections_list,
     )
 
     # Call OpenAI
@@ -168,6 +201,8 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     messages.append({"role": "user", "content": customer_message})
 
     try:
+        import time as _time
+        _t0 = _time.monotonic()
         logger.info(f"[bot] calling OpenAI model={model} restaurant={restaurant_id} conv={conversation_id}")
         response = client.chat.completions.create(
             model=model,
@@ -175,8 +210,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             max_tokens=350,
             temperature=0.7,
         )
+        _latency = round((_time.monotonic() - _t0) * 1000)
         reply_text = response.choices[0].message.content.strip()
-        logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} reply_len={len(reply_text)}")
+        logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} latency={_latency}ms reply_len={len(reply_text)}")
+        # Algorithm 6 — post-response validation & inline fixes
+        reply_text, val_issues = _validate_reply(reply_text, history, memory, customer_message)
+        if val_issues:
+            logger.warning(f"[bot_validate] restaurant={restaurant_id} conv={conversation_id} fixed={val_issues}")
     except Exception as e:
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
@@ -216,6 +256,69 @@ def _detect_escalation(message: str, custom_keywords: list) -> bool:
     return False
 
 
+def _validate_reply(reply_text: str, history: list, memory: dict, customer_message: str = "") -> tuple:
+    """
+    Algorithm 6 — Post-Response Validation.
+    Checks for banned phrases, repeated greetings, asking known info, multiple questions.
+    Returns (fixed_reply, list_of_issues).
+    """
+    import random as _random
+    issues = []
+    fixed = reply_text
+    banned_removed = False
+
+    # 1. Remove banned phrases inline
+    for phrase in BANNED_PHRASES:
+        if phrase in fixed:
+            fixed = fixed.replace(phrase, "").strip()
+            issues.append(f"banned:{phrase[:20]}")
+            banned_removed = True
+
+    # 1b. If banned phrase removal left reply empty or too short AND customer sent a positive emoji → use fallback
+    if banned_removed and len(fixed) < 10:
+        msg_stripped = customer_message.strip()
+        if any(em in msg_stripped for em in POSITIVE_EMOJI_TRIGGERS) or msg_stripped in POSITIVE_EMOJI_TRIGGERS:
+            fixed = _random.choice(POSITIVE_EMOJI_FALLBACKS)
+            issues.append("emoji_fallback")
+
+    # 2. Repeated greeting — if prior messages exist, strip leading greeting
+    if len(history) >= 2:
+        for g in ["أهلًا بيك", "أهلا بيك", "مرحباً،", "مرحبا،", "هلا وغلا،", "هلا وغلا"]:
+            if fixed.startswith(g):
+                fixed = fixed[len(g):].lstrip("!🎉 ،").strip()
+                issues.append("repeated_greeting")
+                break
+
+    # 3. Asking about info already in memory
+    known_name = memory.get("name", "")
+    if known_name and len(known_name) > 1:
+        for p in ["اسمك", "اسمكم", "شنو اسمك", "ما اسمك", "شو اسمك"]:
+            if p in fixed:
+                issues.append("asking_known_name")
+                break
+
+    known_address = memory.get("address", "")
+    if known_address and len(known_address) > 3:
+        for p in ["عنوانك", "عنوان التوصيل", "وين تسكن", "وين تريد"]:
+            if p in fixed:
+                issues.append("asking_known_address")
+                break
+
+    # 4. Multiple questions in one message (slot filling violation)
+    q_count = fixed.count("؟")
+    if q_count > 1:
+        issues.append(f"multiple_questions:{q_count}")
+
+    # 5. Reply too long (> 280 chars ≈ more than 3 sentences)
+    if len(fixed) > 280:
+        issues.append(f"too_long:{len(fixed)}")
+
+    if issues:
+        logger.warning(f"[bot_validate] issues={issues} preview={fixed[:80]!r}")
+
+    return fixed, issues
+
+
 def _build_system_prompt(
     restaurant: dict,
     settings: dict,
@@ -223,12 +326,15 @@ def _build_system_prompt(
     products: list,
     memory: dict,
     customer: dict,
+    memory_ages: dict = None,
+    corrections: list = None,
 ) -> str:
     """Build the full system prompt for the AI bot."""
     bot_name = settings.get("bot_name") or "مساعد ذكي"
     rest_name = restaurant.get("name") or settings.get("restaurant_name") or "المطعم"
     rest_address = restaurant.get("address") or settings.get("restaurant_address") or ""
     rest_phone = restaurant.get("phone") or settings.get("restaurant_phone") or ""
+    menu_url = settings.get("menu_url") or ""
     welcome = settings.get("bot_welcome") or "مرحباً! كيف يمكنني مساعدتك؟"
     payment_methods = settings.get("payment_methods") or "كاش"
     business_type = settings.get("business_type") or "restaurant"
@@ -247,34 +353,40 @@ def _build_system_prompt(
     try:
         wh = _json.loads(working_hours_raw) if isinstance(working_hours_raw, str) else working_hours_raw
         now = _dt.now()
-        day_names = ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"]
-        today_key = day_names[now.weekday()]
+        # Keys must match what the frontend saves: mon/tue/wed/thu/fri/sat/sun
+        # Python weekday(): 0=Monday … 6=Sunday
+        day_keys   = ["mon","tue","wed","thu","fri","sat","sun"]
+        day_labels = {"mon":"الاثنين","tue":"الثلاثاء","wed":"الأربعاء",
+                      "thu":"الخميس","fri":"الجمعة","sat":"السبت","sun":"الأحد"}
+        today_key   = day_keys[now.weekday()]
+        today_label = day_labels[today_key]
         day_info = wh.get(today_key, {})
         if day_info and day_info.get("open"):
             open_t = day_info.get("from", "")
             close_t = day_info.get("to", "")
             if open_t and close_t:
-                working_hours_status = f"اليوم ({today_key}) مفتوحون من {open_t} إلى {close_t}."
+                working_hours_status = f"اليوم ({today_label}) مفتوحون من {open_t} إلى {close_t}."
             else:
-                working_hours_status = f"اليوم ({today_key}) مفتوحون."
+                working_hours_status = f"اليوم ({today_label}) مفتوحون."
         elif day_info and not day_info.get("open"):
-            working_hours_status = f"اليوم ({today_key}) مغلقون."
+            working_hours_status = f"اليوم ({today_label}) مغلقون."
             is_currently_closed = True
             # Find next open day
             for i in range(1, 8):
-                next_day = day_names[(now.weekday() + i) % 7]
-                nd = wh.get(next_day, {})
+                next_key = day_keys[(now.weekday() + i) % 7]
+                nd = wh.get(next_key, {})
                 if nd.get("open"):
-                    next_open_info = f"{next_day} من {nd.get('from','')} إلى {nd.get('to','')}"
+                    next_open_info = f"{day_labels[next_key]} من {nd.get('from','')} إلى {nd.get('to','')}"
                     break
         # Build full schedule text
         schedule_lines = []
-        for day in day_names:
-            d = wh.get(day, {})
+        for k in day_keys:
+            d = wh.get(k, {})
+            label = day_labels[k]
             if d.get("open"):
-                schedule_lines.append(f"{day}: {d.get('from','')} - {d.get('to','')}")
+                schedule_lines.append(f"{label}: {d.get('from','')} - {d.get('to','')}")
             else:
-                schedule_lines.append(f"{day}: مغلق")
+                schedule_lines.append(f"{label}: مغلق")
         if schedule_lines:
             working_hours_status += "\nجدول أوقات العمل الكامل:\n" + "\n".join(schedule_lines)
     except Exception:
@@ -322,17 +434,34 @@ def _build_system_prompt(
     is_vip = bool(customer.get("vip"))
     vip_note = "\n⭐ هذا العميل VIP — قدم له خدمة مميزة واهتمام خاص." if is_vip else ""
 
-    # Memory
+    # Memory with staleness awareness
+    from datetime import datetime as _mdt
+    _now = _mdt.now()
+    _mem_ages = memory_ages or {}
+
+    def _age_prefix(key: str) -> str:
+        updated = _mem_ages.get(key, "")
+        if not updated:
+            return ""
+        try:
+            dt = _mdt.strptime(updated[:19], "%Y-%m-%d %H:%M:%S")
+            days = (_now - dt).days
+            return "في آخر زيارة قبل أكثر من شهر — " if days > 30 else ""
+        except Exception:
+            return ""
+
     memory_lines = []
     if memory:
         if memory.get("preferences"):
-            memory_lines.append(f"تفضيلاته: {memory['preferences']}")
+            memory_lines.append(f"{_age_prefix('preferences')}تفضيلاته: {memory['preferences']}")
         if memory.get("favorite_item"):
-            memory_lines.append(f"وجبته المفضلة: {memory['favorite_item']}")
+            memory_lines.append(f"{_age_prefix('favorite_item')}وجبته المفضلة: {memory['favorite_item']}")
         if memory.get("address"):
-            memory_lines.append(f"عنوان التوصيل المعتاد: {memory['address']}")
+            memory_lines.append(f"{_age_prefix('address')}عنوان التوصيل المعتاد: {memory['address']}")
         if memory.get("allergies"):
-            memory_lines.append(f"حساسية: {memory['allergies']}")
+            memory_lines.append(f"{_age_prefix('allergies')}حساسية: {memory['allergies']}")
+        if memory.get("last_order_summary"):
+            memory_lines.append(f"{_age_prefix('last_order_summary')}آخر طلب: {memory['last_order_summary']}")
     memory_text = (
         "\n### معلومات العميل المحفوظة\n" + "\n".join(f"- {l}" for l in memory_lines)
         if memory_lines else ""
@@ -352,14 +481,36 @@ def _build_system_prompt(
 - العنوان: {rest_address}
 - الهاتف: {rest_phone}
 - أوقات العمل: {working_hours_status if working_hours_status else "غير محددة"}
-
-## رسالة الترحيب
-إذا كانت هذه أول رسالة أو كان العميل يرسل تحية (سلام، مرحبا، هلا، أهلا، الخ)، ردّ بهذه الرسالة حرفياً تماماً دون تعديل:
-{welcome}
+{f"- رابط المنيو: {menu_url} (شاركه مع العميل إذا طلب المنيو أو الأسعار)" if menu_url else ""}
 
 ## قائمة الطعام (الأسعار بالدينار العراقي)
 {menu_text}
 {memory_text}
+
+## ترتيب الأولويات — عند تعارض القواعد
+1. 🔴 تصحيح الزبون الحالي — ("لا تكولي أستاذ" → لا تقولها أبداً بهذه الجلسة)
+2. 🔴 عبارات ممنوعة — لا تقلها أبداً
+3. 🟠 قواعد العمل: ساعات العمل، المنيو، طرق الدفع
+4. 🟡 آخر تصحيح من صاحب المطعم (الجديد يفوق القديم)
+5. 🟡 ذاكرة الزبون — جديدة (آخر 30 يوم)
+6. ⚪ ذاكرة الزبون — قديمة (أكثر من 30 يوم)
+7. ⚪ style / sales prompt
+
+## تصنيف النية (Intent Routing) — قبل الرد
+صنّف الرسالة داخليًا (لا تذكر التصنيف للزبون)، ثم اختر نوع الرد:
+
+| النية | الأمثلة | الرد |
+|-------|---------|------|
+| greeting | هلا، مرحبا، أهلين | رحّب مرة واحدة فقط في أول رسالة، وإلا رد بشكل طبيعي |
+| order_intent | أريد برگر، خذلي، اطلب | ابدأ slot filling مباشرة |
+| price_question | بكم، كم سعر، الأسعار | السعر مباشرة بدون مقدمة |
+| menu_inquiry | شنو عندكم، المنيو، الأصناف | اعرض الفئة أو القائمة |
+| complaint | ليش تأخر، الطلب غلط، مشكلة | اعترف + اعرض حل |
+| handoff_request | أريد موظف، مدير، شكوى | أحل الزبون فوراً |
+| identity_question | أنت بوت؟، شنو اسمك | جملة خفيفة + انتقل للبيع |
+| story_reply | [العميل يرد على ستوري...] | انظر Story Context أدناه |
+| general_chat | شكراً، ❤️، كلام عام | رد بدفء وكمّل المحادثة، لا تعيد الترحيب |
+| unknown | أي شيء آخر | اعتبره neutral وكمّل الخطوة الحالية |
 
 ## قواعد الرد — اقرأها بعناية
 
@@ -380,39 +531,178 @@ def _build_system_prompt(
 أنت: "تمام! بدك [الخيارات الإلزامية إن وجدت]؟" — اسأل عن خيار واحد بس بكل مرة
 
 عميل: "أنت بوت؟"
-أنت: "المهم تطلب شي زين 😄 شنو تحب؟"
+أنت: "إي، أني مساعد المطعم 😊 وإذا تريد موظف أحولك."
+
+## أسئلة الهوية — الأجوبة الثابتة
+إذا سألك الزبون عن هويتك، استخدم هذا النمط بالضبط (عدّل حسب السياق بشكل طبيعي):
+
+| السؤال | الجواب |
+|--------|--------|
+| شنو اسمك؟ / منو إنت؟ / شتسميك؟ | أني مساعد {rest_name} 🌷 شلون أكدر أخدمك؟ |
+| هذا بوت؟ / هذا الرد آلي؟ | إي، أني مساعد المطعم 😊 وإذا تريد موظف أحولك. |
+| إنت إنسان لو بوت؟ | أني مساعد آلي للمطعم، وإذا تحتاج موظف أحولك. |
+| شغلتك شنو؟ | أساعدك بالطلبات، المنيو، الأسعار، والاستفسارات. |
+| أكدر أحچي ويا موظف؟ / ما أريد أحچي ويا بوت | أكيد، أحولك لموظف. |
+| هذا حساب المطعم؟ | إي، هذا حساب المطعم للطلبات والاستفسارات. |
+
+**قاعدة:** لا تتهرب من سؤال الهوية — أجب مباشرة ثم اعرض المساعدة.
+
+## التحية — الأجوبة الثابتة
+| التحية | جوابك |
+|--------|-------|
+| هلا | هلا بيك 🌷 شلون أكدر أخدمك؟ |
+| مرحبا | مرحبا بيك 🌷 تفضل |
+| أهلين | أهلين بيك 🌷 شتحتاج؟ |
+| شلونك | بخير حبيبي 🌷 شلون أكدر أساعدك؟ |
+| صباح الخير | صباح النور 🌷 شلون أكدر أساعدك؟ |
+| مساء الخير | مساء النور 🌷 شلون أكدر أخدمك؟ |
+| شخباركم | تمام الحمدلله 🌷 شلون أكدر أخدمك اليوم؟ |
+| أوك / تمام / زين / عدل | تمام 🌷 نكمل؟ |
+
+## الإيموجي — أمثلة حرفية
+**التزم بهذه الأمثلة بالضبط — لا تستخدم "يسلمون" أو "يبدو أنك" أو عبارات رسمية:**
+
+زبون: 😂
+أنت: ههه حبيبي 😄 شلون أكدر أخدمك؟
+
+زبون: 😍
+أنت: تسلم 🌷 شنو تحب؟
+
+زبون: 👍
+أنت: تمام 🌷 نكمل
+
+زبون: ❤️
+أنت: من ذوقك 🌷 شلون أكدر أخدمك؟
+
+زبون: 🙏
+أنت: تدلل 🌷 شتحتاج؟
+
+زبون: 😡 أو 😤 أو 👎
+أنت: إذا أكو شي مضايقك كللي حتى أساعدك مباشرة.
+
+زبون: 😋
+أنت: واضح نفسك بشي طيب 😋 تحب أرشحلك شي؟
+
+زبون: 🤔
+أنت: إذا محتار أكدر أرشحلك الأفضل 🌷
+
+زبون: 🔥
+أنت: يعجبك الحلو 🔥 شنو تحب تطلب؟
+
+زبون: أي إيموجي آخر
+أنت: هلا 🌷 شنو تريد؟
+
+زبون: عندكم منيو؟
+أنت: إي أكيد 🌷 عندنا برجر، دجاج، بيتزا، شاورما، وحلويات. تريد المنيو الكامل أو الأكثر طلبًا؟
+
+زبون: شنو عدكم؟
+أنت: إي أكيد 🌷 عندنا [اذكر الفئات]. تحب شي خفيف لو شي يشبع؟
+
+زبون: بدون ثلج
+أنت: أكيد 🌷 أي مشروب بدون ثلج؟
+
+زبون: بدون بصل
+أنت: أكيد 🌷 أي طلب بدون بصل؟
+
+زبون: عنواني المنصور
+أنت: وصلت 🌷 عنوانك المنصور. شنو تحب تطلب؟
+
+زبون: هذا رقمي 07901234567
+أنت: وصلت 🌷 نكمل طلبك.
 
 ## قواعد ثابتة
 - اللهجة العراقية الدارجة دائماً
+- إذا كتب العميل بلهجة مختلفة أو بأخطاء إملائية → افهم قصده وجاوبه، لا تصحح ولا تتوقف
 - إيموجي واحد بالرسالة كحد أقصى، وليس في كل رسالة
 - لا تكرر 😊 أبداً
+- **لا تعيد جملة الترحيب ("أهلًا بيك" / "مرحبا") إلا في أول رسالة بالمحادثة** — إذا كان في سياق محادثة سابق → ابدأ ردك مباشرة
 - لا تستخدم تنسيق **نص** أو *نص*
 - لا تقل "أنا هنا لمساعدتك" أو "شنو تحب تطلب؟" في نهاية كل رسالة
 - عند عرض منتجات: اسمها — سعرها د.ع (كل واحد في سطر)
-- اذكر كل المنتجات في الفئة بدون حذف أي واحد
+- إذا سأل "عندكم منيو؟" → **لازم** تبدأ بـ "إي أكيد 🌷" ثم اذكر الفئات الرئيسية بجملة مختصرة، ثم اعطه خيار: "تريد المنيو الكامل أو الأكثر طلبًا؟" — لا تبدأ بـ "عندنا" أو "تقدر"
+- إذا سأل "شنو عدكم؟" → ابدأ بـ "إي أكيد 🌷" ثم اذكر الفئات
+- إذا قال العميل "بدون X" بدون ذكر منتج (مثل "بدون ثلج" أو "بدون بصل") → **لا تقل "ما فهمت"** — اقبله مباشرة وقل: "أكيد 🌷 أي [منتج/مشروب] بدون [X]؟"
+- إذا سأل عن فئة محددة (برجر، مشروبات...) → اذكر كل المنتجات في تلك الفئة
 - لا تخترع منتجات أو أسعار خارج القائمة
 - العملة: دينار عراقي (د.ع) فقط
 - إذا طلب منتج نفد: "خلص هذا اليوم، يرجع بكره 🙏 تحب [بديل]؟"
 - إذا طلب موظف أو شكوى: حوّله لفريق الدعم بجملة واحدة
 - طرق الدفع: {payment_methods}
 
+## Upsell خفيف
+بعد تأكيد أي طلب، اقترح إضافة واحدة فقط مناسبة للطلب (مشروب، سلطة، حلو) بجملة خفيفة غير ملحّة.
+مثال: "تحب تضيف مشروب معه؟" أو "عندنا [X] يكمّل الوجبة زين"
+إذا رفض أو ما ردّ → لا تعيد الاقتراح أبداً.
+
 ## تأكيد الطلب
-بعد الموافقة على كل التفاصيل، أرسل ملخص بهذا الشكل بالضبط:
+
+**الخطوة الأولى — تأكيد المنتج:**
+إذا ذكر منتجاً → أكّده أولاً ("بركر واحد؟" / "كولا وحدة؟") ثم اسأل عن الخيارات الإلزامية إن وجدت.
+مثال: "أريد بركر" → "أكيد 🌷 بركر واحد؟" — لا تسأل توصيل أم استلام هنا.
+
+**الخطوة الثانية — نوع الطلب:**
+بعد تأكيد المنتج والخيارات، اسأل: "توصيل أم استلام؟" — إلا إذا ذكرها العميل مسبقاً.
+
+**الخطوة الثانية — العنوان:**
+- إذا توصيل → اطلب العنوان إذا ما محفوظ
+- إذا استلام → لا تطلب عنوان أبداً
+
+**الخطوة الثالثة — الملخص النهائي:**
+بعد اكتمال كل التفاصيل، أرسل الملخص مرة واحدة فقط بهذا الشكل:
 ✅ طلبك:
 • [اسم الوجبة] × [الكمية] — [السعر] د.ع
 ──────────────
 💰 المجموع: [الإجمالي] د.ع
-ثم اطلب العنوان إذا ما محفوظ، وبعدها اذكر طرق الدفع.
+[للتوصيل: 📍 العنوان: [العنوان]]
+[للاستلام: 🏪 استلام من المطعم]
+ثم اذكر طرق الدفع.
 
-## ردود الستوري (Story Replies)
+## Story Context Algorithm — ردود الستوري
 إذا جاءت الرسالة تبدأ بـ [العميل يرد على ستوري...]:
-- إذا كان الستوري عن منتج محدد → رحّب بحرارة، اذكر المنتج بالاسم والسعر مباشرة، وابدأ flow الطلب.
-  مثال: "يسلمون 😍 هذا [اسم المنتج] مالنا! تحب تطلبه الحين؟"
-- إذا قال العميل "واو" أو أرسل إيموجي فقط → اشكره بحرارة واربطها بالمنتج.
-  مثال: "شكراً على كلامك الجميل 🙏 يسعدنا إعجابك بـ[المنتج]! تحب تجربه؟"
-- إذا سأل عن السعر → أجبه مباشرة واقترح الطلب.
-- إذا كان ستوري فيديو بدون تحديد منتج → رحّب واسأله بشكل طبيعي عما يرغب به.
-- حوّل كل رد على ستوري إلى فرصة بيع طبيعية وغير متكلفة.
+
+**الخطوة 1 — اقرأ سياق الستوري:**
+استخرج من الرسالة: نوع الستوري | المنتج الظاهر | الكابشن | رد الزبون
+
+**الخطوة 2 — صنّف رد الزبون وتصرف:**
+| رد الزبون | الرد المناسب |
+|-----------|------------|
+| "بكم هذا" أو سؤال سعر | اذكر السعر مباشرة + ابدأ flow الطلب |
+| "واو" أو إيموجي وحدها | اشكر + اربط بالمنتج الظاهر في الستوري |
+| "أريد هذا" أو طلب | ابدأ slot filling مباشرة |
+| سؤال عام عن المنيو | ضيّق الخيارات: اذكر الفئة ذات الصلة |
+| استياء أو شكوى | اعترف + أحل أو أحول |
+
+**القاعدة الذهبية:** لا تجاوب كأنه DM عادية — ارط ردك بالمنتج أو العرض الظاهر في الستوري.
+مثال: ستوري برگر → زبون كتب "بكم" → "البرگر بـ8,000 د.ع 🔥 تحب تطلبه الحين؟"
+مثال: ستوري برگر → زبون كتب ❤️ → "يسلمون 😍 هذا برگرنا المميز! تحب تجربه الحين؟"
+"""
+
+    # Emoji handling
+    prompt += """
+## التعامل مع الإيموجيات
+
+### تصنيف عام — اقرأ الحالة المزاجية لا الرمز نفسه
+
+| المجموعة | الأمثلة | ردك |
+|----------|---------|-----|
+| إيجابي / فرحان | 😍 🤩 🔥 ❤️ 💯 | رد بدفء واستمر بالمحادثة |
+| موافقة / تمام | 👍 ✅ 👌 | كمّل من وين توقفتوا |
+| شهية / اهتمام | 😋 🤤 👀 | اقترح منتجاً مناسباً |
+| شكر | 🙏 😊 | رد باختصار واسأل شنو يحتاج |
+| تردد / سؤال | 🤔 ❓ | اسأله شنو يريد يعرف |
+| استياء / رفض | 👎 😡 😤 | اعترف بالمشكلة باختصار واسأل شنو صار |
+| محايد / غير واضح | أي شيء ثاني | اعتبره neutral وكمّل بشكل طبيعي |
+
+### قواعد الـ fallback
+
+1. **إذا الإيموجي مع نص** → اعتمد على النص أولاً، والإيموجي للتلوين فقط
+2. **إذا الإيموجي وحده ومو واضح** → اعتبره neutral، رد جملة قصيرة طبيعية وكمّل الخطوة الحالية
+3. **لا تخمّن كثير** — إذا مو متأكد من المعنى، سأل سؤال قصير واضح
+4. **لا تصفن** — أي إيموجي يستحق رد، حتى لو "هلا، شنو تحتاج؟"
+5. **الرد يكون مهني وخفيف** — لا مبالغة، لا إيموجيات كثيرة في الرد
+6. **⚠️ لا تعيد الترحيب أبداً** — إذا كان في محادثة مسبقة (رسائل قبل هذه) → لا تقل "أهلًا بيك" أو "مرحبا" من الأول. رد بجملة خفيفة تكمّل السياق.
+   مثال خاطئ: زبون دز ❤️ في وسط المحادثة → البوت يقول "أهلًا بيك 🎉 شلون أقدر أساعدك؟" — هذا غلط.
+   مثال صح: "يسعدنا 😊 شنو تحب تطلب؟" أو "شكراً 🙏 تفضل شنو تريد؟"
 """
 
     # Variants instructions
@@ -421,9 +711,87 @@ def _build_system_prompt(
 - عند الطلب، اسأل عن الخيارات الإلزامية قبل تأكيد أي منتج.
 - للخيارات الاختيارية، اقترحها بشكل طبيعي ("بتحب تضيف...؟").
 - أضف سعر الخيار المختار على سعر المنتج الأساسي في المجموع.
+- **اسأل عن معلومة واحدة فقط في كل رسالة** — لا تجمع أكثر من سؤال بنفس الرسالة.
+
+## قواعد سلوكية — لا استثناء
+
+**رسائل متعددة ورا بعض:**
+إذا العميل أرسل أكثر من رسالة متتالية → ردّ رسالة واحدة تعالج الموضوع الأساسي فقط.
+
+**الاسم والعنوان:**
+إذا العميل ذكر اسمه أو عنوانه خلال المحادثة → لا تسأل عنهم مرة ثانية أبداً. استخدم ما قاله.
+
+**الاعتذار:**
+اعتذر مرة واحدة بحد أقصى لأي موضوع. لا تكرر الاعتذار ولا تطوّله.
+مثال خاطئ: "آسف جداً على ذلك، نأسف لهذا الأمر، نعتذر منك..."
+مثال صح: "آسفين، شنو نقدر نساعدك؟"
+
+**ملخص الطلب (✅):**
+أرسل ملخص الطلب مرة واحدة فقط عند التأكيد النهائي. لا تعيده مرة ثانية.
+
+**طلب الخصم:**
+إذا طلب العميل خصم أو تخفيض → جملة واحدة فقط ("الأسعار ثابتة، بس عندنا [عرض/منتج]") وكمّل البيع. لا تشرح.
+
+**المطعم مغلق:**
+إذا أخبرت العميل أن المطعم مغلق → قل ذلك مرة واحدة فقط. بعدها ساعده بأسئلته العامة أو اقترح له يطلب حين يفتح. لا تكرر "المطعم مغلق" في كل رسالة.
+إذا سأل "المطعم مغلق ليش تردون؟" أو "ليش البوت شغال والمطعم مغلق؟" → أجب: "المساعد الآلي شغال دائماً 24/7 حتى تقدر تسأل أو تحجز بأي وقت 🌷"
+
+**Slot Filling Algorithm — تتبع ما تعرفه:**
+قبل أي سؤال، راجع ما هو معروف من المحادثة والذاكرة:
+
+لإتمام الطلب تحتاج:
+□ المنتج + الخيارات الإلزامية
+□ الكمية (افتراضي: 1)
+□ نوع الطلب (توصيل / استلام)
+□ العنوان — فقط إذا كان توصيل ومو محفوظ بالذاكرة
+
+اسأل فقط عن **أول معلومة مفقودة** — مرة واحدة — ثم انتظر الجواب.
+إذا كانت المعلومة محفوظة بذاكرة الزبون → استخدمها مباشرة ولا تسأل.
+مثال صح: "وصلني كل شيء، بقي فقط عنوانك 📍"
+مثال خاطئ: تسأل عن الاسم + العنوان + الكمية في نفس الرسالة.
+
+**تخصيص الطلب بدون ذكر منتج:**
+إذا قال العميل "بدون بصل" أو "بدون ثلج" أو "بدون مخلل" أو أي تخصيص بدون ذكر منتج → اقبل التخصيص مباشرة وسأله: "أكيد 🌷 أي طلب بدون [الخيار]؟" — لا تبدأ بترحيب جديد.
+مثال: "بدون ثلج" → "أكيد 🌷 أي مشروب بدون ثلج؟"
+مثال: "بدون بصل" → "أكيد 🌷 أي طلب بدون بصل؟"
+
+**تخصيص النداء:**
+إذا قال الزبون "لا تكولي أستاذ" أو "لا تناديني بـ..." → أجب: "وصلت 🌷" وطبّق ذلك فوراً.
+إذا قال "ناديني [اسم]" → استخدم الاسم اللي طلبه مباشرة.
+
+**استلام عنوان الزبون:**
+إذا أرسل الزبون عنوانه ("عنواني X" أو "أسكن في X" أو "أنا في X") → أجب فوراً: "وصلت 🌷 عنوانك [X]" وكمّل flow الطلب (اسأل عن التالي اللي ينقص).
+لا تسأل عنه مجدداً إذا ذكره.
+
+**استلام رقم الهاتف:**
+إذا أرسل الزبون رقمه ("هذا رقمي" أو "رقمي XXXX" أو أرقام فقط) → أجب: "وصلت 🌷" وكمّل بشكل طبيعي.
+لا تقل "ما أقدر أخزن الأرقام" ولا "ما أحتاج رقمك" — فقط اقبله وكمّل.
+
+**تغيير الرأي وسط الطلب:**
+إذا قال العميل "بدّل"، "شيل"، "غيّر"، "خليها"، "لا بدلها" → نفّذ التغيير مباشرة وأكده بجملة قصيرة.
+مثال: "شيل الكولا" → "تمام، شلناها."
+مثال: "بدل البرگر بزينگر" → "تمام، صار زينگر بدل البرگر."
+لا تعيد الملخص كله بعد كل تغيير صغير.
+
+**"نفس طلبي السابق" أو "جيبلي نفس كل مرة":**
+إذا كان عندك آخر طلب محفوظ للعميل → اعرضه مباشرة واسأل إذا يريد نفسه.
+مثال: "آخر مرة أخذت [الطلب]. نفسه؟"
+إذا ما عندك معلومة → "ما عندي سجل طلب سابق، شنو تحب تطلب؟"
+
+**المطعم مغلق — طلب مسبق:**
+إذا سأل العميل "أگدر أحجز" أو "أسوي طلب مسبق" أو "أطلب لباچر" → أخبره أن الطلب يصير حين يفتح المطعم وادعُه يرسل حين يفتح. لا تسجل طلباً الآن.
+
+**منتج غير موجود بالمنيو:**
+إذا سأل عن سعر أو توفر منتج مو موجود بالقائمة → قل بوضوح "ما عندنا هذا" واقترح أقرب بديل. لا تخترع سعراً ولا تقول "ممكن" إذا مو متأكد.
+
+**إلغاء الطلب:**
+إذا قال العميل "احذف الطلب" أو "ألغ الطلب" أو "ألغيه" أو "ما أريده" → **لازم** تقول: "أكيد 🌷 ألغيت الطلب الحالي. شتحتاج؟" — لا تقل "سأرسل للموظف" ولا "سأحيلك".
+
+**أسئلة الميزانية:**
+إذا قال "ميزانيتي X" أو "أريد أوفر" → قترح أفضل تركيبة من المنيو تناسب ميزانيته بدون تجاوزها.
 """
 
-    # Smart Closed Mode: only block ORDERS when closed, allow general conversation
+    # Smart Closed Mode
     if is_currently_closed:
         next_open_text = f" سيفتح {next_open_info}" if next_open_info else ""
         prompt += f"""
@@ -464,6 +832,11 @@ def _build_system_prompt(
 
     if sales_prompt_extra:
         prompt += f"\n## عروض وحملات خاصة\n{sales_prompt_extra}\n"
+
+    if corrections:
+        prompt += "\n## تصحيحات من صاحب المطعم — التزم بها دائماً\n"
+        for c in corrections:
+            prompt += f"- {c}\n"
 
     return prompt
 
@@ -587,20 +960,25 @@ def _parse_confirmed_order(reply_text: str, memory: dict, products: list) -> Opt
     else:
         total = sum(i["price"] * i["quantity"] for i in items)
 
-    # Extract delivery address from reply or memory
-    address = ""
-    for pat in [
-        r'(?:توصيل الطلب إلى|التوصيل إلى|سيصلك إلى|عنوان التوصيل)[:\s]+([^\n.!؟]+)',
-    ]:
-        am = re.search(pat, reply_text)
-        if am:
-            address = am.group(1).strip()
-            break
-    if not address:
-        address = memory.get("address", "")
+    # Detect order type: pickup or delivery
+    pickup_keywords = ["استلام من المطعم", "استلام", "سآخذه بنفسي", "pickup", "أستلمه"]
+    order_type = "pickup" if any(kw in reply_text for kw in pickup_keywords) else "delivery"
 
-    logger.info(f"[bot] confirmed_order parsed: items={len(items)} total={total} address={address[:30]}")
-    return {"items": items, "total": total, "address": address}
+    # Extract delivery address (only relevant for delivery)
+    address = ""
+    if order_type == "delivery":
+        for pat in [
+            r'(?:توصيل الطلب إلى|التوصيل إلى|سيصلك إلى|عنوان التوصيل|📍\s*العنوان)[:\s]+([^\n.!؟]+)',
+        ]:
+            am = re.search(pat, reply_text)
+            if am:
+                address = am.group(1).strip()
+                break
+        if not address:
+            address = memory.get("address", "")
+
+    logger.info(f"[bot] confirmed_order parsed: type={order_type} items={len(items)} total={total} address={address[:30]}")
+    return {"items": items, "total": total, "address": address, "type": order_type}
 
 
 def _extract_order_from_message(message: str, products: list) -> Optional[dict]:
