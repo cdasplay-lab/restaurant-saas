@@ -1,0 +1,37 @@
+Day 3 Bot Quality Baseline — Story Reply Testing
+=================================================
+DATE: 2026-04-07
+
+RESULTS: 198/200 passed (2 failed, 0 errors)
+Score: 99% (stable range: 97–99%)
+
+Files:
+  test:  scripts/test_bot_day3.py
+  bot:   services/bot.py
+
+Sections covered (200 questions total):
+  منتج   — Q1-40:   صورة منتج (برجر كلاسيك 6,000 د.ع)
+  عرض    — Q41-80:  صورة عرض (برجر+بطاطا+مشروب = 15,000 د.ع)
+  منيو   — Q81-110: صورة منيو متعدد المنتجات
+  فيديو  — Q111-140: فيديو تحضير شاورما دجاج
+  عامة   — Q141-170: ستوري عامة / branding / شكاوى
+  غامض  — Q171-200: ردود غامضة جداً / إيموجي فقط
+
+Story context format:
+  [العميل يرد على ستوري يعرض: {product} — {price} د.ع]
+  سياق للبوت: هذا المنتج موجود في قائمتك. استغل الفرصة وابدأ flow البيع مباشرة.
+  رد العميل: {customer_message}
+
+Monitoring goals validated:
+  ✅ البوت يربط الرد بالمنتج/العرض في الستوري
+  ✅ ما يعطي رد عام (generic trap detection active)
+  ✅ الردود الغامضة تستقبل توضيح قصير أو ترحيب بيعي
+  ✅ الإيموجي تستقبل بشكل طبيعي مع بداية flow
+  ⚠️  Generic flag: 1-2 replies per run (non-blocking, logged only)
+
+Variance notes:
+  - Failures per run: 1-4 (different questions each time)
+  - All re-simulated failing replies pass keywords → pure LLM non-determinism
+  - Delay between questions: 1.0s (prevents server timeout spikes)
+
+Git tag: day3-baseline
