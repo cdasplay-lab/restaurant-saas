@@ -63,12 +63,13 @@ case "$SCOPE" in
     ;;
 
   prompt)
-    echo -e "${YLW}  → Prompt scope: Core + Data + Day1 + Day2 + Day3 + Smoke${RST}"
+    echo -e "${YLW}  → Prompt scope: Core + Data + Day1 + Day2 + Day3 + Day4 + Smoke${RST}"
     run_py "Core Behavior"     "test_core.py"
     run_py "Data Tests"        "test_data.py"
     run_py "Day 1 Tests"       "test_bot_day1.py"
     run_py "Day 2 Tests"       "test_bot_day2.py"
     run_py "Day 3 Tests"       "test_bot_day3.py"
+    run_py "Day 4 Tests"       "test_bot_day4.py"
     run_py "Smoke Test"        "test_smoke.py"
     ;;
 
@@ -85,6 +86,7 @@ case "$SCOPE" in
     run_py "Day 1 Tests"       "test_bot_day1.py"
     run_py "Day 2 Tests"       "test_bot_day2.py"
     run_py "Day 3 Tests"       "test_bot_day3.py"
+    run_py "Day 4 Tests"       "test_bot_day4.py"
     run_py "Smoke Test"        "test_smoke.py"
     ;;
 
