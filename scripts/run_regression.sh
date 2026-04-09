@@ -76,12 +76,14 @@ case "$SCOPE" in
   data)
     echo -e "${YLW}  → Data scope: DB-driven tests only${RST}"
     run_py "Data Tests"        "test_data.py"
+    run_py "Settings Tests"   "test_bot_settings.py"
     ;;
 
   all)
     echo -e "${YLW}  → Full suite${RST}"
     run_py "Core Behavior"     "test_core.py"
     run_py "Data Tests"        "test_data.py"
+    run_py "Settings Tests"   "test_bot_settings.py"
     run_py "E2E Flows"         "test_e2e_flows.py"
     run_py "Day 1 Tests"       "test_bot_day1.py"
     run_py "Day 2 Tests"       "test_bot_day2.py"
