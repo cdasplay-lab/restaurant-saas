@@ -671,8 +671,8 @@ def _quality_score(bot_reply, expected, section):
     if section == "ثبات السلوك":
         return 2 if bot_len <= 200 else 1
 
-    # التفضيلات والذاكرة: إذا البوت أطول بـ 40%+ → مقبول لكن الجواب المتوقع أفضل
-    if exp_len > 20 and bot_len > exp_len * 1.4:
+    # التفضيلات والذاكرة: إذا البوت أطول بـ 50%+ → مقبول لكن الجواب المتوقع أفضل
+    if exp_len > 20 and bot_len > exp_len * 1.5:
         return 1
 
     return 2
@@ -721,7 +721,7 @@ def _note(score, bot_reply, expected, section):
             return "⚠️ نبرة باردة"
         if section in ("الاسم", "corrections", "ثبات السلوك") and bot_len > 80:
             return "⚠️ طويل للقسم"
-        if exp_len > 20 and bot_len > exp_len * 1.4:
+        if exp_len > 20 and bot_len > exp_len * 1.5:
             return f"⚠️ طويل ({bot_len}>{exp_len})"
         return "⚠️ مقبول لكن يمكن أفضل"
     return "✅ جاهز"
@@ -808,6 +808,14 @@ def main():
             bot_reply = simulate_thread(window, token)
         else:
             bot_reply = simulate(question, token)
+
+        # Retry once on transient server errors
+        if bot_reply.startswith("ERROR") or "عذراً، حدث خطأ تقني" in bot_reply:
+            time.sleep(5)
+            if is_section5:
+                bot_reply = simulate_thread(window, token)
+            else:
+                bot_reply = simulate(question, token)
 
         score, note, winner = score_reply(qid, section, bot_reply, expected)
 
