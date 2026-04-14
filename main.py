@@ -493,6 +493,7 @@ class SettingsUpdate(BaseModel):
     delivery_fee: Optional[int] = None
     min_order: Optional[int] = None
     report_frequency: Optional[str] = None  # none / daily / weekly
+    menu_url: Optional[str] = None
 
 
 class ChannelUpdate(BaseModel):
@@ -985,8 +986,10 @@ async def update_product(pid: str, data: ProductUpdate, user=Depends(current_use
     if data.image_url is not None: upd["image_url"] = data.image_url
     if data.gallery_images is not None: upd["gallery_images"] = json.dumps(data.gallery_images)
     if upd:
-        conn.execute(f"UPDATE products SET {','.join(k+'=?' for k in upd)} WHERE id=?",
-                     list(upd.values()) + [pid])
+        sets = ", ".join(f"{k}=?" for k in upd) + ", updated_at=datetime('now')"
+        conn.execute(f"UPDATE products SET {sets} WHERE id=?", list(upd.values()) + [pid])
+        log_activity(conn, user["restaurant_id"], "product_updated", "product", pid,
+                     f"تعديل المنتج: {', '.join(upd.keys())}", user["id"], user.get("name", ""))
         conn.commit()
     row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     conn.close()
@@ -1543,6 +1546,16 @@ STATUS_FLOW = {
     "on_way": "delivered",
 }
 
+# Explicit allowed transitions for direct-set (action != advance/cancel)
+ALLOWED_TRANSITIONS: dict = {
+    "pending":    {"confirmed", "cancelled"},
+    "confirmed":  {"preparing", "cancelled"},
+    "preparing":  {"on_way", "cancelled"},
+    "on_way":     {"delivered", "cancelled"},
+    "delivered":  set(),
+    "cancelled":  set(),
+}
+
 
 @app.get("/api/orders")
 async def list_orders(
@@ -1733,11 +1746,20 @@ async def update_order_status(oid: str, req: Request, background_tasks: Backgrou
     if not order:
         conn.close()
         raise HTTPException(404, "Order not found")
+    BLOCKED_FROM = {"delivered", "cancelled"}
+    VALID_STATUSES = {"pending", "confirmed", "preparing", "on_way", "delivered", "cancelled"}
+
     if action == "cancel":
+        if order["status"] in BLOCKED_FROM:
+            conn.close()
+            raise HTTPException(400, "لا يمكن إلغاء طلب مكتمل أو ملغى مسبقاً")
         new_status = "cancelled"
         log_activity(conn, user["restaurant_id"], "order_cancelled", "order", oid,
                      f"تم إلغاء الطلب #{oid[:8]}", user["id"], user["name"])
     elif action == "advance":
+        if order["status"] in BLOCKED_FROM:
+            conn.close()
+            raise HTTPException(400, "لا يمكن تقديم هذا الطلب")
         new_status = STATUS_FLOW.get(order["status"])
         if not new_status:
             conn.close()
@@ -1745,6 +1767,13 @@ async def update_order_status(oid: str, req: Request, background_tasks: Backgrou
         log_activity(conn, user["restaurant_id"], "order_status_changed", "order", oid,
                      f"تغيير حالة الطلب إلى {new_status}", user["id"], user["name"])
     else:
+        if action not in VALID_STATUSES:
+            conn.close()
+            raise HTTPException(400, "حالة غير صحيحة")
+        allowed = ALLOWED_TRANSITIONS.get(order["status"], set())
+        if action not in allowed:
+            conn.close()
+            raise HTTPException(400, f"لا يمكن الانتقال من {order['status']} إلى {action}")
         new_status = action
         log_activity(conn, user["restaurant_id"], "order_status_changed", "order", oid,
                      f"تغيير حالة الطلب إلى {new_status}", user["id"], user["name"])
@@ -1806,6 +1835,7 @@ async def delete_order(oid: str, user=Depends(current_user)):
 async def list_conversations(
     mode: Optional[str] = None,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     user=Depends(current_user),
 ):
     conn = database.get_db()
@@ -1820,6 +1850,8 @@ async def list_conversations(
         q += " AND cv.mode=?"; params.append(mode)
     if status:
         q += " AND cv.status=?"; params.append(status)
+    if search:
+        q += " AND (c.name LIKE ? OR c.phone LIKE ?)"; params += [f"%{search}%", f"%{search}%"]
     q += " ORDER BY cv.updated_at DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()
@@ -1854,6 +1886,42 @@ async def send_message(cid: str, data: MsgCreate, user=Depends(current_user)):
     msg = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
     conn.close()
     return dict(msg)
+
+
+@app.get("/api/outbound/failed")
+async def list_failed_messages(user=Depends(current_user)):
+    """Return last 50 failed outbound messages for this restaurant."""
+    conn = database.get_db()
+    rows = conn.execute(
+        """SELECT id, conversation_id, platform, recipient_id, content, error, created_at
+           FROM outbound_messages
+           WHERE restaurant_id=? AND status='failed'
+           ORDER BY created_at DESC LIMIT 50""",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.patch("/api/conversations/{cid}/messages/{mid}")
+async def edit_message(cid: str, mid: str, req: Request, user=Depends(current_user)):
+    body = await req.json()
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(400, "المحتوى مطلوب")
+    conn = database.get_db()
+    msg = conn.execute(
+        "SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id "
+        "WHERE m.id=? AND m.conversation_id=? AND c.restaurant_id=?",
+        (mid, cid, user["restaurant_id"])
+    ).fetchone()
+    if not msg:
+        conn.close()
+        raise HTTPException(404, "الرسالة غير موجودة")
+    conn.execute("UPDATE messages SET content=? WHERE id=?", (content, mid))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.patch("/api/conversations/{cid}/mode")
@@ -1981,9 +2049,13 @@ async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
     if data.min_order is not None: upd["min_order"] = data.min_order
     if data.report_frequency is not None and data.report_frequency in ("none", "daily", "weekly"):
         upd["report_frequency"] = data.report_frequency
+    if data.menu_url is not None: upd["menu_url"] = data.menu_url
     if upd:
         conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])
+        # Keep restaurants.name in sync so JWT always has the current name
+        if "restaurant_name" in upd and upd["restaurant_name"]:
+            conn.execute("UPDATE restaurants SET name=? WHERE id=?", (upd["restaurant_name"], rid))
         conn.commit()
     row = conn.execute("SELECT * FROM settings WHERE restaurant_id=?", (rid,)).fetchone()
     conn.close()
@@ -2365,6 +2437,9 @@ async def update_bot_config(data: BotConfigUpdate, user=Depends(current_user)):
     if upd:
         conn.execute(f"UPDATE bot_config SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
                      list(upd.values()) + [rid])
+        changed_fields = ", ".join(upd.keys())
+        log_activity(conn, rid, "bot_config_updated", "bot_config", rid,
+                     f"تعديل إعدادات البوت: {changed_fields}", user["id"], user.get("name", ""))
         conn.commit()
 
     row = conn.execute("SELECT * FROM bot_config WHERE restaurant_id=?", (rid,)).fetchone()
@@ -2378,6 +2453,171 @@ async def update_bot_config(data: BotConfigUpdate, user=Depends(current_user)):
     d["order_extraction_enabled"] = bool(d.get("order_extraction_enabled", 1))
     d["memory_enabled"] = bool(d.get("memory_enabled", 1))
     return d
+
+
+@app.get("/api/bot-config/corrections")
+async def list_bot_corrections(user=Depends(current_user)):
+    """List all corrections for this restaurant, newest first."""
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM bot_corrections WHERE restaurant_id=? ORDER BY created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/bot-config/corrections")
+async def add_bot_correction(data: dict, user=Depends(current_user)):
+    """Add a correction. Deduplicates by exact text — won't insert duplicates."""
+    text = (data.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    rid = user["restaurant_id"]
+    added_by = user.get("name") or user.get("email") or ""
+    conn = database.get_db()
+    # Dedup: exact same text for same restaurant → reactivate if inactive
+    existing = conn.execute(
+        "SELECT id, is_active FROM bot_corrections WHERE restaurant_id=? AND text=?",
+        (rid, text)
+    ).fetchone()
+    if existing:
+        if not existing["is_active"]:
+            conn.execute("UPDATE bot_corrections SET is_active=1, added_by=?, created_at=CURRENT_TIMESTAMP WHERE id=?",
+                         (added_by, existing["id"]))
+            conn.commit()
+        conn.close()
+        return {"ok": True, "correction_added": text, "deduped": True}
+    conn.execute(
+        "INSERT INTO bot_corrections (id, restaurant_id, text, added_by, is_active) VALUES (?, ?, ?, ?, 1)",
+        (str(uuid.uuid4()), rid, text, added_by)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "correction_added": text}
+
+
+@app.patch("/api/bot-config/corrections/{cid}")
+async def toggle_bot_correction(cid: str, data: dict, user=Depends(current_user)):
+    """Activate or deactivate a correction."""
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT id FROM bot_corrections WHERE id=? AND restaurant_id=?",
+        (cid, user["restaurant_id"])
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Correction not found")
+    is_active = int(bool(data.get("is_active", True)))
+    conn.execute("UPDATE bot_corrections SET is_active=? WHERE id=?", (is_active, cid))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "is_active": bool(is_active)}
+
+
+@app.delete("/api/bot-config/corrections/{cid}")
+async def delete_bot_correction(cid: str, user=Depends(current_user)):
+    """Permanently delete a correction."""
+    conn = database.get_db()
+    conn.execute(
+        "DELETE FROM bot_corrections WHERE id=? AND restaurant_id=?",
+        (cid, user["restaurant_id"])
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Bot Simulate (Algorithm 1: Test → Classify → Fix → Re-test) ───────────────
+
+@app.post("/api/bot/simulate")
+async def simulate_bot(data: dict, user=Depends(current_user)):
+    """
+    Algorithm 1 — Test → Classify → Fix → Re-test.
+    Run a scenario (list of customer messages) through the bot without
+    affecting production conversations. Returns bot replies + validation flags.
+    """
+    messages_in = data.get("messages", [])
+    scenario = data.get("scenario", "manual_test")
+
+    if not messages_in or not isinstance(messages_in, list):
+        raise HTTPException(400, "messages must be a non-empty array")
+    if len(messages_in) > 20:
+        raise HTTPException(400, "max 20 messages per simulation")
+
+    rid = user["restaurant_id"]
+    sim_conv_id = f"__sim_{str(uuid.uuid4())[:8]}"
+    sim_customer_id = f"__simulate__{rid}"
+
+    conn = database.get_db()
+    try:
+        # Upsert simulation customer (reused across runs)
+        existing = conn.execute(
+            "SELECT id FROM customers WHERE id=?", (sim_customer_id,)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO customers (id, restaurant_id, name, phone, platform) VALUES (?,?,?,?,?)",
+                (sim_customer_id, rid, "Simulate Test", "0000000000", "telegram")
+            )
+        conn.execute(
+            "INSERT INTO conversations (id, restaurant_id, customer_id, mode, status) VALUES (?,?,?,?,?)",
+            (sim_conv_id, rid, sim_customer_id, "bot", "open")
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = []
+    try:
+        for msg in messages_in:
+            customer_text = str(msg).strip()
+            if not customer_text:
+                continue
+
+            # Persist customer message so bot sees history
+            conn = database.get_db()
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?,?,?,?)",
+                (str(uuid.uuid4()), sim_conv_id, "customer", customer_text)
+            )
+            conn.commit()
+            conn.close()
+
+            from services import bot as _bot
+            bot_result = _bot.process_message(rid, sim_conv_id, customer_text)
+            reply = bot_result.get("reply", "")
+
+            # Persist bot reply so next turn sees context
+            conn = database.get_db()
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?,?,?,?)",
+                (str(uuid.uuid4()), sim_conv_id, "bot", reply)
+            )
+            conn.commit()
+            conn.close()
+
+            results.append({
+                "customer": customer_text,
+                "bot": reply,
+                "action": bot_result.get("action", "reply"),
+                "has_order": bool(
+                    bot_result.get("confirmed_order") or bot_result.get("extracted_order")
+                ),
+            })
+    finally:
+        # Always clean up simulation data
+        conn = database.get_db()
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (sim_conv_id,))
+        conn.execute("DELETE FROM conversations WHERE id=?", (sim_conv_id,))
+        conn.commit()
+        conn.close()
+
+    return {
+        "scenario": scenario,
+        "turns": len(results),
+        "results": results,
+    }
 
 
 # ── Activity Log ──────────────────────────────────────────────────────────────
@@ -2495,6 +2735,24 @@ async def verify_whatsapp(restaurant_id: str, req: Request):
 
 @app.post("/webhook/whatsapp/{restaurant_id}")
 async def webhook_whatsapp(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
+    raw_body = await req.body()
+    sig_header = req.headers.get("X-Hub-Signature-256", "")
+    if sig_header:
+        conn = database.get_db()
+        ch = conn.execute(
+            "SELECT app_secret FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+            (restaurant_id,)
+        ).fetchone()
+        conn.close()
+        app_secret = (ch["app_secret"] if ch and ch["app_secret"] else "") if ch else ""
+        if app_secret:
+            import hmac as _hmac, hashlib as _hashlib
+            expected = "sha256=" + _hmac.new(
+                app_secret.encode(), raw_body, _hashlib.sha256
+            ).hexdigest()
+            if not _hmac.compare_digest(expected, sig_header):
+                logger.warning(f"[whatsapp] invalid HMAC signature — restaurant={restaurant_id}")
+                raise HTTPException(403, "Invalid signature")
     data = await req.json()
     logger.info(f"[webhook] whatsapp POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_whatsapp, restaurant_id, data)

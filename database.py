@@ -408,6 +408,27 @@ CREATE TABLE IF NOT EXISTS menu_import_sessions (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT DEFAULT '',
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+);
+
+CREATE TABLE IF NOT EXISTS processed_events (
+    id TEXT PRIMARY KEY,
+    restaurant_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(restaurant_id, provider, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS outbound_messages (
+    id TEXT PRIMARY KEY,
+    restaurant_id TEXT NOT NULL,
+    conversation_id TEXT DEFAULT '',
+    platform TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    error TEXT DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """
 
@@ -426,6 +447,8 @@ def _create_indexes(conn):
         "CREATE INDEX IF NOT EXISTS idx_customers_restaurant ON customers(restaurant_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_restaurant ON activity_log(restaurant_id)",
         "CREATE INDEX IF NOT EXISTS idx_notifications_restaurant ON notifications(restaurant_id, is_read)",
+        "CREATE INDEX IF NOT EXISTS idx_processed_events ON processed_events(restaurant_id, provider, event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_outbound_messages_restaurant ON outbound_messages(restaurant_id, created_at)",
     ]
     for idx in indexes:
         try:
@@ -500,7 +523,33 @@ def _migrate_db(conn):
         ("settings", "report_frequency", "TEXT DEFAULT 'none'"),
         # settings — timestamp of last sent report (ISO string)
         ("settings", "report_last_sent", "TEXT DEFAULT ''"),
+        # orders — conversation that produced this order (for dedup)
+        ("orders", "conversation_id", "TEXT DEFAULT ''"),
+        # settings — external menu URL (bot shares when customer asks for menu)
+        ("settings", "menu_url", "TEXT DEFAULT ''"),
+        # products + customers — track last modification time
+        ("products",   "updated_at", "TEXT DEFAULT ''"),
+        ("customers",  "updated_at", "TEXT DEFAULT ''"),
     ]
+
+    # Create bot_corrections table (structured corrections with metadata)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_corrections (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            added_by TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_corrections_dedup ON bot_corrections(restaurant_id, text)"
+        )
+    except Exception:
+        pass
 
     # Create reply_templates table if not exists
     conn.execute("""
