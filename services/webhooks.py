@@ -4,6 +4,8 @@ Webhook handlers for Telegram, WhatsApp, Instagram, and Facebook Messenger.
 import uuid
 import json
 import os
+import io
+import base64
 import logging
 from typing import Optional
 
@@ -19,25 +21,22 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
 
-# ── Dedup: prevent double-processing of the same Telegram update ──────────────
-# Maps (restaurant_id, update_id) → timestamp; cleaned every 1000 entries
-_processed_updates: dict = {}
-
-def _is_duplicate_update(restaurant_id: str, update_id) -> bool:
-    """Return True if this update was already processed in the last 5 minutes."""
-    import time
-    key = (restaurant_id, str(update_id))
-    now = time.time()
-    if key in _processed_updates:
+# ── Dedup: prevent double-processing of the same event (DB-backed, survives restarts) ──
+def _is_duplicate_event(restaurant_id: str, provider: str, event_id: str) -> bool:
+    """Return True if this event was already processed. Inserts on first seen, survives restarts."""
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "INSERT INTO processed_events (id, restaurant_id, provider, event_id) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), restaurant_id, provider, str(event_id))
+        )
+        conn.commit()
+        return False
+    except Exception:
+        # UNIQUE constraint violation → duplicate
         return True
-    _processed_updates[key] = now
-    # Cleanup old entries to avoid unbounded growth
-    if len(_processed_updates) > 1000:
-        cutoff = now - 300
-        stale = [k for k, t in _processed_updates.items() if t < cutoff]
-        for k in stale:
-            _processed_updates.pop(k, None)
-    return False
+    finally:
+        conn.close()
 
 
 def _get_openai():
@@ -62,7 +61,7 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
     logger.info(f"[telegram] incoming update #{update_id} for restaurant {restaurant_id}")
 
     # Dedup — Telegram retries if we don't respond in time, causing double replies
-    if _is_duplicate_update(restaurant_id, update_id):
+    if _is_duplicate_event(restaurant_id, "telegram", update_id):
         logger.info(f"[telegram] duplicate update #{update_id} — skipping")
         return
 
@@ -193,7 +192,6 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
         if not client_openai:
             return file_url, ""
 
-        import io
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = "voice.ogg"
 
@@ -212,7 +210,6 @@ def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
 
 def _vision_describe(img_bytes: bytes, restaurant_id: str, platform: str = "") -> str:
     """Send raw image bytes to OpenAI Vision. Returns Arabic description string."""
-    import base64
     client_ai = _get_openai()
     if not client_ai:
         return "[العميل أرسل صورة]"
@@ -356,7 +353,6 @@ def _match_story_to_product(img_bytes: bytes, restaurant_id: str) -> dict:
 
     Returns: {"product": dict|None, "description": str, "confidence": "high"|"medium"|"low"}
     """
-    import base64
     client_ai = _get_openai()
     if not client_ai or not img_bytes:
         return {"product": None, "description": "", "confidence": "low"}
@@ -500,6 +496,33 @@ def _analyze_story(media_url: str, story_id: str, restaurant_id: str,
     return f"[العميل يرد على ستوري{video_tag} للمطعم — رحّب به وابدأ محادثة البيع]"
 
 
+def _download_and_transcribe_whatsapp_voice(media_id: str, access_token: str) -> tuple:
+    """Resolve a WhatsApp voice media ID, download it, and transcribe via Whisper. Returns (url, transcript)."""
+    try:
+        auth = {"Authorization": f"Bearer {access_token}"}
+        with httpx.Client(timeout=20) as client:
+            r = client.get(f"https://graph.facebook.com/v19.0/{media_id}", headers=auth)
+            r.raise_for_status()
+            media_url = r.json().get("url", "")
+            if not media_url:
+                return "", ""
+            audio_bytes = client.get(media_url, headers=auth).content
+
+        client_openai = _get_openai()
+        if not client_openai:
+            return media_url, ""
+
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "voice.ogg"
+        result = client_openai.audio.transcriptions.create(
+            model="whisper-1", file=audio_file, language="ar"
+        )
+        return media_url, result.text.strip()
+    except Exception as e:
+        logger.error(f"[whatsapp] voice transcription error: {e}")
+        return "", ""
+
+
 def _download_and_describe_whatsapp_image(media_id: str, access_token: str, restaurant_id: str) -> tuple:
     """Resolve a WhatsApp media ID to bytes then describe via Vision."""
     try:
@@ -545,12 +568,19 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
         return
 
     msg_type = msg.get("type", "")
-    if msg_type not in ("text", "image"):
+    if msg_type not in ("text", "image", "audio", "voice"):
+        return
+
+    # Dedup — WhatsApp retries unacknowledged messages
+    wamid = msg.get("id", "")
+    if wamid and _is_duplicate_event(restaurant_id, "whatsapp", wamid):
+        logger.info(f"[whatsapp] duplicate message {wamid} — skipping")
         return
 
     text = ""
     media_type = ""
     media_url = ""
+    voice_transcript = ""
 
     if msg_type == "text":
         text = msg.get("text", {}).get("body", "").strip()
@@ -558,7 +588,6 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
         media_type = "image"
         caption = msg.get("image", {}).get("caption", "").strip()
         media_id = msg.get("image", {}).get("id", "")
-        # Need access_token to resolve WhatsApp media — load channel first
         conn_pre = database.get_db()
         ch_pre = conn_pre.execute(
             "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'",
@@ -573,6 +602,21 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
             text = (caption + " " + image_text).strip() if caption else image_text
         else:
             text = caption or "[العميل أرسل صورة]"
+    elif msg_type in ("audio", "voice"):
+        media_type = "voice"
+        media_id = msg.get(msg_type, {}).get("id", "")
+        conn_pre = database.get_db()
+        ch_pre = conn_pre.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+            (restaurant_id,)
+        ).fetchone()
+        token_pre = ch_pre["token"] if ch_pre else None
+        conn_pre.close()
+        if media_id and token_pre:
+            media_url, voice_transcript = _download_and_transcribe_whatsapp_voice(
+                media_id, token_pre
+            )
+        text = voice_transcript or "[رسالة صوتية]"
 
     if not text:
         return
@@ -629,6 +673,12 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
     message = messaging.get("message", {})
     text = message.get("text", "").strip()
     if not sender_id:
+        return
+
+    # Dedup — Meta retries unacknowledged messages
+    mid_ig = message.get("mid", "")
+    if mid_ig and _is_duplicate_event(restaurant_id, "instagram", mid_ig):
+        logger.info(f"[instagram] duplicate message {mid_ig} — skipping")
         return
 
     media_type = ""
@@ -736,6 +786,12 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
     if not sender_id:
         return
 
+    # Dedup — Meta retries unacknowledged messages
+    mid_fb = message.get("mid", "")
+    if mid_fb and _is_duplicate_event(restaurant_id, "facebook", mid_fb):
+        logger.info(f"[facebook] duplicate message {mid_fb} — skipping")
+        return
+
     media_type_fb = ""
     media_url_fb = ""
     replied_story_id_fb = ""
@@ -833,6 +889,13 @@ def _process_incoming(
         customer_id = customer["id"]
         platform = channel_data.get("platform", "unknown")
 
+        req_id = str(uuid.uuid4())[:8]
+        logger.info(
+            f"[incoming] req={req_id} restaurant={restaurant_id} "
+            f"conv={conv_id} channel={platform} customer={customer_id} "
+            f"msg_len={len(content)}"
+        )
+
         # 1. Save customer message with optional media/story metadata
         msg_id = str(uuid.uuid4())
         conn.execute(
@@ -889,28 +952,54 @@ def _process_incoming(
             )
 
             if action == "escalate":
-                conn.execute(
-                    "UPDATE conversations SET mode='human', handoff_reason=?, escalated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    ("escalation_requested", conv_id)
-                )
-                _create_notification(
-                    conn, restaurant_id,
-                    "escalation",
-                    "طلب تحويل للموظف",
-                    f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
-                    "conversation", conv_id
-                )
+                # Dedup: only escalate if not already in human mode
+                if conv_row and conv_row["mode"] != "human":
+                    conn.execute(
+                        "UPDATE conversations SET mode='human', handoff_reason=?, escalated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        ("escalation_requested", conv_id)
+                    )
+                    _create_notification(
+                        conn, restaurant_id,
+                        "escalation",
+                        "طلب تحويل للموظف",
+                        f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
+                        "conversation", conv_id
+                    )
 
             conn.commit()
 
-            # Send reply via platform
-            _send_reply(channel_data, reply_text)
+            # Send reply via platform + log result
+            send_ok, send_err = _send_reply(channel_data, reply_text)
+            recipient_id = (
+                channel_data.get("chat_id") or
+                channel_data.get("to") or
+                channel_data.get("recipient_id") or ""
+            )
+            logger.info(
+                f"[outbound] req={req_id} restaurant={restaurant_id} "
+                f"conv={conv_id} channel={platform} "
+                f"status={'sent' if send_ok else 'failed'}"
+                + (f" error={send_err}" if not send_ok else "")
+            )
+            conn.execute(
+                """INSERT INTO outbound_messages
+                   (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()), restaurant_id, conv_id,
+                    platform, recipient_id,
+                    reply_text[:500],
+                    "sent" if send_ok else "failed",
+                    send_err,
+                )
+            )
+            conn.commit()
 
             # Auto-create order in DB when bot confirmed a complete order (✅ summary)
             confirmed_order = result.get("confirmed_order")
             if confirmed_order and confirmed_order.get("items"):
                 _auto_create_order(
-                    conn, restaurant_id, customer, platform, confirmed_order
+                    conn, restaurant_id, customer, platform, confirmed_order, conv_id
                 )
 
             # Fallback keyword-based notification (no DB order record, just alert)
@@ -962,8 +1051,8 @@ def _process_incoming(
 
 # ── Send helpers ──────────────────────────────────────────────────────────────
 
-def _send_reply(channel_data: dict, text: str) -> None:
-    """Dispatch reply to the correct platform."""
+def _send_reply(channel_data: dict, text: str) -> tuple:
+    """Dispatch reply to the correct platform. Returns (success: bool, error: str)."""
     platform = channel_data.get("platform", "")
     try:
         if platform == "telegram":
@@ -982,8 +1071,10 @@ def _send_reply(channel_data: dict, text: str) -> None:
             recipient_id = channel_data.get("recipient_id")
             if page_token and recipient_id:
                 _send_facebook_messenger(page_token, recipient_id, text)
+        return True, ""
     except Exception as e:
         logger.error(f"[webhooks] send error on {platform}: {e}")
+        return False, str(e)
 
 
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
@@ -1002,9 +1093,11 @@ def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
         if result.get("ok"):
             logger.info(f"[telegram] sendMessage OK → chat_id={chat_id}")
         else:
-            logger.error(f"[telegram] sendMessage FAILED → chat_id={chat_id} | {result.get('description', result)}")
-    except Exception as e:
-        logger.error(f"[telegram] sendMessage exception → chat_id={chat_id} | {e}")
+            err = result.get("description", str(result))
+            logger.error(f"[telegram] sendMessage FAILED → chat_id={chat_id} | {err}")
+            raise Exception(f"Telegram API error: {err}")
+    except Exception:
+        raise
 
 
 def _send_whatsapp(access_token: str, phone_number_id: str, to: str, text: str) -> None:
@@ -1168,6 +1261,7 @@ def _auto_create_order(
     customer: dict,
     platform: str,
     order_data: dict,
+    conversation_id: str = "",
 ) -> Optional[str]:
     """
     Automatically create an order + order_items record when the bot confirms an order.
@@ -1177,26 +1271,42 @@ def _auto_create_order(
     total = order_data.get("total", 0)
     items = order_data.get("items", [])
     address = order_data.get("address", "")
+    order_type = order_data.get("type", "delivery")  # "delivery" or "pickup"
 
     if not items or total <= 0:
         return None
 
-    # Dedup: skip if same order (same customer + total) placed in last 5 minutes
+    # Require address only for delivery orders
+    if order_type == "delivery" and not address:
+        logger.info(f"[order] skipping — delivery order needs address conv={conversation_id}")
+        return None
+
+    # Dedup primary: same conversation can only produce one order
+    if conversation_id:
+        existing = conn.execute(
+            "SELECT id FROM orders WHERE conversation_id=? AND restaurant_id=?",
+            (conversation_id, restaurant_id)
+        ).fetchone()
+        if existing:
+            logger.info(f"[order] duplicate skipped — conv={conversation_id} already has order {existing['id']}")
+            return None
+
+    # Dedup fallback: same customer + total within 3 minutes (catches edge cases)
     from datetime import datetime as _datetime, timedelta as _td
-    five_min_ago = (_datetime.utcnow() - _td(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    three_min_ago = (_datetime.utcnow() - _td(minutes=3)).strftime("%Y-%m-%d %H:%M:%S")
     existing = conn.execute(
         "SELECT id FROM orders WHERE restaurant_id=? AND customer_id=? AND total=? AND created_at >= ?",
-        (restaurant_id, customer_id, total, five_min_ago)
+        (restaurant_id, customer_id, total, three_min_ago)
     ).fetchone()
     if existing:
-        logger.info(f"[order] duplicate skipped — customer={customer_id} total={total}")
+        logger.info(f"[order] duplicate skipped — customer={customer_id} total={total} within 3min")
         return None
 
     order_id = str(uuid.uuid4())
     conn.execute("""
-        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, status)
-        VALUES (?, ?, ?, ?, 'delivery', ?, ?, 'pending')
-    """, (order_id, restaurant_id, customer_id, platform, total, address))
+        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, status, conversation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (order_id, restaurant_id, customer_id, platform, order_type, total, address, conversation_id))
 
     for item in items:
         conn.execute("""
@@ -1220,6 +1330,42 @@ def _auto_create_order(
             total_spent=COALESCE(total_spent,0)+?
         WHERE id=?
     """, (total, customer_id))
+
+    # Update favorite_item: most ordered product by this customer
+    try:
+        top = conn.execute("""
+            SELECT oi.name, SUM(oi.quantity) AS qty
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE o.customer_id=? AND o.restaurant_id=?
+            GROUP BY oi.name
+            ORDER BY qty DESC
+            LIMIT 1
+        """, (customer_id, restaurant_id)).fetchone()
+        if top:
+            conn.execute(
+                "UPDATE customers SET favorite_item=? WHERE id=?",
+                (top["name"], customer_id)
+            )
+    except Exception as e:
+        logger.warning(f"[order] favorite_item update failed: {e}")
+
+    # Save last_order_summary to conversation_memory
+    try:
+        summary_parts = [
+            f"{i.get('name', '')} ×{i.get('quantity', 1)}"
+            for i in items[:3]
+        ]
+        summary = "، ".join(summary_parts) + f" — {int(total):,} د.ع"
+        conn.execute("""
+            INSERT INTO conversation_memory
+                (id, restaurant_id, customer_id, memory_key, memory_value, updated_at)
+            VALUES (?, ?, ?, 'last_order_summary', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(restaurant_id, customer_id, memory_key)
+            DO UPDATE SET memory_value=excluded.memory_value, updated_at=CURRENT_TIMESTAMP
+        """, (str(uuid.uuid4()), restaurant_id, customer_id, summary))
+    except Exception as e:
+        logger.warning(f"[order] last_order_summary save failed: {e}")
 
     conn.commit()
     logger.info(
