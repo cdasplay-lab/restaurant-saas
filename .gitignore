@@ -42,3 +42,8 @@ logs/
 
 # Media uploads (if added later)
 uploads/
+
+# Test/simulation report artifacts
+scripts/*_compare_report.txt
+scripts/*_fix_verify*.txt
+scripts/*_verification*.txt
