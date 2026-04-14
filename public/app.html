@@ -667,6 +667,9 @@
                 <input id="sRestPhone" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
               <div><label class="text-slate-400 text-xs mb-1.5 block">العنوان</label>
                 <input id="sRestAddress" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500"></div>
+              <div><label class="text-slate-400 text-xs mb-1.5 block">🔗 رابط المنيو (يشاركه البوت مع العملاء)</label>
+                <input id="sMenuUrl" placeholder="https://example.com/menu" dir="ltr"
+                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 placeholder-slate-600"></div>
               <div>
                 <label class="text-slate-400 text-xs mb-1.5 block">💳 وسائل الدفع المتاحة</label>
                 <input id="sPaymentMethods" placeholder="مثال: كاش، ماستر كارد العراق، فيزا الرافدين، زين كاش"
@@ -1509,16 +1512,80 @@ function renderMessages(msgs, forceScroll = true) {
       </div>`;
     }
 
-    return `<div class="flex ${align}">
+    const canEdit = m.role === 'bot' || m.role === 'staff';
+    const convId = S.activeConv || '';
+    const editBtn = canEdit
+      ? `<button onclick="startEditMessage('${m.id}','${convId}')" title="تعديل" class="msg-edit-btn opacity-0 group-hover:opacity-100 transition-opacity ml-1 text-slate-500 hover:text-indigo-400 text-xs px-1">✏️</button>`
+      : '';
+
+    return `<div class="flex ${align} group">
       <div class="chat-bubble ${m.role}" style="max-width:80%">
-        <p class="text-xs mb-1 opacity-60">${roleLabel}</p>
+        <div class="flex items-center justify-between mb-1">
+          <p class="text-xs opacity-60">${roleLabel}</p>
+          ${editBtn}
+        </div>
         ${storyBadge}${voiceBadge}
-        <p class="whitespace-pre-wrap">${m.content}</p>
+        <p id="msg-text-${m.id}" class="whitespace-pre-wrap">${m.content}</p>
+        <div id="msg-edit-${m.id}" class="hidden mt-2">
+          <textarea id="msg-input-${m.id}" class="w-full bg-slate-700 text-white text-sm rounded p-2 resize-none border border-indigo-500 outline-none" rows="3"></textarea>
+          <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+            <input type="checkbox" id="msg-teach-${m.id}" class="accent-indigo-500">
+            <span class="text-xs text-indigo-300">علّم البوت هذا التصحيح</span>
+          </label>
+          <div class="flex gap-2 mt-1">
+            <button onclick="saveEditMessage('${m.id}','${convId}')" class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded">حفظ</button>
+            <button onclick="cancelEditMessage('${m.id}')" class="text-xs bg-slate-600 hover:bg-slate-700 text-white px-3 py-1 rounded">إلغاء</button>
+          </div>
+        </div>
         <p class="text-xs opacity-40 mt-1 text-left">${dt(m.created_at)}</p>
       </div>
     </div>`;
   }).join('');
   if (shouldScroll) el.scrollTop = el.scrollHeight;
+}
+
+function startEditMessage(msgId, convId) {
+  const textEl = document.getElementById(`msg-text-${msgId}`);
+  const editEl = document.getElementById(`msg-edit-${msgId}`);
+  const inputEl = document.getElementById(`msg-input-${msgId}`);
+  if (!textEl || !editEl || !inputEl) return;
+  inputEl.value = textEl.textContent;
+  textEl.classList.add('hidden');
+  editEl.classList.remove('hidden');
+  inputEl.focus();
+}
+
+function cancelEditMessage(msgId) {
+  const textEl = document.getElementById(`msg-text-${msgId}`);
+  const editEl = document.getElementById(`msg-edit-${msgId}`);
+  if (!textEl || !editEl) return;
+  textEl.classList.remove('hidden');
+  editEl.classList.add('hidden');
+}
+
+async function saveEditMessage(msgId, convId) {
+  const textEl = document.getElementById(`msg-text-${msgId}`);
+  const editEl = document.getElementById(`msg-edit-${msgId}`);
+  const inputEl = document.getElementById(`msg-input-${msgId}`);
+  const teachEl = document.getElementById(`msg-teach-${msgId}`);
+  if (!inputEl) return;
+  const originalText = textEl.textContent.trim();
+  const newContent = inputEl.value.trim();
+  if (!newContent) return;
+  try {
+    await api.patch(`/api/conversations/${convId}/messages/${msgId}`, { content: newContent });
+    // Save as bot correction if checkbox is checked
+    if (teachEl && teachEl.checked && originalText !== newContent) {
+      const correctionText = `لا تقل: "${originalText.slice(0,60)}${originalText.length>60?'...':''}" — قل بدلاً: "${newContent.slice(0,60)}${newContent.length>60?'...':''}"`;
+      await api.post('/api/bot-config/corrections', { text: correctionText });
+      toast('تم حفظ التصحيح وتعليم البوت ✓', 'success');
+    }
+    textEl.textContent = newContent;
+    textEl.classList.remove('hidden');
+    editEl.classList.add('hidden');
+  } catch(e) {
+    toast('فشل التعديل: ' + e.message, 'error');
+  }
 }
 
 async function sendMessage() {
@@ -2532,6 +2599,7 @@ async function loadSettings() {
     if (s.restaurant_description) document.getElementById('sRestDesc').value = s.restaurant_description;
     if (s.restaurant_phone) document.getElementById('sRestPhone').value = s.restaurant_phone;
     if (s.restaurant_address) document.getElementById('sRestAddress').value = s.restaurant_address;
+    if (s.menu_url) document.getElementById('sMenuUrl').value = s.menu_url;
     if (s.payment_methods) document.getElementById('sPaymentMethods').value = s.payment_methods;
     if (s.delivery_time) document.getElementById('sDeliveryTime').value = s.delivery_time;
     if (s.delivery_fee) document.getElementById('sDeliveryFee').value = s.delivery_fee;
@@ -2589,6 +2657,7 @@ async function saveSettings() {
       restaurant_description: document.getElementById('sRestDesc').value,
       restaurant_phone: document.getElementById('sRestPhone').value,
       restaurant_address: document.getElementById('sRestAddress').value,
+      menu_url: document.getElementById('sMenuUrl').value,
       payment_methods: document.getElementById('sPaymentMethods').value,
       delivery_time: document.getElementById('sDeliveryTime').value,
       delivery_fee: parseInt(document.getElementById('sDeliveryFee').value) || 0,
@@ -2604,8 +2673,13 @@ async function saveSettings() {
       security_2fa: document.getElementById('s2fa').checked,
       security_session_timeout: parseInt(document.getElementById('sSessionTimeout').value) || 24,
     });
-    // Sync restaurant name in sidebar
-    if (restName) document.getElementById('sideRestName').textContent = restName;
+    // Sync restaurant name in sidebar + localStorage so it persists on refresh
+    if (restName) {
+      document.getElementById('sideRestName').textContent = restName;
+      const u = JSON.parse(localStorage.getItem('user') || '{}');
+      u.restaurant_name = restName;
+      localStorage.setItem('user', JSON.stringify(u));
+    }
     toast('تم حفظ الإعدادات ✅', 'success');
   } catch(e) { toast(e.message, 'error'); }
 }
