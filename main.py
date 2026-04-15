@@ -21,6 +21,8 @@ import bcrypt as _bcrypt
 import database
 from services import webhooks
 from services import menu_parser as _menu_parser
+from services.integrations import get_adapter, get_all_adapters, PLATFORM_CATALOG
+import secrets as _secrets
 import tempfile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,7 +32,9 @@ SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey_change_in_production_123456
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
+BASE_URL        = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
+META_APP_ID     = os.getenv("META_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 
 # ── Simple in-process rate limiter (no external dependency) ──────────────────
 import time as _time
@@ -248,11 +252,71 @@ async def _report_job():
         await asyncio.sleep(3600)  # check every hour
 
 
+async def _token_refresh_job():
+    """Every 6 hours: silently refresh Meta tokens expiring within 7 days."""
+    await asyncio.sleep(120)  # wait 2 min after startup before first pass
+    while True:
+        try:
+            warn_threshold = (datetime.utcnow() + timedelta(days=7)).isoformat()
+            conn = database.get_db()
+            try:
+                rows = conn.execute("""
+                    SELECT * FROM channels
+                    WHERE connection_status='connected'
+                      AND token_expires_at != ''
+                      AND token_expires_at < ?
+                      AND reconnect_needed=0
+                """, (warn_threshold,)).fetchall()
+            finally:
+                conn.close()
+
+            for row in rows:
+                ch       = dict(row)
+                platform = ch["type"]
+                adapter  = get_adapter(platform)
+                if not adapter:
+                    continue
+                try:
+                    updates = adapter.refresh_token(ch)
+                    _allowed = {"token", "token_expires_at", "reconnect_needed"}
+                    filtered = {k: v for k, v in updates.items() if k in _allowed}
+                    if filtered:
+                        set_sql = ", ".join(f"{k}=?" for k in filtered)
+                        conn2 = database.get_db()
+                        try:
+                            conn2.execute(
+                                f"UPDATE channels SET {set_sql} WHERE id=?",
+                                list(filtered.values()) + [ch["id"]]
+                            )
+                            conn2.commit()
+                        finally:
+                            conn2.close()
+                    logger.info(f"[token_refresh] refreshed {platform} rid={ch['restaurant_id']}")
+                except NotImplementedError:
+                    pass  # platform doesn't support silent refresh
+                except Exception as exc:
+                    logger.warning(f"[token_refresh] failed {platform} rid={ch['restaurant_id']}: {exc}")
+                    conn3 = database.get_db()
+                    try:
+                        conn3.execute(
+                            "UPDATE channels SET reconnect_needed=1, last_error=? WHERE id=?",
+                            (str(exc)[:500], ch["id"])
+                        )
+                        conn3.commit()
+                    finally:
+                        conn3.close()
+
+        except Exception as exc:
+            logger.error(f"token_refresh_job error: {exc}")
+        await asyncio.sleep(21600)  # 6 hours
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
     asyncio.create_task(_subscription_cleanup_job())
     asyncio.create_task(_report_job())
+    asyncio.create_task(_token_refresh_job())
     yield
 
 
@@ -412,6 +476,27 @@ def create_notification(conn, restaurant_id, ntype, title, message, entity_type=
         )
     except Exception:
         pass
+
+
+def record_channel_error(conn, channel_id: str, restaurant_id: str, platform: str,
+                         error_message: str, error_code: str = "",
+                         error_type: str = "webhook", request_payload: str = ""):
+    """Insert a connection_errors row and update channel last_error."""
+    try:
+        conn.execute(
+            "INSERT INTO connection_errors "
+            "(id, channel_id, restaurant_id, platform, error_code, error_message, error_type, request_payload) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), channel_id, restaurant_id, platform,
+             error_code, error_message[:500], error_type, request_payload[:2000])
+        )
+        conn.execute(
+            "UPDATE channels SET last_error=?, connection_status='error', "
+            "last_tested_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error_message[:500], channel_id)
+        )
+    except Exception as _e:
+        logger.warning(f"record_channel_error failed: {_e}")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -2295,6 +2380,686 @@ async def register_telegram_webhook(request: Request, user=Depends(current_user)
         conn.close()
         logger.error(f"[telegram] register-webhook exception — restaurant={rid} | {e}")
         raise HTTPException(500, f"خطأ في الاتصال بـ Telegram: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── INTEGRATIONS HUB ─────────────────────────────────────────────────────────
+# Scalable channel connection framework (OAuth2 / Embedded Signup / bot_token)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# get_adapter, PLATFORM_CATALOG, _secrets imported at top of file
+
+
+def _channel_to_dict(row) -> dict:
+    """Convert a channels row to a clean dict safe for the frontend."""
+    d = dict(row)
+    # Never expose raw secrets to the API
+    for f in ("app_secret", "webhook_secret"):
+        if d.get(f):
+            v = d[f]
+            d[f] = v[:4] + "****" if len(v) > 4 else "****"
+    return d
+
+
+def _get_or_create_channel(conn, restaurant_id: str, platform: str) -> dict:
+    """Return existing channel row as dict, or create a bare-minimum skeleton."""
+    row = conn.execute(
+        "SELECT * FROM channels WHERE restaurant_id=? AND type=?",
+        (restaurant_id, platform)
+    ).fetchone()
+    if row:
+        return dict(row)
+    # Create skeleton row so the card renders with 'disconnected' state
+    cid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO channels (id, restaurant_id, type, name, token, enabled, connection_status) "
+        "VALUES (?,?,?,?,?,0,'disconnected')",
+        (cid, restaurant_id, platform, PLATFORM_CATALOG.get(platform, {}).get("display_name", platform), "")
+    )
+    conn.commit()
+    return dict(conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone())
+
+
+@app.get("/api/integrations/catalog")
+async def integrations_catalog(user=Depends(current_user)):
+    """Return platform catalog + current connection state for each platform."""
+    conn = database.get_db()
+    rid  = user["restaurant_id"]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? ORDER BY type",
+            (rid,)
+        ).fetchall()
+        channels_by_type = {dict(r)["type"]: _channel_to_dict(r) for r in rows}
+
+        result = []
+        for platform, meta in sorted(PLATFORM_CATALOG.items(), key=lambda x: x[1].get("order", 99)):
+            ch = channels_by_type.get(platform, {})
+            entry = {
+                **meta,
+                "platform":       platform,
+                "has_adapter":    get_adapter(platform) is not None,
+                "meta_app_configured": bool(META_APP_ID),
+                # channel state
+                "channel_id":         ch.get("id", ""),
+                "connected":          ch.get("connection_status") == "connected",
+                "connection_status":  ch.get("connection_status", "disconnected"),
+                "enabled":            bool(ch.get("enabled", 0)),
+                "reconnect_needed":   bool(ch.get("reconnect_needed", 0)),
+                "account_display_name": ch.get("account_display_name", ""),
+                "account_picture_url":  ch.get("account_picture_url", ""),
+                "phone_number_display": ch.get("phone_number_display", ""),
+                "page_name":          ch.get("page_name", ""),
+                "last_error":         ch.get("last_error", ""),
+                "last_tested_at":     ch.get("last_tested_at", ""),
+                "token_expires_at":   ch.get("token_expires_at", ""),
+                "oauth_completed_at": ch.get("oauth_completed_at", ""),
+                "webhook_url":        f"{BASE_URL}/webhook/{platform}/{rid}" if ch.get("id") else "",
+                # For Telegram — expose non-secret fields for form prefill
+                "bot_username":   ch.get("bot_username", "") if platform == "telegram" else "",
+                "has_token":      bool(ch.get("token", "")),
+            }
+            result.append(entry)
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/integrations/oauth/start")
+async def integrations_oauth_start(data: dict, user=Depends(current_user)):
+    """
+    Initiate OAuth for Facebook or Instagram.
+    Returns {auth_url, state} — frontend opens auth_url in a popup.
+    """
+    platform     = (data.get("platform") or "").lower()
+    adapter      = get_adapter(platform)
+    if not adapter or adapter.auth_type not in ("oauth2",):
+        raise HTTPException(400, f"Platform '{platform}' does not support OAuth flow")
+    if not META_APP_ID:
+        raise HTTPException(400, "META_APP_ID غير مضبوط — أضفه إلى ملف .env")
+
+    redirect_uri = f"{BASE_URL}/api/integrations/oauth/callback"
+    state        = _secrets.token_hex(24)
+    expires_at   = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "INSERT INTO oauth_states (id, restaurant_id, user_id, platform, state, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(uuid.uuid4()), user["restaurant_id"], user["id"], platform, state, expires_at)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    auth_url = adapter.build_auth_url(state, redirect_uri)
+    return {"auth_url": auth_url, "state": state}
+
+
+@app.get("/api/integrations/oauth/callback")
+async def integrations_oauth_callback(
+    code:  str = None,
+    state: str = None,
+    error: str = None,
+    req: Request = None
+):
+    """
+    Meta redirects here after the user approves the OAuth dialog.
+    This endpoint exchanges the code, then redirects the browser back to the
+    dashboard with an oauth_session ID so the JS can complete the flow.
+    """
+    from fastapi.responses import RedirectResponse as _Redirect
+
+    frontend_base = BASE_URL
+
+    if error or not state or not code:
+        return _Redirect(f"{frontend_base}/#channels?error=access_denied")
+
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM oauth_states WHERE state=? AND used=0",
+            (state,)
+        ).fetchone()
+        if not row:
+            return _Redirect(f"{frontend_base}/#channels?error=invalid_state")
+
+        row = dict(row)
+        if row["expires_at"] < datetime.utcnow().isoformat():
+            return _Redirect(f"{frontend_base}/#channels?error=state_expired")
+
+        # Mark used
+        conn.execute("UPDATE oauth_states SET used=1 WHERE state=?", (state,))
+        conn.commit()
+
+        platform     = row["platform"]
+        redirect_uri = f"{BASE_URL}/api/integrations/oauth/callback"
+        adapter      = get_adapter(platform)
+
+        try:
+            result = adapter.exchange_code(code, redirect_uri)
+        except Exception as exc:
+            logger.error(f"[oauth] exchange_code failed platform={platform}: {exc}")
+            return _Redirect(f"{frontend_base}/#channels?error=exchange_failed")
+
+        # Store pages/accounts in oauth_states so the picker endpoint can return them
+        pages_json = json.dumps(result.get("pages") or result.get("accounts") or [])
+        conn.execute(
+            "UPDATE oauth_states SET pages_json=? WHERE state=?",
+            (pages_json, state)
+        )
+        # Also stash access_token + expiry temporarily in pages_json row
+        pending_json = json.dumps({
+            "access_token":     result.get("access_token", ""),
+            "token_expires_at": result.get("token_expires_at", ""),
+            "scopes_granted":   result.get("scopes_granted", ""),
+            "pages":            result.get("pages") or result.get("accounts") or [],
+        })
+        conn.execute("UPDATE oauth_states SET pages_json=? WHERE state=?", (pending_json, state))
+        conn.commit()
+
+        # Redirect back with state ID as session token (the JS will call /pending/{state})
+        return _Redirect(f"{frontend_base}/#channels?oauth_session={state}&platform={platform}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/integrations/oauth/pending/{state_id}")
+async def integrations_oauth_pending(state_id: str, user=Depends(current_user)):
+    """
+    Return the pages/accounts list for the page-picker modal.
+    Called by the JS after it detects oauth_session in the URL hash.
+    """
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM oauth_states WHERE state=? AND restaurant_id=?",
+            (state_id, user["restaurant_id"])
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "OAuth session not found")
+        data = json.loads(row["pages_json"] or "{}")
+        return {
+            "platform": row["platform"],
+            "pages":    data.get("pages", []),
+            "access_token":     data.get("access_token", ""),
+            "token_expires_at": data.get("token_expires_at", ""),
+            "scopes_granted":   data.get("scopes_granted", ""),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/integrations/oauth/select-page")
+async def integrations_oauth_select_page(data: dict, user=Depends(current_user)):
+    """
+    After the page picker: save the chosen page, subscribe webhook, finalize connection.
+    Body: {state_id, page_id, page_name, page_token, picture_url, platform}
+    For Instagram: body uses account_id, account_name, account_username, page_id, page_token
+    """
+    state_id    = data.get("state_id", "")
+    platform    = (data.get("platform") or "").lower()
+    rid         = user["restaurant_id"]
+
+    conn = database.get_db()
+    try:
+        # Validate state ownership
+        row = conn.execute(
+            "SELECT * FROM oauth_states WHERE state=? AND restaurant_id=?",
+            (state_id, rid)
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "OAuth session غير صالح")
+
+        row        = dict(row)
+        pending    = json.loads(row["pages_json"] or "{}")
+        long_token = pending.get("access_token", "")
+        expires_at = pending.get("token_expires_at", "")
+        scopes     = pending.get("scopes_granted", "")
+
+        verify_token = str(uuid.uuid4())
+        now_iso      = datetime.utcnow().isoformat()
+
+        if platform == "facebook":
+            page_token   = data.get("page_token", long_token)
+            page_id      = data.get("page_id", "")
+            page_name    = data.get("page_name", "")
+            picture_url  = data.get("picture_url", "")
+
+            channel_data = {
+                "restaurant_id": rid, "token": page_token, "page_id": page_id,
+                "page_name": page_name, "verify_token": verify_token,
+            }
+            adapter = get_adapter("facebook")
+            try:
+                adapter.subscribe_webhook(channel_data, BASE_URL)
+                webhook_ok = True
+            except Exception as exc:
+                logger.warning(f"[fb] webhook subscribe failed: {exc}")
+                webhook_ok = False
+
+            ch = _get_or_create_channel(conn, rid, "facebook")
+            conn.execute("""
+                UPDATE channels SET
+                    token=?, page_id=?, page_name=?, verify_token=?,
+                    token_expires_at=?, scopes_granted=?, oauth_completed_at=?,
+                    account_display_name=?, account_picture_url=?,
+                    connected_by_user_id=?, connection_status=?,
+                    enabled=1, verified=1, reconnect_needed=0, last_error='',
+                    last_tested_at=CURRENT_TIMESTAMP
+                WHERE id=?
+            """, (page_token, page_id, page_name, verify_token,
+                  expires_at, scopes, now_iso,
+                  page_name, picture_url,
+                  user["id"], "connected" if webhook_ok else "connected",
+                  ch["id"]))
+
+        elif platform == "instagram":
+            account_id    = data.get("account_id", "")
+            account_name  = data.get("account_name", "")
+            account_user  = data.get("account_username", "")
+            picture_url   = data.get("picture_url", "")
+            page_id       = data.get("page_id", "")
+            page_token    = data.get("page_token", long_token)
+
+            channel_data = {
+                "restaurant_id": rid, "token": page_token, "page_id": page_id,
+                "business_account_id": account_id, "verify_token": verify_token,
+            }
+            adapter = get_adapter("instagram")
+            try:
+                adapter.subscribe_webhook(channel_data, BASE_URL)
+                webhook_ok = True
+            except Exception as exc:
+                logger.warning(f"[ig] webhook subscribe failed: {exc}")
+                webhook_ok = False
+
+            ch = _get_or_create_channel(conn, rid, "instagram")
+            conn.execute("""
+                UPDATE channels SET
+                    token=?, page_id=?, business_account_id=?,
+                    verify_token=?, token_expires_at=?, scopes_granted=?,
+                    oauth_completed_at=?, account_display_name=?,
+                    account_picture_url=?, username=?,
+                    connected_by_user_id=?, connection_status=?,
+                    enabled=1, verified=1, reconnect_needed=0, last_error='',
+                    last_tested_at=CURRENT_TIMESTAMP
+                WHERE id=?
+            """, (page_token, page_id, account_id,
+                  verify_token, expires_at, scopes, now_iso,
+                  account_name or account_user, picture_url, account_user,
+                  user["id"], "connected",
+                  ch["id"]))
+
+        conn.commit()
+        log_activity(conn, rid, "channel_oauth_connected", "channel", platform,
+                     f"OAuth connection completed for {platform}",
+                     user_id=user["id"], user_name=user.get("name", ""))
+        conn.commit()
+
+        updated_ch = conn.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type=?", (rid, platform)
+        ).fetchone()
+        return {"ok": True, "channel": _channel_to_dict(updated_ch)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/integrations/whatsapp/embedded-signup")
+async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)):
+    """
+    Exchange a WhatsApp Embedded Signup code → access token → store connection.
+    Body: {code, waba_id, phone_number_id}
+    """
+    code            = data.get("code", "")
+    waba_id         = data.get("waba_id", "")
+    phone_number_id = data.get("phone_number_id", "")
+    rid             = user["restaurant_id"]
+
+    if not code:
+        raise HTTPException(400, "code مطلوب")
+    if not META_APP_ID:
+        raise HTTPException(400, "META_APP_ID غير مضبوط")
+
+    adapter = get_adapter("whatsapp")
+    conn    = database.get_db()
+    try:
+        try:
+            result = adapter.exchange_code(code)
+        except Exception as exc:
+            raise HTTPException(400, f"فشل تبادل التوكن: {exc}")
+
+        token      = result["access_token"]
+        expires_at = result.get("token_expires_at", "")
+
+        # Confirm phone number + get display number
+        phone_display = phone_number_id
+        if waba_id and phone_number_id:
+            try:
+                numbers = adapter.get_waba_phone_numbers(token, waba_id)
+                for n in numbers:
+                    if n["id"] == phone_number_id:
+                        phone_display = n.get("display_phone_number", phone_number_id)
+                        break
+            except Exception as exc:
+                logger.warning(f"[wa] get_waba_phone_numbers failed: {exc}")
+
+        verify_token = str(uuid.uuid4())
+        channel_data = {
+            "restaurant_id":  rid,
+            "token":          token,
+            "waba_id":        waba_id,
+            "business_account_id": waba_id,
+            "phone_number_id": phone_number_id,
+            "verify_token":   verify_token,
+        }
+
+        # Subscribe webhook
+        try:
+            adapter.subscribe_webhook(channel_data, BASE_URL)
+        except Exception as exc:
+            logger.warning(f"[wa] webhook subscribe failed: {exc}")
+
+        now_iso = datetime.utcnow().isoformat()
+        ch = _get_or_create_channel(conn, rid, "whatsapp")
+        conn.execute("""
+            UPDATE channels SET
+                token=?, waba_id=?, business_account_id=?,
+                phone_number_id=?, phone_number_display=?,
+                verify_token=?, token_expires_at=?,
+                oauth_completed_at=?, account_display_name=?,
+                connected_by_user_id=?, connection_status=?,
+                enabled=1, verified=1, reconnect_needed=0, last_error='',
+                last_tested_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (token, waba_id, waba_id,
+              phone_number_id, phone_display,
+              verify_token, expires_at,
+              now_iso, phone_display,
+              user["id"], "connected",
+              ch["id"]))
+        conn.commit()
+
+        log_activity(conn, rid, "channel_oauth_connected", "channel", "whatsapp",
+                     "WhatsApp Embedded Signup completed",
+                     user_id=user["id"], user_name=user.get("name", ""))
+        conn.commit()
+
+        updated = conn.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'", (rid,)
+        ).fetchone()
+        return {"ok": True, "channel": _channel_to_dict(updated)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/integrations/{platform}/disconnect")
+async def integrations_disconnect(platform: str, user=Depends(current_user)):
+    """Disconnect a channel — clears token and sets status to disconnected."""
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT id FROM channels WHERE restaurant_id=? AND type=?",
+            (rid, platform)
+        ).fetchone()
+        if not ch:
+            raise HTTPException(404, "Channel not found")
+        conn.execute("""
+            UPDATE channels SET
+                token='', page_id='', page_name='',
+                business_account_id='', phone_number_id='', phone_number_display='',
+                waba_id='', token_expires_at='', scopes_granted='',
+                account_display_name='', account_picture_url='',
+                connected_by_user_id='', oauth_completed_at='',
+                verify_token='', enabled=0, verified=0,
+                connection_status='disconnected', reconnect_needed=0,
+                last_error='', last_tested_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (ch["id"],))
+        conn.execute(
+            "UPDATE connection_errors SET resolved=1, resolved_at=CURRENT_TIMESTAMP "
+            "WHERE channel_id=? AND resolved=0", (ch["id"],)
+        )
+        conn.commit()
+        log_activity(conn, rid, "channel_disconnected", "channel", platform,
+                     f"Channel {platform} disconnected",
+                     user_id=user["id"], user_name=user.get("name", ""))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/integrations/{platform}/reconnect")
+async def integrations_reconnect(platform: str, user=Depends(current_user)):
+    """
+    Initiate reconnect:
+    - For oauth2 platforms: same as oauth/start
+    - For embedded_signup: returns instructions for JS to re-run the SDK
+    - For bot_token: returns current token form data
+    """
+    adapter = get_adapter(platform)
+    if not adapter:
+        raise HTTPException(400, f"Platform '{platform}' غير مدعوم")
+
+    if adapter.auth_type == "oauth2":
+        return await integrations_oauth_start({"platform": platform}, user)
+
+    if adapter.auth_type == "embedded_signup":
+        return {
+            "auth_type": "embedded_signup",
+            "meta_app_id": META_APP_ID,
+            "message": "أعد تشغيل WhatsApp Embedded Signup من خلال الزر أدناه",
+        }
+
+    raise HTTPException(400, "Use the manual form to reconnect this platform")
+
+
+@app.post("/api/integrations/{platform}/toggle")
+async def integrations_toggle(platform: str, data: dict, user=Depends(current_user)):
+    """Enable or disable a connected channel without disconnecting it."""
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT id, connection_status FROM channels WHERE restaurant_id=? AND type=?",
+            (rid, platform)
+        ).fetchone()
+        if not ch:
+            raise HTTPException(404, "Channel not found")
+        if dict(ch)["connection_status"] not in ("connected",):
+            raise HTTPException(400, "يجب ربط القناة أولاً قبل تفعيلها")
+        enabled = 1 if data.get("enabled") else 0
+        conn.execute("UPDATE channels SET enabled=? WHERE id=?", (enabled, ch["id"]))
+        conn.commit()
+        return {"ok": True, "enabled": bool(enabled)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/integrations/{platform}/errors")
+async def integrations_channel_errors(platform: str, user=Depends(current_user)):
+    """Return last 20 connection errors for this platform."""
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT ce.* FROM connection_errors ce
+            JOIN channels ch ON ce.channel_id = ch.id
+            WHERE ce.restaurant_id=? AND ce.platform=?
+            ORDER BY ce.created_at DESC LIMIT 20
+        """, (rid, platform)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ── Super Admin — Integrations Monitoring ─────────────────────────────────────
+
+@app.get("/api/super/integrations")
+async def super_integrations_list(
+    page: int = 1, limit: int = 50,
+    status_filter: str = "",
+    platform_filter: str = "",
+    admin=Depends(current_super_admin)
+):
+    """All restaurant channel connections with rich status for super admin."""
+    conn = database.get_db()
+    try:
+        offset = (page - 1) * limit
+        where_clauses = ["1=1"]
+        params: list = []
+        if status_filter:
+            where_clauses.append("ch.connection_status=?")
+            params.append(status_filter)
+        if platform_filter:
+            where_clauses.append("ch.type=?")
+            params.append(platform_filter)
+        where = " AND ".join(where_clauses)
+
+        rows = conn.execute(f"""
+            SELECT ch.*, r.name as restaurant_name, r.status as restaurant_status
+            FROM channels ch
+            JOIN restaurants r ON ch.restaurant_id = r.id
+            WHERE {where}
+            ORDER BY ch.connection_status DESC, ch.last_tested_at DESC
+            LIMIT ? OFFSET ?
+        """, params + [limit, offset]).fetchall()
+
+        total = conn.execute(f"""
+            SELECT COUNT(*) FROM channels ch
+            JOIN restaurants r ON ch.restaurant_id = r.id
+            WHERE {where}
+        """, params).fetchone()[0]
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            for f in ("token", "app_secret", "webhook_secret", "refresh_token"):
+                if d.get(f):
+                    d[f] = "****"
+            result.append(d)
+        return {"total": total, "page": page, "limit": limit, "channels": result}
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/integrations/stats")
+async def super_integrations_stats(admin=Depends(current_super_admin)):
+    """KPI counts per platform for super admin dashboard."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT type,
+                COUNT(*) as total,
+                SUM(CASE WHEN connection_status='connected' THEN 1 ELSE 0 END) as connected,
+                SUM(CASE WHEN connection_status='error'     THEN 1 ELSE 0 END) as error_count,
+                SUM(CASE WHEN reconnect_needed=1            THEN 1 ELSE 0 END) as reconnect_needed
+            FROM channels
+            GROUP BY type
+        """).fetchall()
+
+        by_platform = {}
+        for r in rows:
+            d = dict(r)
+            by_platform[d["type"]] = {
+                "total":            d["total"],
+                "connected":        d["connected"],
+                "error_count":      d["error_count"],
+                "reconnect_needed": d["reconnect_needed"],
+            }
+
+        unresolved = conn.execute(
+            "SELECT COUNT(*) FROM connection_errors WHERE resolved=0"
+        ).fetchone()[0]
+        reconnect_total = conn.execute(
+            "SELECT COUNT(*) FROM channels WHERE reconnect_needed=1"
+        ).fetchone()[0]
+
+        return {
+            "by_platform":            by_platform,
+            "total_errors_unresolved": unresolved,
+            "total_reconnect_needed":  reconnect_total,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/integrations/errors")
+async def super_integrations_errors(admin=Depends(current_super_admin)):
+    """All unresolved connection errors across all restaurants, newest first."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT ce.*, r.name as restaurant_name, ch.name as channel_name
+            FROM connection_errors ce
+            JOIN restaurants r ON ce.restaurant_id = r.id
+            LEFT JOIN channels ch ON ce.channel_id = ch.id
+            WHERE ce.resolved=0
+            ORDER BY ce.created_at DESC
+            LIMIT 100
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/integrations/{channel_id}/force-disconnect")
+async def super_force_disconnect(channel_id: str, admin=Depends(current_super_admin)):
+    """Super admin: force-disconnect a channel (clears token + disables)."""
+    conn = database.get_db()
+    try:
+        ch = conn.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
+        if not ch:
+            raise HTTPException(404, "Channel not found")
+        ch = dict(ch)
+        conn.execute("""
+            UPDATE channels SET
+                token='', enabled=0, connection_status='disconnected',
+                reconnect_needed=0, last_error='Force-disconnected by super admin',
+                last_tested_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (channel_id,))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name", ""), "force_disconnect_channel",
+                "channel", channel_id,
+                f"Force-disconnected {ch['type']} for restaurant {ch['restaurant_id']}",
+                "super")
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/integrations/{channel_id}/resolve-errors")
+async def super_resolve_errors(channel_id: str, admin=Depends(current_super_admin)):
+    """Super admin: mark all errors resolved for a channel."""
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "UPDATE connection_errors SET resolved=1, resolved_at=CURRENT_TIMESTAMP "
+            "WHERE channel_id=? AND resolved=0", (channel_id,)
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/integrations/{channel_id}/errors")
+async def super_channel_errors(channel_id: str, admin=Depends(current_super_admin)):
+    """Super admin: error log for a specific channel."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM connection_errors WHERE channel_id=? ORDER BY created_at DESC LIMIT 50",
+            (channel_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 # ── Staff Management ──────────────────────────────────────────────────────────

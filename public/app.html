@@ -638,6 +638,15 @@
 
     <!-- ═══ CHANNELS ═══ -->
     <section id="sec-channels" class="section">
+      <div class="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-white font-bold text-xl">📡 القنوات والتكاملات</h2>
+          <p class="text-slate-400 text-sm mt-1">وصّل منصاتك لاستقبال الرسائل والطلبات تلقائياً عبر الذكاء الاصطناعي</p>
+        </div>
+        <button onclick="loadChannels()" class="flex-shrink-0 text-slate-400 hover:text-white text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
+          <i class="fa-solid fa-rotate-right text-xs"></i> تحديث
+        </button>
+      </div>
       <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
     </section>
@@ -931,6 +940,79 @@
   <div id="modalBox" class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 shadow-2xl"></div>
 </div>
 
+<!-- ── OAUTH PAGE PICKER ──────────────────────────────────────── -->
+<div id="oauthPickerModal" class="hidden modal-overlay" onclick="if(event.target===this)closeOAuthPicker()">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
+    <div class="flex items-center justify-between mb-4">
+      <h3 id="oauthPickerTitle" class="text-white font-bold text-lg">اختر الصفحة</h3>
+      <button onclick="closeOAuthPicker()" class="text-slate-400 hover:text-white transition text-xl leading-none">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+    <p class="text-slate-400 text-sm mb-4">اختر الحساب الذي تريد ربطه بمطعمك:</p>
+    <div id="oauthPickerList" class="space-y-2 mb-2"></div>
+    <div id="oauthPickerConnecting" class="hidden text-center py-6">
+      <div class="spinner mx-auto mb-3"></div>
+      <p class="text-slate-400 text-sm">جاري الربط...</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── TELEGRAM BOT MODAL ─────────────────────────────────────── -->
+<div id="telegramModal" class="hidden modal-overlay" onclick="if(event.target===this)closeTelegramModal()">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 bg-sky-500 rounded-xl flex items-center justify-center">
+          <i class="fa-brands fa-telegram text-white text-xl"></i>
+        </div>
+        <h3 class="text-white font-bold text-lg">إعداد بوت Telegram</h3>
+      </div>
+      <button onclick="closeTelegramModal()" class="text-slate-400 hover:text-white transition text-xl leading-none">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+    <div class="space-y-3">
+      <div>
+        <label class="text-slate-400 text-xs block mb-1.5">توكن البوت <span class="text-red-400">*</span></label>
+        <input id="tgToken" type="password" placeholder="123456789:AABBccDDeeff..."
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-3 py-2.5 focus:border-indigo-500 font-mono">
+        <p class="text-slate-500 text-xs mt-1">احصل عليه من @BotFather على Telegram</p>
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1.5">Bot Username</label>
+        <input id="tgUsername" type="text" placeholder="@my_restaurant_bot"
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-3 py-2.5 focus:border-indigo-500">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1.5">Webhook Secret (اختياري)</label>
+        <input id="tgWebhookSecret" type="password" placeholder="مفتاح سري للتحقق من الطلبات"
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-3 py-2.5 focus:border-indigo-500 font-mono">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs block mb-1.5">Admin Chat ID (اختياري)</label>
+        <input id="tgAdminChatId" type="text" placeholder="123456789"
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-3 py-2.5 focus:border-indigo-500">
+        <p class="text-slate-500 text-xs mt-1">لاستقبال إشعارات الطلبات الجديدة</p>
+      </div>
+    </div>
+    <div id="tgWebhookUrlRow" class="mt-3 hidden bg-slate-900/60 rounded-xl p-3">
+      <p class="text-slate-500 text-xs mb-1">Webhook URL</p>
+      <p id="tgWebhookUrlText" class="text-indigo-400 text-xs font-mono break-all"></p>
+    </div>
+    <div class="flex gap-3 mt-5">
+      <button onclick="saveTelegramAndRegister()" id="tgSaveBtn"
+        class="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-semibold text-sm rounded-xl py-2.5 transition flex items-center justify-center gap-2">
+        <i class="fa-solid fa-link"></i> حفظ وتسجيل الويب هوك
+      </button>
+      <button onclick="closeTelegramModal()"
+        class="bg-slate-700 hover:bg-slate-600 text-white text-sm rounded-xl py-2.5 px-4 transition">
+        إلغاء
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
 // ── Theme ─────────────────────────────────────────────────────
@@ -1095,7 +1177,7 @@ function navigate(page) {
 }
 
 window.addEventListener('hashchange', () => {
-  const page = location.hash.replace('#', '') || 'dashboard';
+  const page = (location.hash.replace('#', '') || 'dashboard').split('?')[0];
   navigate(page);
 });
 
@@ -2342,186 +2424,397 @@ async function loadAnalytics() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-// ── Channels ──────────────────────────────────────────────────
+// ── Channels / Integrations Hub ───────────────────────────────
+let _chanPlatforms = [];
+
 async function loadChannels() {
   document.getElementById('chansLoading').classList.remove('hidden');
   document.getElementById('chansContent').classList.add('hidden');
   try {
-    const channels = await api.get('/api/channels');
-    // Use API_BASE (backend URL) for webhook URLs, not the browser origin
-    // This ensures correct URLs when frontend is hosted separately (e.g. Netlify)
-    const backendBase = (window.API_BASE || window.location.origin).replace(/\/$/, '');
-    const rid = S.user?.restaurant_id || '';
-
-    const conf = {
-      telegram: {
-        name: 'Telegram', icon: 'fa-telegram', color: 'text-blue-400',
-        webhookUrl: `${backendBase}/webhook/telegram/${rid}`,
-        fields: [
-          { id: 'token',          label: 'Bot Token',        ph: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', secret: true },
-          { id: 'bot_username',   label: 'Bot Username',     ph: '@my_restaurant_bot' },
-          { id: 'webhook_secret', label: 'Webhook Secret',   ph: 'مفتاح سري للتحقق من الطلبات', secret: true },
-          { id: 'admin_chat_id',  label: 'Admin Chat ID',    ph: '123456789' },
-        ]
-      },
-      whatsapp: {
-        name: 'WhatsApp', icon: 'fa-whatsapp', color: 'text-green-400',
-        webhookUrl: `${backendBase}/webhook/whatsapp/${rid}`,
-        fields: [
-          { id: 'token',               label: 'Access Token',        ph: 'EAAxxxxxxxxxx...', secret: true },
-          { id: 'phone_number_id',     label: 'Phone Number ID',     ph: '123456789012345' },
-          { id: 'business_account_id', label: 'Business Account ID', ph: '987654321012345' },
-          { id: 'verify_token',        label: 'Verify Token',        ph: 'my_verify_token_2024' },
-          { id: 'app_id',              label: 'App ID',              ph: '1234567890' },
-          { id: 'app_secret',          label: 'App Secret',          ph: 'abc123def456...', secret: true },
-        ]
-      },
-      instagram: {
-        name: 'Instagram', icon: 'fa-instagram', color: 'text-pink-400',
-        webhookUrl: `${backendBase}/webhook/instagram/${rid}`,
-        fields: [
-          { id: 'token',               label: 'Access Token',        ph: 'IGQVJxxxxxx...', secret: true },
-          { id: 'business_account_id', label: 'Instagram Business ID', ph: '17841400000000000' },
-          { id: 'page_id',             label: 'Facebook Page ID',    ph: '123456789012345' },
-          { id: 'verify_token',        label: 'Verify Token',        ph: 'my_verify_token_2024' },
-          { id: 'app_id',              label: 'App ID',              ph: '1234567890' },
-          { id: 'app_secret',          label: 'App Secret',          ph: 'abc123...', secret: true },
-        ]
-      },
-      facebook: {
-        name: 'Facebook', icon: 'fa-facebook', color: 'text-blue-500',
-        webhookUrl: `${backendBase}/webhook/facebook/${rid}`,
-        fields: [
-          { id: 'token',        label: 'Page Access Token', ph: 'EAAxxxxxxxxxx...', secret: true },
-          { id: 'page_id',      label: 'Page ID',           ph: '123456789012345' },
-          { id: 'verify_token', label: 'Verify Token',      ph: 'my_verify_token_2024' },
-          { id: 'app_id',       label: 'App ID',            ph: '1234567890' },
-          { id: 'app_secret',   label: 'App Secret',        ph: 'abc123...', secret: true },
-          { id: 'webhook_url',  label: 'Webhook URL (للمرجعية)', ph: 'سيظهر تلقائياً' },
-        ]
-      },
-    };
-
+    _chanPlatforms = await api.get('/api/integrations/catalog');
     const el = document.getElementById('chansContent');
-    el.innerHTML = channels.map(ch => {
-      const c = conf[ch.type] || { name: ch.type, icon: 'fa-globe', color: 'text-slate-400', fields: [], webhookUrl: '' };
-      const fieldIds = c.fields.map(f => f.id);
-      return `
-        <div class="bg-slate-800 rounded-2xl border border-slate-700 p-5">
-          <div class="flex items-center justify-between mb-4">
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center">
-                <i class="fa-brands ${c.icon} text-xl ${c.color}"></i>
-              </div>
-              <div>
-                <p class="text-white font-semibold">${c.name}</p>
-                <p class="text-xs ${ch.connection_status === 'connected' ? 'text-green-400' : ch.connection_status === 'error' ? 'text-red-400' : 'text-slate-500'}">
-                  ${ch.connection_status === 'connected' ? '✅ متصل' : ch.connection_status === 'error' ? '❌ خطأ في الاتصال' : '⚠️ لم يُختبر بعد'}
-                </p>
-              </div>
-            </div>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <span class="text-slate-500 text-xs">${ch.enabled ? 'مفعّل' : 'معطّل'}</span>
-              <div class="relative">
-                <input type="checkbox" id="ch-enabled-${ch.type}" ${ch.enabled ? 'checked' : ''} class="sr-only peer">
-                <div class="w-10 h-5 bg-slate-700 rounded-full peer peer-checked:bg-green-600 transition"></div>
-                <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
-              </div>
-            </label>
-          </div>
-          <!-- Webhook URL -->
-          ${c.webhookUrl ? `
-          <div class="mb-3 bg-slate-900/60 rounded-xl p-3 flex items-center gap-2">
-            <div class="flex-1 overflow-hidden">
-              <p class="text-slate-500 text-xs mb-0.5">Webhook URL</p>
-              <p class="text-indigo-400 text-xs font-mono truncate">${c.webhookUrl}</p>
-            </div>
-            <button onclick="copyText('${c.webhookUrl}')" class="text-slate-500 hover:text-white text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 flex-shrink-0">
-              <i class="fa-solid fa-copy"></i>
-            </button>
-          </div>` : ''}
-          <!-- Fields -->
-          <div class="space-y-2.5 mb-4">
-            ${c.fields.map(f => `
-              <div>
-                <label class="text-slate-400 text-xs mb-1 block">${f.label}</label>
-                <input id="ch-${f.id}-${ch.type}" value="${(ch[f.id]||'').replace(/"/g,'&quot;')}"
-                  placeholder="${f.ph}" type="${f.secret ? 'password' : 'text'}"
-                  class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs focus:border-indigo-500 font-mono">
-              </div>`).join('')}
-          </div>
-          <!-- Token status + last error -->
-          <div class="mb-3 space-y-1">
-            <div class="flex items-center gap-2 text-xs">
-              <span class="${ch.token ? 'text-green-400' : 'text-yellow-400'}">
-                ${ch.token ? '🔑 توكن محفوظ' : '⚠️ لا يوجد توكن — أدخل التوكن واضغط حفظ'}
-              </span>
-              ${ch.last_tested_at ? `<span class="text-slate-600">• آخر اختبار: ${new Date(ch.last_tested_at).toLocaleString('en-GB')}</span>` : ''}
-            </div>
-            ${ch.last_error ? `<div class="bg-red-900/30 border border-red-800 rounded-lg px-3 py-1.5 text-red-300 text-xs font-mono break-all">${ch.last_error}</div>` : ''}
-          </div>
-          <div class="flex gap-2 flex-wrap">
-            <button onclick="saveChannel('${ch.type}',${JSON.stringify(fieldIds)})"
-              class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-2.5 rounded-xl transition font-semibold">حفظ</button>
-            <button onclick="testChannel('${ch.type}')"
-              class="bg-slate-700 hover:bg-slate-600 text-white text-xs py-2.5 px-4 rounded-xl transition">اختبار الاتصال</button>
-            ${ch.type === 'telegram' ? `<button onclick="registerTelegramWebhook()" class="bg-green-700 hover:bg-green-600 text-white text-xs py-2.5 px-4 rounded-xl transition">تسجيل الويب هوك</button>` : ''}
-          </div>
-        </div>`;
-    }).join('');
-
+    el.innerHTML = _chanPlatforms.map(p => renderChannelCard(p)).join('');
     document.getElementById('chansLoading').classList.add('hidden');
     document.getElementById('chansContent').classList.remove('hidden');
+    handleOAuthReturn();
   } catch(e) { toast(e.message, 'error'); }
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => toast('تم النسخ!', 'success')).catch(() => toast('فشل النسخ', 'error'));
+const _PLAT_ICONS = {
+  whatsapp: 'fa-brands fa-whatsapp',
+  instagram: 'fa-brands fa-instagram',
+  facebook: 'fa-brands fa-facebook',
+  telegram: 'fa-brands fa-telegram',
+};
+const _PLAT_BG = {
+  whatsapp:  'background:#16a34a',
+  instagram: 'background:linear-gradient(135deg,#9333ea,#ec4899)',
+  facebook:  'background:#2563eb',
+  telegram:  'background:#0ea5e9',
+};
+
+function renderChannelCard(p) {
+  const isConnected = p.connection_status === 'connected';
+  const needsReconnect = p.reconnect_needed;
+  const iconClass = _PLAT_ICONS[p.platform] || 'fa-solid fa-globe';
+  const bgStyle   = _PLAT_BG[p.platform] || 'background:#475569';
+
+  // Status badge
+  let statusBadge;
+  if (needsReconnect)          statusBadge = '<span class="badge bg-yellow-500/20 text-yellow-400 text-xs">⚠️ يحتاج إعادة ربط</span>';
+  else if (isConnected)        statusBadge = '<span class="badge bg-green-500/20 text-green-400 text-xs">● متصل</span>';
+  else if (p.connection_status === 'error') statusBadge = '<span class="badge bg-red-500/20 text-red-400 text-xs">✕ خطأ</span>';
+  else                         statusBadge = '<span class="badge bg-slate-600/50 text-slate-400 text-xs">○ غير متصل</span>';
+
+  // Account info row (connected only)
+  let accountRow = '';
+  if (isConnected) {
+    const name = p.account_display_name || p.phone_number_display || p.page_name || p.display_name;
+    const pic  = p.account_picture_url;
+    const picHtml = pic
+      ? `<img src="${pic}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
+      : `<div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style="${bgStyle}"><i class="${iconClass} text-white text-sm"></i></div>`;
+    const connAt = p.oauth_completed_at
+      ? `<span class="text-slate-500 text-xs">منذ ${new Date(p.oauth_completed_at).toLocaleDateString('ar-SA')}</span>` : '';
+    accountRow = `<div class="bg-slate-900/60 rounded-xl p-3 flex items-center gap-3 mb-3">
+        ${picHtml}
+        <div class="flex-1 min-w-0"><p class="text-white text-sm font-medium truncate">${name}</p>${connAt}</div>
+        ${p.has_token ? '<i class="fa-solid fa-key text-green-400 text-xs flex-shrink-0"></i>' : ''}
+      </div>`;
+  }
+
+  // Token expiry warning
+  let expiryWarn = '';
+  if (isConnected && p.token_expires_at) {
+    const daysLeft = Math.floor((new Date(p.token_expires_at) - Date.now()) / 86400000);
+    if (daysLeft <= 7)
+      expiryWarn = `<div class="bg-yellow-900/30 border border-yellow-800/50 rounded-xl px-3 py-2 text-yellow-300 text-xs mb-3">
+        ⏳ ${daysLeft <= 0 ? 'التوكن منتهي الصلاحية — يرجى إعادة الربط' : `ينتهي التوكن خلال ${daysLeft} يوم`}
+      </div>`;
+  }
+
+  // Error / reconnect notice
+  let errorRow = '';
+  if (p.last_error)
+    errorRow = `<div class="bg-red-900/30 border border-red-800/50 rounded-xl px-3 py-2 text-red-300 text-xs mb-3 break-all">${p.last_error}</div>`;
+  else if (needsReconnect)
+    errorRow = `<div class="bg-yellow-900/20 border border-yellow-800/40 rounded-xl px-3 py-2 text-yellow-300 text-xs mb-3">⚠️ يحتاج هذا الاتصال إلى إعادة ربط</div>`;
+
+  // Webhook URL
+  let webhookRow = '';
+  if (isConnected && p.webhook_url)
+    webhookRow = `<div class="bg-slate-900/60 rounded-xl p-3 flex items-center gap-2 mb-3">
+        <div class="flex-1 overflow-hidden"><p class="text-slate-500 text-xs mb-0.5">Webhook URL</p>
+          <p class="text-indigo-400 text-xs font-mono truncate">${p.webhook_url}</p></div>
+        <button onclick="copyText('${p.webhook_url}')" class="text-slate-500 hover:text-white text-xs px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 flex-shrink-0">
+          <i class="fa-solid fa-copy"></i></button>
+      </div>`;
+
+  // Last tested
+  let testedRow = p.last_tested_at
+    ? `<p class="text-slate-600 text-xs mb-3">آخر اختبار: ${new Date(p.last_tested_at).toLocaleString('en-GB')}</p>` : '';
+
+  // Action buttons
+  let actions;
+  if (isConnected && !needsReconnect) {
+    actions = `<div class="flex gap-2 flex-wrap">
+        <label class="flex items-center gap-1.5 cursor-pointer bg-slate-700 hover:bg-slate-600 rounded-xl px-3 py-2.5 transition" title="${p.enabled ? 'تعطيل' : 'تفعيل'}">
+          <div class="relative w-8 h-4 flex-shrink-0">
+            <input type="checkbox" id="toggle-${p.platform}" ${p.enabled ? 'checked' : ''}
+              onchange="toggleChannel('${p.platform}',this.checked)" class="sr-only peer">
+            <div class="w-8 h-4 bg-slate-600 rounded-full peer peer-checked:bg-green-600 transition"></div>
+            <div class="absolute top-0.5 right-0.5 w-3 h-3 bg-white rounded-full peer-checked:translate-x-[-16px] transition"></div>
+          </div>
+          <span class="text-xs text-slate-300" id="toggleLabel-${p.platform}">${p.enabled ? 'مفعّل' : 'معطّل'}</span>
+        </label>
+        <button onclick="testChannelConnection('${p.platform}')"
+          class="bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs py-2 px-3 rounded-xl transition">
+          <i class="fa-solid fa-plug-circle-check mr-1"></i>اختبار
+        </button>
+        <button onclick="disconnectChannel('${p.platform}')"
+          class="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs py-2 px-3 rounded-xl transition">
+          <i class="fa-solid fa-link-slash mr-1"></i>فصل
+        </button>
+      </div>`;
+  } else {
+    const btnLabel = needsReconnect ? 'إعادة الربط' : 'ربط الحساب';
+    const btnIcon  = needsReconnect ? 'fa-rotate' : 'fa-link';
+    const btnCls   = needsReconnect ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-indigo-600 hover:bg-indigo-500';
+    actions = `<div class="flex gap-2 flex-wrap">
+        <button onclick="startConnect('${p.platform}')"
+          class="${btnCls} text-white text-xs py-2.5 px-4 rounded-xl transition font-semibold flex items-center gap-2 flex-1 justify-center">
+          <i class="fa-solid ${btnIcon}"></i> ${btnLabel}
+        </button>
+        ${needsReconnect ? `<button onclick="disconnectChannel('${p.platform}')"
+          class="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs py-2 px-3 rounded-xl transition">
+          <i class="fa-solid fa-link-slash"></i></button>` : ''}
+      </div>`;
+  }
+
+  return `<div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+      <div class="px-5 py-4 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style="${bgStyle}">
+            <i class="${iconClass} text-white text-xl"></i>
+          </div>
+          <div>
+            <p class="text-white font-semibold text-sm">${p.display_name}</p>
+            <p class="text-slate-500 text-xs">${p.description}</p>
+          </div>
+        </div>
+        ${statusBadge}
+      </div>
+      <div class="px-5 pb-5">
+        ${accountRow}${expiryWarn}${errorRow}${webhookRow}${testedRow}${actions}
+      </div>
+    </div>`;
 }
 
-async function saveChannel(type, fieldIds) {
-  const data = { enabled: document.getElementById(`ch-enabled-${type}`)?.checked };
-  fieldIds.forEach(f => {
-    const el = document.getElementById(`ch-${f}-${type}`);
-    if (el) data[f] = el.value;
-  });
+// ── Connect / disconnect / toggle ─────────────────────────────
+async function startConnect(platform) {
+  if (platform === 'telegram') { openTelegramModal(); return; }
   try {
-    await api.put(`/api/channels/${type}`, data);
-    toast(`تم حفظ إعدادات ${type}`, 'success');
+    toast('جاري التحضير...', 'info');
+    const r = await api.post(`/api/integrations/${platform}/reconnect`);
+    if (r.auth_url) {
+      window.location.href = r.auth_url;
+    } else if (r.auth_type === 'embedded_signup') {
+      startWAEmbeddedSignup(r.meta_app_id);
+    }
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function disconnectChannel(platform) {
+  if (!confirm(`هل أنت متأكد من فصل ${platform}؟`)) return;
+  try {
+    await api.post(`/api/integrations/${platform}/disconnect`);
+    toast(`تم فصل ${platform}`, 'success');
     loadChannels();
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function _autoSaveChannel(type) {
-  const data = { enabled: document.getElementById(`ch-enabled-${type}`)?.checked || false };
-  document.querySelectorAll(`[id^="ch-"][id$="-${type}"]`).forEach(el => {
-    if (el.id === `ch-enabled-${type}`) return;
-    // Don't overwrite a saved secret with an empty value — user may not have re-entered it
-    if (el.type === 'password' && !el.value.trim()) return;
-    const field = el.id.replace(/^ch-/, '').replace(new RegExp(`-${type}$`), '');
-    data[field] = el.value;
-  });
-  await api.put(`/api/channels/${type}`, data);
+async function toggleChannel(platform, enabled) {
+  try {
+    const r = await api.post(`/api/integrations/${platform}/toggle`, { enabled });
+    const lbl = document.getElementById(`toggleLabel-${platform}`);
+    if (lbl) lbl.textContent = r.enabled ? 'مفعّل' : 'معطّل';
+  } catch(e) {
+    toast(e.message, 'error');
+    loadChannels();
+  }
 }
 
-async function testChannel(type) {
+async function testChannelConnection(platform) {
   try {
     toast('جاري الاختبار...', 'info');
-    await _autoSaveChannel(type);
-    const r = await api.post(`/api/channels/${type}/test`);
+    const r = await api.post(`/api/channels/${platform}/test`);
     toast(r.message, r.success ? 'success' : 'error');
     loadChannels();
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function registerTelegramWebhook() {
+// ── OAuth return handler ───────────────────────────────────────
+async function handleOAuthReturn() {
+  const hash = window.location.hash;
+  const qIdx = hash.indexOf('?');
+  if (qIdx === -1) return;
+  const params   = new URLSearchParams(hash.slice(qIdx + 1));
+  const session  = params.get('oauth_session');
+  const error    = params.get('error');
+  const platform = params.get('platform');
+  history.replaceState(null, '', window.location.pathname + '#channels');
+  if (error) {
+    const msgs = {
+      access_denied:   'تم رفض الإذن من المنصة',
+      invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',
+      state_expired:   'انتهت مهلة جلسة OAuth — حاول مجدداً',
+      exchange_failed: 'فشل تبادل الرمز مع المنصة',
+    };
+    toast(msgs[error] || `خطأ OAuth: ${error}`, 'error');
+    return;
+  }
+  if (session && platform) {
+    try {
+      const data = await api.get(`/api/integrations/oauth/pending/${session}`);
+      if (data.pages && data.pages.length > 0) {
+        showPagePicker(session, data.pages, platform);
+      } else {
+        toast('تم الربط بنجاح!', 'success');
+        loadChannels();
+      }
+    } catch(e) { toast(`فشل استكمال الربط: ${e.message}`, 'error'); }
+  }
+}
+
+// ── OAuth page picker modal ────────────────────────────────────
+let _pickerState = { state_id: '', platform: '' };
+
+function showPagePicker(stateId, pages, platform) {
+  _pickerState = { state_id: stateId, platform };
+  const titles = { facebook: 'اختر صفحة Facebook', instagram: 'اختر حساب Instagram' };
+  document.getElementById('oauthPickerTitle').textContent = titles[platform] || 'اختر الحساب';
+  document.getElementById('oauthPickerConnecting').classList.add('hidden');
+  document.getElementById('oauthPickerList').innerHTML = pages.map(pg => {
+    const name  = pg.name || pg.account_name || pg.username || 'حساب';
+    const id    = pg.id || pg.account_id || '';
+    const token = pg.access_token || '';
+    const pic   = pg.picture_url || '';
+    const pageId = pg.page_id || id;
+    const picHtml = pic
+      ? `<img src="${pic}" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
+      : `<div class="w-10 h-10 bg-slate-600 rounded-full flex items-center justify-center flex-shrink-0"><i class="fa-brands fa-${platform} text-slate-300 text-lg"></i></div>`;
+    const payload = JSON.stringify({ id, name, token, pageId, pic }).replace(/'/g, '&#39;');
+    return `<button onclick="selectPage('${payload.replace(/"/g,'&quot;')}')"
+        class="w-full flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-xl p-3 transition text-right">
+        ${picHtml}
+        <div class="flex-1 min-w-0 text-right">
+          <p class="text-white font-medium text-sm truncate">${name}</p>
+          <p class="text-slate-400 text-xs">ID: ${id}</p>
+        </div>
+        <i class="fa-solid fa-chevron-left text-slate-500 flex-shrink-0"></i>
+      </button>`;
+  }).join('');
+  document.getElementById('oauthPickerModal').classList.remove('hidden');
+}
+
+async function selectPage(payloadStr) {
+  let pg;
+  try { pg = JSON.parse(payloadStr); } catch(e) { toast('بيانات غير صالحة', 'error'); return; }
+  document.getElementById('oauthPickerList').innerHTML = '';
+  document.getElementById('oauthPickerConnecting').classList.remove('hidden');
   try {
-    toast('جاري تسجيل الويب هوك...', 'info');
-    await _autoSaveChannel('telegram');
-    const r = await api.post('/api/channels/telegram/register-webhook');
-    toast(r.message, 'success');
+    await api.post('/api/integrations/oauth/select-page', {
+      state_id:     _pickerState.state_id,
+      platform:     _pickerState.platform,
+      page_id:      pg.pageId || pg.id,
+      page_name:    pg.name,
+      page_token:   pg.token,
+      picture_url:  pg.pic,
+      account_id:   pg.id,
+      account_name: pg.name,
+    });
+    closeOAuthPicker();
+    toast(`تم ربط ${_pickerState.platform} بنجاح! 🎉`, 'success');
+    loadChannels();
+  } catch(e) { closeOAuthPicker(); toast(`فشل ربط الصفحة: ${e.message}`, 'error'); }
+}
+
+function closeOAuthPicker() {
+  document.getElementById('oauthPickerModal').classList.add('hidden');
+}
+
+// ── WhatsApp Embedded Signup ──────────────────────────────────
+let _waData = {};
+
+function startWAEmbeddedSignup(appId) {
+  if (!appId) { toast('META_APP_ID غير مضبوط في الخادم', 'error'); return; }
+  window._META_APP_ID = appId;
+  _waData = {};
+  if (typeof FB === 'undefined') {
+    window.fbAsyncInit = function() {
+      FB.init({ appId, cookie: true, xfbml: false, version: 'v20.0' });
+      _launchWADialog();
+    };
+    if (!document.getElementById('facebook-jssdk')) {
+      const s = document.createElement('script');
+      s.id = 'facebook-jssdk';
+      s.src = 'https://connect.facebook.net/en_US/sdk.js';
+      document.head.appendChild(s);
+    }
+  } else {
+    FB.init({ appId, cookie: true, xfbml: false, version: 'v20.0' });
+    _launchWADialog();
+  }
+}
+
+function _launchWADialog() {
+  window.addEventListener('message', function _waMsgHandler(event) {
+    try {
+      const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+      if (d?.type === 'WA_EMBEDDED_SIGNUP' && d?.event === 'FINISH') {
+        _waData.waba_id         = d.data?.waba_id || '';
+        _waData.phone_number_id = d.data?.phone_number_id || '';
+        window.removeEventListener('message', _waMsgHandler);
+      }
+    } catch(e) {}
+  });
+  FB.login(function(resp) {
+    if (resp.authResponse?.code) {
+      _waData.code = resp.authResponse.code;
+      setTimeout(_submitWASignup, 600);
+    } else {
+      toast('لم يكتمل إعداد WhatsApp', 'error');
+    }
+  }, {
+    config_id: window._META_APP_ID,
+    response_type: 'code',
+    override_default_response_type: true,
+    extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
+  });
+}
+
+async function _submitWASignup() {
+  if (!_waData.code) return;
+  try {
+    toast('جاري ربط WhatsApp...', 'info');
+    await api.post('/api/integrations/whatsapp/embedded-signup', {
+      code:            _waData.code,
+      waba_id:         _waData.waba_id || '',
+      phone_number_id: _waData.phone_number_id || '',
+    });
+    toast('تم ربط WhatsApp بنجاح! 🎉', 'success');
     loadChannels();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Telegram modal ────────────────────────────────────────────
+function openTelegramModal() {
+  const p = _chanPlatforms.find(x => x.platform === 'telegram') || {};
+  document.getElementById('tgToken').value = '';
+  document.getElementById('tgUsername').value = p.bot_username || '';
+  document.getElementById('tgWebhookSecret').value = '';
+  document.getElementById('tgAdminChatId').value = '';
+  const rid = S.user?.restaurant_id || '';
+  const whUrl = `${(window.API_BASE || location.origin).replace(/\/$/, '')}/webhook/telegram/${rid}`;
+  document.getElementById('tgWebhookUrlText').textContent = whUrl;
+  document.getElementById('tgWebhookUrlRow').classList.remove('hidden');
+  const btn = document.getElementById('tgSaveBtn');
+  btn.disabled = false;
+  btn.innerHTML = '<i class="fa-solid fa-link mr-1"></i> حفظ وتسجيل الويب هوك';
+  document.getElementById('telegramModal').classList.remove('hidden');
+}
+
+function closeTelegramModal() {
+  document.getElementById('telegramModal').classList.add('hidden');
+}
+
+async function saveTelegramAndRegister() {
+  const token    = document.getElementById('tgToken').value.trim();
+  const username = document.getElementById('tgUsername').value.trim();
+  const secret   = document.getElementById('tgWebhookSecret').value.trim();
+  const adminId  = document.getElementById('tgAdminChatId').value.trim();
+  if (!token) { toast('يرجى إدخال توكن البوت', 'error'); return; }
+  const btn = document.getElementById('tgSaveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> جاري الحفظ...';
+  try {
+    await api.put('/api/channels/telegram', {
+      token, bot_username: username, webhook_secret: secret,
+      admin_chat_id: adminId, enabled: true,
+    });
+    const r = await api.post('/api/channels/telegram/register-webhook');
+    closeTelegramModal();
+    toast(r.message || 'تم ربط Telegram بنجاح! 🎉', 'success');
+    loadChannels();
+  } catch(e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-link mr-1"></i> حفظ وتسجيل الويب هوك';
+  }
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast('تم النسخ!', 'success')).catch(() => toast('فشل النسخ', 'error'));
 }
 
 // ── Settings ──────────────────────────────────────────────────
@@ -2990,7 +3283,7 @@ async function init() {
     }
   });
 
-  const page = location.hash.replace('#', '') || 'dashboard';
+  const page = (location.hash.replace('#', '') || 'dashboard').split('?')[0];
   navigate(page);
 }
 

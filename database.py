@@ -530,7 +530,70 @@ def _migrate_db(conn):
         # products + customers — track last modification time
         ("products",   "updated_at", "TEXT DEFAULT ''"),
         ("customers",  "updated_at", "TEXT DEFAULT ''"),
+        # channels — OAuth & connection lifecycle columns
+        ("channels", "token_expires_at",       "TEXT DEFAULT ''"),
+        ("channels", "refresh_token",          "TEXT DEFAULT ''"),
+        ("channels", "reconnect_needed",       "INTEGER DEFAULT 0"),
+        ("channels", "account_picture_url",    "TEXT DEFAULT ''"),
+        ("channels", "account_display_name",   "TEXT DEFAULT ''"),
+        ("channels", "scopes_granted",         "TEXT DEFAULT ''"),
+        ("channels", "oauth_completed_at",     "TEXT DEFAULT ''"),
+        ("channels", "waba_id",                "TEXT DEFAULT ''"),
+        ("channels", "connected_by_user_id",   "TEXT DEFAULT ''"),
+        ("channels", "phone_number_display",   "TEXT DEFAULT ''"),
+        # oauth_states — pages_json stores Meta page list during OAuth handshake
+        ("oauth_states", "pages_json",         "TEXT DEFAULT '[]'"),
     ]
+
+    # Create oauth_states table (CSRF + session for OAuth flows)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            state TEXT UNIQUE NOT NULL,
+            code_verifier TEXT DEFAULT '',
+            redirect_back TEXT DEFAULT '',
+            pages_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            used INTEGER DEFAULT 0,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_states_state ON oauth_states(state)"
+        )
+    except Exception:
+        pass
+
+    # Create connection_errors table (error log per channel)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_errors (
+            id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            restaurant_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            error_code TEXT DEFAULT '',
+            error_message TEXT NOT NULL,
+            error_type TEXT DEFAULT 'webhook',
+            request_payload TEXT DEFAULT '',
+            resolved INTEGER DEFAULT 0,
+            resolved_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conn_errors_channel ON connection_errors(channel_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conn_errors_restaurant ON connection_errors(restaurant_id, resolved, created_at)"
+        )
+    except Exception:
+        pass
 
     # Create bot_corrections table (structured corrections with metadata)
     conn.execute("""
