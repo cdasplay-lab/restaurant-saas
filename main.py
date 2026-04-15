@@ -33,8 +33,9 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL        = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
-META_APP_ID     = os.getenv("META_APP_ID", "")
-META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+META_APP_ID      = os.getenv("META_APP_ID", "")
+META_APP_SECRET  = os.getenv("META_APP_SECRET", "")
+META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "")
 
 # ── Simple in-process rate limiter (no external dependency) ──────────────────
 import time as _time
@@ -3465,6 +3466,148 @@ async def mark_all_read(user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"message": "تم تحديد الكل كمقروء"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── UNIFIED META WEBHOOK  /webhooks/meta ─────────────────────────────────────
+# Single callback URL for ALL Meta platforms (FB, IG, WA).
+# Configure once in Meta Developer Console → Webhooks → Callback URL.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/webhooks/meta")
+async def meta_webhook_verify(req: Request):
+    """
+    Meta sends a GET to verify the webhook URL.
+    Paste META_VERIFY_TOKEN into Meta Developer Console → Verify Token.
+    """
+    p = dict(req.query_params)
+    mode      = p.get("hub.mode", "")
+    token     = p.get("hub.verify_token", "")
+    challenge = p.get("hub.challenge", "")
+
+    if mode == "subscribe" and token and META_VERIFY_TOKEN and token == META_VERIFY_TOKEN:
+        logger.info("[webhooks/meta] verification OK")
+        return PlainTextResponse(challenge)
+
+    logger.warning(f"[webhooks/meta] verify failed — mode={mode} token_match={token==META_VERIFY_TOKEN}")
+    raise HTTPException(403, "Webhook verification failed")
+
+
+@app.post("/webhooks/meta")
+async def meta_webhook_unified(req: Request, background_tasks: BackgroundTasks):
+    """
+    Unified incoming-event handler for Facebook, Instagram, and WhatsApp.
+    Routes each event to the correct restaurant by looking up page_id or
+    phone_number_id in the channels table.
+    """
+    raw_body = await req.body()
+
+    # HMAC signature check using app-level META_APP_SECRET
+    sig_header = req.headers.get("X-Hub-Signature-256", "")
+    if sig_header and META_APP_SECRET:
+        import hmac as _hmac, hashlib as _hashlib
+        expected = "sha256=" + _hmac.new(
+            META_APP_SECRET.encode(), raw_body, _hashlib.sha256
+        ).hexdigest()
+        if not _hmac.compare_digest(expected, sig_header):
+            logger.warning("[webhooks/meta] invalid HMAC signature — rejecting")
+            raise HTTPException(403, "Invalid signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except Exception:
+        raise HTTPException(400, "Invalid JSON payload")
+
+    background_tasks.add_task(_route_meta_event, payload)
+    return {"status": "ok"}
+
+
+def _route_meta_event(payload: dict) -> None:
+    """
+    Route a unified Meta event to the correct restaurant webhook handler.
+
+    Routing key:
+      WhatsApp → phone_number_id per change entry
+      Instagram → page_id (entry.id)
+      Facebook  → page_id (entry.id)
+    """
+    object_type = payload.get("object", "")
+    conn = database.get_db()
+    try:
+        if object_type == "whatsapp_business_account":
+            for entry in payload.get("entry", []):
+                for change in entry.get("changes", []):
+                    phone_id = (change.get("value") or {}).get("metadata", {}).get("phone_number_id", "")
+                    if not phone_id:
+                        continue
+                    row = conn.execute(
+                        "SELECT restaurant_id FROM channels WHERE phone_number_id=? AND type='whatsapp' AND enabled=1",
+                        (phone_id,)
+                    ).fetchone()
+                    if row:
+                        logger.info(f"[webhooks/meta] WA → restaurant={row['restaurant_id'][:8]}")
+                        webhooks.handle_whatsapp(row["restaurant_id"], payload)
+
+        elif object_type == "instagram":
+            for entry in payload.get("entry", []):
+                page_id = entry.get("id", "")
+                if not page_id:
+                    continue
+                row = conn.execute(
+                    "SELECT restaurant_id FROM channels WHERE page_id=? AND type='instagram' AND enabled=1",
+                    (page_id,)
+                ).fetchone()
+                if row:
+                    logger.info(f"[webhooks/meta] IG → restaurant={row['restaurant_id'][:8]}")
+                    webhooks.handle_instagram(row["restaurant_id"], payload)
+
+        elif object_type == "page":
+            for entry in payload.get("entry", []):
+                page_id = entry.get("id", "")
+                if not page_id:
+                    continue
+                row = conn.execute(
+                    "SELECT restaurant_id FROM channels WHERE page_id=? AND type='facebook' AND enabled=1",
+                    (page_id,)
+                ).fetchone()
+                if row:
+                    logger.info(f"[webhooks/meta] FB → restaurant={row['restaurant_id'][:8]}")
+                    webhooks.handle_facebook(row["restaurant_id"], payload)
+
+        else:
+            logger.debug(f"[webhooks/meta] unknown object type: {object_type}")
+
+    except Exception as exc:
+        logger.error(f"[webhooks/meta] routing error: {exc}")
+    finally:
+        conn.close()
+
+
+# ── Connect shortcuts (authenticated — used by dashboard connect buttons) ─────
+
+@app.post("/connect/facebook")
+async def connect_facebook(user=Depends(current_user)):
+    """Start Facebook OAuth flow. Returns {auth_url, state}."""
+    return await integrations_oauth_start({"platform": "facebook"}, user)
+
+
+@app.post("/connect/instagram")
+async def connect_instagram(user=Depends(current_user)):
+    """Start Instagram OAuth flow. Returns {auth_url, state}."""
+    return await integrations_oauth_start({"platform": "instagram"}, user)
+
+
+@app.post("/connect/whatsapp")
+async def connect_whatsapp(user=Depends(current_user)):
+    """Return WhatsApp Embedded Signup config. Returns {meta_app_id, auth_type}."""
+    if not META_APP_ID:
+        raise HTTPException(400, "META_APP_ID غير مضبوط في .env")
+    return {
+        "auth_type":    "embedded_signup",
+        "meta_app_id":  META_APP_ID,
+        "webhook_url":  f"{BASE_URL}/webhooks/meta",
+        "verify_token": META_VERIFY_TOKEN,
+    }
 
 
 # ── Webhooks (public, no auth) ────────────────────────────────────────────────
