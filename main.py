@@ -3617,14 +3617,13 @@ def _route_meta_event(payload: dict) -> None:
 # ── Connect shortcuts (authenticated — used by dashboard connect buttons) ─────
 
 @app.get("/api/debug/oauth-log")
-async def debug_oauth_log(user=Depends(current_user)):
-    """Show last 5 OAuth attempts for this restaurant — helps diagnose connect failures."""
+async def debug_oauth_log():
+    """Show last 10 OAuth attempts across all restaurants — public debug endpoint."""
     conn = database.get_db()
     try:
         rows = conn.execute(
-            "SELECT platform, state, used, expires_at, pages_json, created_at "
-            "FROM oauth_states WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 5",
-            (user["restaurant_id"],)
+            "SELECT platform, state, used, expires_at, pages_json, created_at, restaurant_id "
+            "FROM oauth_states ORDER BY created_at DESC LIMIT 10"
         ).fetchall()
         result = []
         for r in rows:
@@ -3648,8 +3647,7 @@ async def debug_oauth_log(user=Depends(current_user)):
             })
         ch_rows = conn.execute(
             "SELECT type, connection_status, last_error, reconnect_needed FROM channels "
-            "WHERE restaurant_id=? AND type IN ('facebook','instagram','whatsapp')",
-            (user["restaurant_id"],)
+            "WHERE type IN ('facebook','instagram','whatsapp') ORDER BY updated_at DESC LIMIT 10"
         ).fetchall()
         channels = [dict(r) for r in ch_rows]
         return {"oauth_attempts": result, "channels": channels}

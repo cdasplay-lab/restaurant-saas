@@ -2649,19 +2649,19 @@ async function handleOAuthReturn() {
       if (data.pages && data.pages.length > 0) {
         showPagePicker(session, data.pages, platform);
       } else if (platform === 'facebook') {
+        await loadChannels();
         const banner = document.createElement('div');
         banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
-        banner.innerHTML = `<strong>⚠️ لم يتم العثور على صفحات Facebook</strong><br><span class="text-xs opacity-80">يجب أن يكون حسابك مدير لصفحة Facebook لربط Messenger</span>`;
+        banner.innerHTML = `<strong>⚠️ لم يتم العثور على صفحات Facebook</strong><br><span class="text-xs opacity-80">يجب أن يكون حسابك مدير لصفحة Facebook Business لربط Messenger — أنشئ صفحة من <a href="https://www.facebook.com/pages/create" target="_blank" class="underline text-red-300">هنا</a> ثم أعد المحاولة</span>`;
         const content = document.getElementById('chansContent');
         if (content) content.prepend(banner);
-        loadChannels();
       } else if (platform === 'instagram') {
+        await loadChannels();
         const banner = document.createElement('div');
         banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
-        banner.innerHTML = `<strong>⚠️ لم يتم العثور على حسابات Instagram Business</strong><br><span class="text-xs opacity-80">تأكد من ربط حسابك بصفحة Facebook</span>`;
+        banner.innerHTML = `<strong>⚠️ لم يتم العثور على حسابات Instagram Business</strong><br><span class="text-xs opacity-80">تأكد من أن حسابك Instagram Professional (Business أو Creator) ومربوط بصفحة Facebook</span>`;
         const content = document.getElementById('chansContent');
         if (content) content.prepend(banner);
-        loadChannels();
       } else {
         toast('تم الربط بنجاح!', 'success');
         loadChannels();
