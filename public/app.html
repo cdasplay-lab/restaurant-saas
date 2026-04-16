@@ -643,10 +643,16 @@
           <h2 class="text-white font-bold text-xl">📡 القنوات والتكاملات</h2>
           <p class="text-slate-400 text-sm mt-1">وصّل منصاتك لاستقبال الرسائل والطلبات تلقائياً عبر الذكاء الاصطناعي</p>
         </div>
-        <button onclick="loadChannels()" class="flex-shrink-0 text-slate-400 hover:text-white text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
-          <i class="fa-solid fa-rotate-right text-xs"></i> تحديث
-        </button>
+        <div class="flex gap-2 flex-shrink-0">
+          <button onclick="runSystemCheck()" class="text-yellow-400 hover:text-yellow-300 text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
+            <i class="fa-solid fa-stethoscope text-xs"></i> فحص النظام
+          </button>
+          <button onclick="loadChannels()" class="text-slate-400 hover:text-white text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
+            <i class="fa-solid fa-rotate-right text-xs"></i> تحديث
+          </button>
+        </div>
       </div>
+      <div id="sysCheckResult" class="hidden mb-5"></div>
       <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
     </section>
@@ -2422,6 +2428,78 @@ async function loadAnalytics() {
     document.getElementById('analyticsLoading').classList.add('hidden');
     document.getElementById('analyticsContent').classList.remove('hidden');
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── System Check ──────────────────────────────────────────────
+async function runSystemCheck() {
+  const box = document.getElementById('sysCheckResult');
+  box.className = 'mb-5 bg-slate-800 border border-slate-700 rounded-xl p-4 text-sm space-y-2';
+  box.innerHTML = '<div class="text-slate-400 flex items-center gap-2"><div class="spinner w-4 h-4"></div> جاري الفحص…</div>';
+  box.classList.remove('hidden');
+
+  const checks = [];
+  const ok  = (label, note='') => checks.push(`<div class="flex items-start gap-2"><span class="text-green-400 mt-0.5">✅</span><span class="text-slate-200">${label}${note ? `<span class="text-slate-400 text-xs"> — ${note}</span>` : ''}</span></div>`);
+  const err = (label, note='') => checks.push(`<div class="flex items-start gap-2"><span class="text-red-400 mt-0.5">❌</span><span class="text-slate-200">${label}${note ? `<span class="text-red-300 text-xs"> — ${note}</span>` : ''}</span></div>`);
+  const warn= (label, note='') => checks.push(`<div class="flex items-start gap-2"><span class="text-yellow-400 mt-0.5">⚠️</span><span class="text-slate-200">${label}${note ? `<span class="text-yellow-300 text-xs"> — ${note}</span>` : ''}</span></div>`);
+
+  // 1. JavaScript
+  ok('JavaScript شغال');
+
+  // 2. Session
+  const token = localStorage.getItem('auth_token');
+  if (token) ok('المستخدم مسجل دخول', `token: ${token.slice(0,12)}…`);
+  else { err('لا يوجد session — سجّل دخول أولاً'); box.innerHTML = checks.join(''); return; }
+
+  // 3. Meta env vars
+  try {
+    const meta = await fetch(`${window.API_BASE||''}/api/debug/meta`).then(r=>r.json());
+    if (meta.meta_app_id_set)     ok('META_APP_ID موجود', meta.meta_app_id_prefix);
+    else                          err('META_APP_ID غير موجود في Render');
+    if (meta.meta_app_secret_set) ok('META_APP_SECRET موجود');
+    else                          err('META_APP_SECRET غير موجود في Render');
+    if (meta.meta_verify_token_set) ok('META_VERIFY_TOKEN موجود');
+    else                            warn('META_VERIFY_TOKEN غير موجود');
+    if (meta.meta_wa_config_id_set) ok('META_WA_CONFIG_ID موجود');
+    else                            warn('META_WA_CONFIG_ID غير موجود — WhatsApp لن يعمل');
+    ok('BASE_URL', meta.base_url);
+    ok('Callback URL', meta.redirect_uri);
+    ok('Webhook URL', meta.webhook_url);
+  } catch(e) { err('فشل جلب /api/debug/meta', e.message); }
+
+  // 4. /connect/facebook
+  try {
+    const r = await fetch(`${window.API_BASE||''}/connect/facebook`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+    const d = await r.json();
+    if (r.ok && d.auth_url) {
+      ok('/connect/facebook يرجع auth_url', d.auth_url.slice(0,60)+'…');
+      // Check state was saved
+      if (d.state) ok('OAuth state تم حفظه', d.state.slice(0,12)+'…');
+    } else {
+      err('/connect/facebook فشل', d.detail || r.status);
+    }
+  } catch(e) { err('/connect/facebook — خطأ شبكة', e.message); }
+
+  // 5. OAuth log
+  try {
+    const log = await fetch(`${window.API_BASE||''}/api/debug/oauth-log`).then(r=>r.json());
+    const attempts = log.oauth_attempts || [];
+    const last = attempts[0];
+    if (!last) warn('لا توجد محاولات OAuth مسبقة');
+    else if (last.used === 1 && last.pages_count > 0)
+      ok(`آخر OAuth: platform=${last.platform}`, `used=1, pages=${last.pages_count} ✓`);
+    else if (last.used === 1 && last.pages_count === 0)
+      err(`آخر OAuth: اكتمل لكن pages=0`, `platform=${last.platform} — ما في صفحات Facebook في حسابك`);
+    else
+      err(`آخر OAuth: لم يكتمل (used=0)`, `platform=${last.platform} — Callback لم يُستدعَ`);
+    // Channel errors
+    const fbCh = (log.channels||[]).find(c=>c.type==='facebook');
+    if (fbCh?.last_error) err('آخر خطأ Facebook', fbCh.last_error.slice(0,80));
+  } catch(e) { warn('oauth-log غير متاح', e.message); }
+
+  box.innerHTML = `<div class="font-semibold text-white mb-3">نتيجة فحص النظام</div>` + checks.join('');
 }
 
 // ── Channels / Integrations Hub ───────────────────────────────
