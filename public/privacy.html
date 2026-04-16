@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Restaurant SaaS</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      line-height: 1.7;
+      padding: 0 1rem;
+    }
+    header {
+      background: #1e293b;
+      color: #fff;
+      padding: 2rem 1rem;
+      text-align: center;
+    }
+    header h1 { font-size: 1.75rem; font-weight: 700; }
+    header p  { margin-top: 0.4rem; color: #94a3b8; font-size: 0.9rem; }
+    main {
+      max-width: 780px;
+      margin: 2.5rem auto 4rem;
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      padding: 2.5rem 2rem;
+    }
+    h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 2rem 0 0.6rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 2px solid #e2e8f0;
+    }
+    h2:first-of-type { margin-top: 0; }
+    p  { margin-bottom: 0.9rem; color: #334155; }
+    ul { margin: 0.5rem 0 0.9rem 1.4rem; color: #334155; }
+    li { margin-bottom: 0.4rem; }
+    a  { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .updated {
+      font-size: 0.82rem;
+      color: #64748b;
+      margin-bottom: 1.8rem;
+      display: block;
+    }
+    footer {
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.82rem;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Privacy Policy</h1>
+  <p>Restaurant SaaS — AI-powered customer support for restaurants</p>
+</header>
+
+<main>
+  <span class="updated">Last updated: April 2026</span>
+
+  <h2>1. Introduction</h2>
+  <p>
+    Restaurant SaaS ("we", "us", or "our") operates a multi-tenant SaaS platform that helps
+    restaurant businesses automate customer support and order-taking through messaging channels
+    including WhatsApp, Instagram, Facebook Messenger, and Telegram.
+  </p>
+  <p>
+    This Privacy Policy explains what data we collect, how we use it, and your rights regarding
+    that data. By using our platform, you agree to the practices described here.
+  </p>
+
+  <h2>2. Information We Collect</h2>
+  <p>We collect the following categories of information:</p>
+  <ul>
+    <li>
+      <strong>Account information:</strong> Name, email address, phone number, and password
+      (hashed) when a restaurant registers on our platform.
+    </li>
+    <li>
+      <strong>Restaurant data:</strong> Menu items, product details, pricing, and business
+      information entered by restaurant owners.
+    </li>
+    <li>
+      <strong>Customer messages:</strong> Messages sent by end-customers through connected
+      channels (WhatsApp, Instagram, Facebook, Telegram) for the purpose of automated
+      response and order processing.
+    </li>
+    <li>
+      <strong>Order data:</strong> Orders extracted from customer conversations, including
+      items ordered and order status.
+    </li>
+    <li>
+      <strong>Channel credentials:</strong> Access tokens and configuration data necessary
+      to connect messaging platforms. These are stored securely and never exposed publicly.
+    </li>
+    <li>
+      <strong>Usage data:</strong> Log data, API request metadata, and analytics used to
+      improve the service.
+    </li>
+  </ul>
+
+  <h2>3. How We Use Data</h2>
+  <p>We use collected data solely to operate and improve the platform:</p>
+  <ul>
+    <li>To power the AI chatbot and respond to customer messages on behalf of restaurants.</li>
+    <li>To process and track orders placed through messaging channels.</li>
+    <li>To deliver analytics and performance reports to restaurant owners.</li>
+    <li>To authenticate users and secure access to dashboard features.</li>
+    <li>To maintain service reliability and debug technical issues.</li>
+  </ul>
+  <p>
+    We do <strong>not</strong> use customer messages for advertising, profiling, or any purpose
+    beyond providing the service the restaurant has configured.
+  </p>
+
+  <h2>4. Data Sharing</h2>
+  <p>We do not sell, rent, or trade personal data. Data is shared only in these cases:</p>
+  <ul>
+    <li>
+      <strong>OpenAI:</strong> Customer messages are sent to OpenAI's API to generate automated
+      replies. OpenAI's data usage policies apply. Messages are not used to train OpenAI models
+      under the API terms.
+    </li>
+    <li>
+      <strong>Meta Platforms (Facebook, Instagram, WhatsApp):</strong> We exchange data with
+      Meta APIs as required to send and receive messages through connected channels.
+    </li>
+    <li>
+      <strong>Telegram:</strong> Messages are exchanged via the Telegram Bot API in accordance
+      with Telegram's terms of service.
+    </li>
+    <li>
+      <strong>Cloud infrastructure:</strong> Data is hosted on secure cloud providers
+      (Render, Supabase) under standard data processing agreements.
+    </li>
+    <li>
+      <strong>Legal requirements:</strong> We may disclose data if required by law or to
+      protect the rights and safety of our users.
+    </li>
+  </ul>
+
+  <h2>5. Data Retention</h2>
+  <p>
+    We retain data for as long as a restaurant account is active. Conversation messages and
+    order history are kept to allow restaurant owners to review past interactions. If a
+    restaurant account is deleted, associated data is removed within 30 days, except where
+    retention is required by law.
+  </p>
+  <p>
+    Access tokens for messaging platforms are retained only while the channel is connected
+    and are immediately cleared upon disconnection.
+  </p>
+
+  <h2>6. Data Security</h2>
+  <p>
+    We take reasonable technical measures to protect stored data, including:
+  </p>
+  <ul>
+    <li>HTTPS encryption for all data in transit.</li>
+    <li>Passwords stored as bcrypt hashes — never in plain text.</li>
+    <li>JWT-based authentication with configurable session expiry.</li>
+    <li>Access tokens stored server-side and never exposed to browser clients.</li>
+    <li>Subscription guard middleware that prevents unauthorized API access.</li>
+  </ul>
+  <p>
+    No system is completely secure. In the event of a data breach affecting user rights,
+    we will notify affected users promptly.
+  </p>
+
+  <h2>7. Meta Platform Data</h2>
+  <p>
+    When a restaurant connects a Facebook Page, Instagram account, or WhatsApp Business
+    number through our platform, we access only the permissions granted during the OAuth
+    flow. Specifically:
+  </p>
+  <ul>
+    <li>We read and send messages on behalf of the connected page/account.</li>
+    <li>We do not access personal Facebook profiles of end-users.</li>
+    <li>We do not store Meta user IDs beyond what is necessary for conversation continuity.</li>
+    <li>Restaurants can disconnect their Meta channels at any time from the dashboard,
+        which immediately revokes our access tokens.</li>
+  </ul>
+  <p>
+    Our use of Meta APIs complies with the
+    <a href="https://developers.facebook.com/terms/" target="_blank" rel="noopener">
+      Meta Platform Terms
+    </a>
+    and the
+    <a href="https://developers.facebook.com/policy/" target="_blank" rel="noopener">
+      Meta Platform Policies
+    </a>.
+  </p>
+
+  <h2>8. User Rights</h2>
+  <p>Restaurant owners and their customers have the following rights:</p>
+  <ul>
+    <li><strong>Access:</strong> Request a copy of data we hold about you.</li>
+    <li><strong>Correction:</strong> Update inaccurate or incomplete data through the dashboard.</li>
+    <li><strong>Deletion:</strong> Request deletion of your account and associated data.</li>
+    <li><strong>Portability:</strong> Export your restaurant's data in a readable format.</li>
+    <li><strong>Objection:</strong> Object to specific uses of your data.</li>
+  </ul>
+  <p>To exercise any of these rights, contact us at the email below.</p>
+
+  <h2>9. Cookies</h2>
+  <p>
+    Our web dashboard uses <code>localStorage</code> to store authentication tokens on your
+    device. We do not use third-party tracking cookies or advertising cookies.
+  </p>
+
+  <h2>10. Children's Privacy</h2>
+  <p>
+    Our platform is intended for business use by restaurant operators. We do not knowingly
+    collect data from individuals under 18 years of age.
+  </p>
+
+  <h2>11. Changes to This Policy</h2>
+  <p>
+    We may update this policy from time to time. Material changes will be communicated via
+    email or a notice on the dashboard. Continued use of the platform after changes constitutes
+    acceptance of the updated policy.
+  </p>
+
+  <h2>12. Contact Us</h2>
+  <p>For privacy-related questions or data requests, contact:</p>
+  <ul>
+    <li><strong>Email:</strong> <a href="mailto:cdasplay@gmail.com">cdasplay@gmail.com</a></li>
+    <li><strong>Platform:</strong> Restaurant SaaS</li>
+  </ul>
+</main>
+
+<footer>
+  &copy; 2026 Restaurant SaaS. All rights reserved.
+</footer>
+
+</body>
+</html>

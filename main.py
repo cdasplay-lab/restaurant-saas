@@ -4953,6 +4953,11 @@ async def public_menu_page(restaurant_id: str):
     return FileResponse("public/menu.html")
 
 
+@app.get("/privacy")
+async def privacy_policy():
+    return FileResponse("public/privacy.html")
+
+
 @app.get("/api/public/menu/{restaurant_id}")
 async def public_menu_data(restaurant_id: str):
     """Public menu endpoint — no authentication required."""
