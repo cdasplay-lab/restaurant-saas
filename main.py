@@ -3649,7 +3649,7 @@ async def debug_oauth_log():
             })
         ch_rows = conn.execute(
             "SELECT type, connection_status, last_error, reconnect_needed FROM channels "
-            "WHERE type IN ('facebook','instagram','whatsapp') ORDER BY updated_at DESC LIMIT 10"
+            "WHERE type IN ('facebook','instagram','whatsapp') LIMIT 10"
         ).fetchall()
         channels = [dict(r) for r in ch_rows]
         return {"oauth_attempts": result, "channels": channels}
