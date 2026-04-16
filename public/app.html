@@ -2446,7 +2446,7 @@ async function runSystemCheck() {
   ok('JavaScript شغال');
 
   // 2. Session
-  const token = localStorage.getItem('auth_token');
+  const token = localStorage.getItem('token');
   if (token) ok('المستخدم مسجل دخول', `token: ${token.slice(0,12)}…`);
   else { err('لا يوجد session — سجّل دخول أولاً'); box.innerHTML = checks.join(''); return; }
 
