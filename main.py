@@ -3604,7 +3604,7 @@ def _route_meta_event(payload: dict) -> None:
 # ── Connect shortcuts (authenticated — used by dashboard connect buttons) ─────
 
 @app.get("/api/debug/meta")
-async def debug_meta_config(user=Depends(current_user)):
+async def debug_meta_config():
     """
     Returns Meta integration config status (no secrets exposed).
     Use this to verify environment variables are set correctly in production.
