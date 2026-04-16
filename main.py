@@ -2479,7 +2479,7 @@ async def integrations_oauth_start(data: dict, user=Depends(current_user)):
     if not META_APP_ID:
         raise HTTPException(400, "META_APP_ID غير مضبوط — أضفه إلى ملف .env")
 
-    redirect_uri = f"{BASE_URL}/api/integrations/oauth/callback"
+    redirect_uri = f"{BASE_URL}/oauth/meta/callback"
     state        = _secrets.token_hex(24)
     expires_at   = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
 
@@ -2535,7 +2535,7 @@ async def integrations_oauth_callback(
         conn.commit()
 
         platform     = row["platform"]
-        redirect_uri = f"{BASE_URL}/api/integrations/oauth/callback"
+        redirect_uri = f"{BASE_URL}/oauth/meta/callback"
         adapter      = get_adapter(platform)
 
         try:
@@ -2564,6 +2564,17 @@ async def integrations_oauth_callback(
         return _Redirect(f"{frontend_base}/#channels?oauth_session={state}&platform={platform}")
     finally:
         conn.close()
+
+
+@app.get("/oauth/meta/callback")
+async def oauth_meta_callback_clean(
+    code:  str = None,
+    state: str = None,
+    error: str = None,
+    req: Request = None
+):
+    """Clean public OAuth callback URL registered with Meta Developer Console."""
+    return await integrations_oauth_callback(code=code, state=state, error=error, req=req)
 
 
 @app.get("/api/integrations/oauth/pending/{state_id}")

@@ -2500,9 +2500,9 @@ function renderChannelCard(p) {
   else if (needsReconnect)
     errorRow = `<div class="bg-yellow-900/20 border border-yellow-800/40 rounded-xl px-3 py-2 text-yellow-300 text-xs mb-3">⚠️ يحتاج هذا الاتصال إلى إعادة ربط</div>`;
 
-  // Webhook URL
+  // Webhook URL — only show for Telegram (Meta webhooks are automatic)
   let webhookRow = '';
-  if (isConnected && p.webhook_url)
+  if (isConnected && p.webhook_url && p.platform === 'telegram')
     webhookRow = `<div class="bg-slate-900/60 rounded-xl p-3 flex items-center gap-2 mb-3">
         <div class="flex-1 overflow-hidden"><p class="text-slate-500 text-xs mb-0.5">Webhook URL</p>
           <p class="text-indigo-400 text-xs font-mono truncate">${p.webhook_url}</p></div>
@@ -2512,7 +2512,7 @@ function renderChannelCard(p) {
 
   // Last tested
   let testedRow = p.last_tested_at
-    ? `<p class="text-slate-600 text-xs mb-3">آخر اختبار: ${new Date(p.last_tested_at).toLocaleString('en-GB')}</p>` : '';
+    ? `<p class="text-slate-600 text-xs mb-3">آخر مزامنة: ${new Date(p.last_tested_at).toLocaleString('en-GB')}</p>` : '';
 
   // Action buttons
   let actions;
@@ -2537,7 +2537,9 @@ function renderChannelCard(p) {
         </button>
       </div>`;
   } else {
-    const btnLabel = needsReconnect ? 'إعادة الربط' : 'ربط الحساب';
+    const _platformLabels = { facebook: 'Facebook', instagram: 'Instagram', whatsapp: 'WhatsApp', telegram: 'Telegram' };
+    const _pName = _platformLabels[p.platform] || p.display_name;
+    const btnLabel = needsReconnect ? `إعادة ربط ${_pName}` : `ربط ${_pName}`;
     const btnIcon  = needsReconnect ? 'fa-rotate' : 'fa-link';
     const btnCls   = needsReconnect ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-indigo-600 hover:bg-indigo-500';
     actions = `<div class="flex gap-2 flex-wrap">
@@ -2575,7 +2577,7 @@ async function startConnect(platform) {
   if (platform === 'telegram') { openTelegramModal(); return; }
   try {
     toast('جاري التحضير...', 'info');
-    const r = await api.post(`/api/integrations/${platform}/reconnect`);
+    const r = await api.post(`/connect/${platform}`);
     if (r.auth_url) {
       window.location.href = r.auth_url;
     } else if (r.auth_type === 'embedded_signup') {
