@@ -2695,16 +2695,17 @@ async function testChannelConnection(platform) {
 
 // ── OAuth return handler ───────────────────────────────────────
 async function handleOAuthReturn() {
-  const hash = window.location.hash;
-  const qIdx = hash.indexOf('?');
-  if (qIdx === -1) return;
-  const params   = new URLSearchParams(hash.slice(qIdx + 1));
-  const session  = params.get('oauth_session');
-  const error    = params.get('error');
-  const platform = params.get('platform');
+  // Read from query params (backend redirects with ?oauth_session=...#channels)
+  const qp      = new URLSearchParams(window.location.search);
+  const session  = qp.get('oauth_session');
+  const error    = qp.get('oauth_error');
+  const platform = qp.get('platform');
+  const hint_raw = qp.get('hint');
+  if (!session && !error) return;
+  // Clean URL immediately
   history.replaceState(null, '', window.location.pathname + '#channels');
   if (error) {
-    const hint = params.get('hint') ? decodeURIComponent(params.get('hint')) : '';
+    const hint = hint_raw ? decodeURIComponent(hint_raw) : '';
     const msgs = {
       access_denied:   'تم رفض الإذن من المنصة',
       invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',

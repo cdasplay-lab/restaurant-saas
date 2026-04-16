@@ -2517,8 +2517,9 @@ async def integrations_oauth_callback(
 
     frontend_base = BASE_URL
 
+    # Use query params (not hash fragment) so redirect is preserved by proxies/browsers
     if error or not state or not code:
-        return _Redirect(f"{frontend_base}/#channels?error=access_denied")
+        return _Redirect(f"{frontend_base}/?oauth_error=access_denied#channels")
 
     conn = database.get_db()
     try:
@@ -2527,11 +2528,11 @@ async def integrations_oauth_callback(
             (state,)
         ).fetchone()
         if not row:
-            return _Redirect(f"{frontend_base}/#channels?error=invalid_state")
+            return _Redirect(f"{frontend_base}/?oauth_error=invalid_state#channels")
 
         row = dict(row)
         if row["expires_at"] < datetime.utcnow().isoformat():
-            return _Redirect(f"{frontend_base}/#channels?error=state_expired")
+            return _Redirect(f"{frontend_base}/?oauth_error=state_expired#channels")
 
         # Mark used
         conn.execute("UPDATE oauth_states SET used=1 WHERE state=?", (state,))
@@ -2562,7 +2563,7 @@ async def integrations_oauth_callback(
                 pass
             from urllib.parse import quote as _quote
             hint = _quote(err_str[:120], safe="")
-            return _Redirect(f"{frontend_base}/#channels?error=exchange_failed&hint={hint}")
+            return _Redirect(f"{frontend_base}/?oauth_error=exchange_failed&hint={hint}#channels")
 
         # Store pages/accounts in oauth_states so the picker endpoint can return them
         pages_json = json.dumps(result.get("pages") or result.get("accounts") or [])
@@ -2581,7 +2582,8 @@ async def integrations_oauth_callback(
         conn.commit()
 
         # Redirect back with state ID as session token (the JS will call /pending/{state})
-        return _Redirect(f"{frontend_base}/#channels?oauth_session={state}&platform={platform}")
+        # Use query params (not hash fragment) — fragment can be stripped by proxies
+        return _Redirect(f"{frontend_base}/?oauth_session={state}&platform={platform}#channels")
     finally:
         conn.close()
 
