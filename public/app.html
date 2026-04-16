@@ -2640,6 +2640,12 @@ async function handleOAuthReturn() {
       const data = await api.get(`/api/integrations/oauth/pending/${session}`);
       if (data.pages && data.pages.length > 0) {
         showPagePicker(session, data.pages, platform);
+      } else if (platform === 'facebook') {
+        toast('لم يتم العثور على صفحات Facebook — يجب أن يكون حسابك مدير لصفحة Facebook لربط Messenger', 'error');
+        loadChannels();
+      } else if (platform === 'instagram') {
+        toast('لم يتم العثور على حسابات Instagram Business — تأكد من ربط حسابك بصفحة Facebook', 'error');
+        loadChannels();
       } else {
         toast('تم الربط بنجاح!', 'success');
         loadChannels();
@@ -2657,15 +2663,16 @@ function showPagePicker(stateId, pages, platform) {
   document.getElementById('oauthPickerTitle').textContent = titles[platform] || 'اختر الحساب';
   document.getElementById('oauthPickerConnecting').classList.add('hidden');
   document.getElementById('oauthPickerList').innerHTML = pages.map(pg => {
-    const name  = pg.name || pg.account_name || pg.username || 'حساب';
-    const id    = pg.id || pg.account_id || '';
-    const token = pg.access_token || '';
-    const pic   = pg.picture_url || '';
-    const pageId = pg.page_id || id;
-    const picHtml = pic
+    const name     = pg.name || pg.account_name || pg.username || 'حساب';
+    const id       = pg.id || pg.account_id || '';
+    const token    = pg.access_token || pg.page_token || '';   // Instagram uses page_token, Facebook uses access_token
+    const pic      = pg.picture_url || '';
+    const pageId   = pg.page_id || id;
+    const username = pg.username || '';
+    const picHtml  = pic
       ? `<img src="${pic}" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
       : `<div class="w-10 h-10 bg-slate-600 rounded-full flex items-center justify-center flex-shrink-0"><i class="fa-brands fa-${platform} text-slate-300 text-lg"></i></div>`;
-    const payload = JSON.stringify({ id, name, token, pageId, pic }).replace(/'/g, '&#39;');
+    const payload = JSON.stringify({ id, name, token, pageId, pic, username }).replace(/'/g, '&#39;');
     return `<button onclick="selectPage('${payload.replace(/"/g,'&quot;')}')"
         class="w-full flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-xl p-3 transition text-right">
         ${picHtml}
@@ -2686,14 +2693,15 @@ async function selectPage(payloadStr) {
   document.getElementById('oauthPickerConnecting').classList.remove('hidden');
   try {
     await api.post('/api/integrations/oauth/select-page', {
-      state_id:     _pickerState.state_id,
-      platform:     _pickerState.platform,
-      page_id:      pg.pageId || pg.id,
-      page_name:    pg.name,
-      page_token:   pg.token,
-      picture_url:  pg.pic,
-      account_id:   pg.id,
-      account_name: pg.name,
+      state_id:         _pickerState.state_id,
+      platform:         _pickerState.platform,
+      page_id:          pg.pageId || pg.id,
+      page_name:        pg.name,
+      page_token:       pg.token,
+      picture_url:      pg.pic,
+      account_id:       pg.id,
+      account_name:     pg.name,
+      account_username: pg.username || '',
     });
     closeOAuthPicker();
     toast(`تم ربط ${_pickerState.platform} بنجاح! 🎉`, 'success');
