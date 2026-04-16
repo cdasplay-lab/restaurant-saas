@@ -2581,7 +2581,7 @@ async function startConnect(platform) {
     if (r.auth_url) {
       window.location.href = r.auth_url;
     } else if (r.auth_type === 'embedded_signup') {
-      startWAEmbeddedSignup(r.meta_app_id);
+      startWAEmbeddedSignup(r.meta_app_id, r.config_id);
     }
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -2626,13 +2626,14 @@ async function handleOAuthReturn() {
   const platform = params.get('platform');
   history.replaceState(null, '', window.location.pathname + '#channels');
   if (error) {
+    const hint = params.get('hint') ? ` (${decodeURIComponent(params.get('hint'))})` : '';
     const msgs = {
       access_denied:   'تم رفض الإذن من المنصة',
       invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',
       state_expired:   'انتهت مهلة جلسة OAuth — حاول مجدداً',
-      exchange_failed: 'فشل تبادل الرمز مع المنصة',
+      exchange_failed: `فشل تبادل الرمز مع Meta${hint}`,
     };
-    toast(msgs[error] || `خطأ OAuth: ${error}`, 'error');
+    toast(msgs[error] || `خطأ OAuth: ${error}${hint}`, 'error');
     return;
   }
   if (session && platform) {
@@ -2716,9 +2717,11 @@ function closeOAuthPicker() {
 // ── WhatsApp Embedded Signup ──────────────────────────────────
 let _waData = {};
 
-function startWAEmbeddedSignup(appId) {
+function startWAEmbeddedSignup(appId, configId) {
   if (!appId) { toast('META_APP_ID غير مضبوط في الخادم', 'error'); return; }
-  window._META_APP_ID = appId;
+  if (!configId) { toast('META_WA_CONFIG_ID غير مضبوط — أضفه في Render من Meta Business Manager', 'error'); return; }
+  window._META_APP_ID    = appId;
+  window._META_CONFIG_ID = configId;
   _waData = {};
   if (typeof FB === 'undefined') {
     window.fbAsyncInit = function() {
@@ -2756,7 +2759,7 @@ function _launchWADialog() {
       toast('لم يكتمل إعداد WhatsApp', 'error');
     }
   }, {
-    config_id: window._META_APP_ID,
+    config_id: window._META_CONFIG_ID,          // Configuration ID from Meta Business Manager (not APP_ID)
     response_type: 'code',
     override_default_response_type: true,
     extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },

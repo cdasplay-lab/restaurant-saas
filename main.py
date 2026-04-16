@@ -33,9 +33,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL        = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
-META_APP_ID      = os.getenv("META_APP_ID", "")
-META_APP_SECRET  = os.getenv("META_APP_SECRET", "")
-META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "")
+META_APP_ID        = os.getenv("META_APP_ID", "")
+META_APP_SECRET    = os.getenv("META_APP_SECRET", "")
+META_VERIFY_TOKEN  = os.getenv("META_VERIFY_TOKEN", "")
+# WhatsApp Embedded Signup Configuration ID (different from APP_ID)
+# Get from: Meta Business Manager → Apps → Your App → Facebook Login for Business → Create Configuration
+META_WA_CONFIG_ID  = os.getenv("META_WA_CONFIG_ID", "")
 
 # ── Simple in-process rate limiter (no external dependency) ──────────────────
 import time as _time
@@ -2541,8 +2544,12 @@ async def integrations_oauth_callback(
         try:
             result = adapter.exchange_code(code, redirect_uri)
         except Exception as exc:
-            logger.error(f"[oauth] exchange_code failed platform={platform}: {exc}")
-            return _Redirect(f"{frontend_base}/#channels?error=exchange_failed")
+            err_str = str(exc)
+            logger.error(f"[oauth] exchange_code failed platform={platform} redirect_uri={redirect_uri} error={err_str}")
+            # Include a short hint so the frontend can show a useful message
+            from urllib.parse import quote as _quote
+            hint = _quote(err_str[:120], safe="")
+            return _Redirect(f"{frontend_base}/#channels?error=exchange_failed&hint={hint}")
 
         # Store pages/accounts in oauth_states so the picker endpoint can return them
         pages_json = json.dumps(result.get("pages") or result.get("accounts") or [])
@@ -3596,6 +3603,25 @@ def _route_meta_event(payload: dict) -> None:
 
 # ── Connect shortcuts (authenticated — used by dashboard connect buttons) ─────
 
+@app.get("/api/debug/meta")
+async def debug_meta_config(user=Depends(current_user)):
+    """
+    Returns Meta integration config status (no secrets exposed).
+    Use this to verify environment variables are set correctly in production.
+    """
+    return {
+        "base_url":               BASE_URL,
+        "redirect_uri":           f"{BASE_URL}/oauth/meta/callback",
+        "webhook_url":            f"{BASE_URL}/webhooks/meta",
+        "meta_app_id_set":        bool(META_APP_ID),
+        "meta_app_id_prefix":     META_APP_ID[:6] + "…" if META_APP_ID else "",
+        "meta_app_secret_set":    bool(META_APP_SECRET),
+        "meta_verify_token_set":  bool(META_VERIFY_TOKEN),
+        "meta_wa_config_id_set":  bool(META_WA_CONFIG_ID),
+        "meta_wa_config_id_prefix": META_WA_CONFIG_ID[:6] + "…" if META_WA_CONFIG_ID else "NOT SET — WhatsApp Embedded Signup will fail",
+    }
+
+
 @app.post("/connect/facebook")
 async def connect_facebook(user=Depends(current_user)):
     """Start Facebook OAuth flow. Returns {auth_url, state}."""
@@ -3610,12 +3636,15 @@ async def connect_instagram(user=Depends(current_user)):
 
 @app.post("/connect/whatsapp")
 async def connect_whatsapp(user=Depends(current_user)):
-    """Return WhatsApp Embedded Signup config. Returns {meta_app_id, auth_type}."""
+    """Return WhatsApp Embedded Signup config. Returns {meta_app_id, config_id, auth_type}."""
     if not META_APP_ID:
         raise HTTPException(400, "META_APP_ID غير مضبوط في .env")
+    if not META_WA_CONFIG_ID:
+        raise HTTPException(400, "META_WA_CONFIG_ID غير مضبوط — أضفه من Meta Business Manager → Facebook Login for Business → Configuration ID")
     return {
         "auth_type":    "embedded_signup",
         "meta_app_id":  META_APP_ID,
+        "config_id":    META_WA_CONFIG_ID,
         "webhook_url":  f"{BASE_URL}/webhooks/meta",
         "verify_token": META_VERIFY_TOKEN,
     }
