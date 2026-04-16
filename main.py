@@ -3616,6 +3616,47 @@ def _route_meta_event(payload: dict) -> None:
 
 # ── Connect shortcuts (authenticated — used by dashboard connect buttons) ─────
 
+@app.get("/api/debug/oauth-log")
+async def debug_oauth_log(user=Depends(current_user)):
+    """Show last 5 OAuth attempts for this restaurant — helps diagnose connect failures."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT platform, state, used, expires_at, pages_json, created_at "
+            "FROM oauth_states WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 5",
+            (user["restaurant_id"],)
+        ).fetchall()
+        result = []
+        for r in rows:
+            r = dict(r)
+            pj = r.get("pages_json") or ""
+            try:
+                parsed = json.loads(pj) if pj else {}
+                pages_count = len(parsed.get("pages", []))
+                has_token   = bool(parsed.get("access_token", ""))
+            except Exception:
+                pages_count = -1
+                has_token   = False
+            result.append({
+                "platform":     r["platform"],
+                "used":         r["used"],
+                "expires_at":   r["expires_at"],
+                "created_at":   r.get("created_at", ""),
+                "pages_count":  pages_count,
+                "has_token":    has_token,
+                "pages_json_len": len(pj),
+            })
+        ch_rows = conn.execute(
+            "SELECT type, connection_status, last_error, reconnect_needed FROM channels "
+            "WHERE restaurant_id=? AND type IN ('facebook','instagram','whatsapp')",
+            (user["restaurant_id"],)
+        ).fetchall()
+        channels = [dict(r) for r in ch_rows]
+        return {"oauth_attempts": result, "channels": channels}
+    finally:
+        conn.close()
+
+
 @app.get("/api/debug/meta")
 async def debug_meta_config():
     """
