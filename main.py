@@ -2546,7 +2546,20 @@ async def integrations_oauth_callback(
         except Exception as exc:
             err_str = str(exc)
             logger.error(f"[oauth] exchange_code failed platform={platform} redirect_uri={redirect_uri} error={err_str}")
-            # Include a short hint so the frontend can show a useful message
+            # Write error to channel card so it's visible in the dashboard
+            try:
+                _ch = conn.execute(
+                    "SELECT id FROM channels WHERE restaurant_id=? AND type=?",
+                    (row["restaurant_id"], platform)
+                ).fetchone()
+                if _ch:
+                    conn.execute(
+                        "UPDATE channels SET last_error=?, reconnect_needed=1, connection_status='error' WHERE id=?",
+                        (f"OAuth فشل: {err_str[:200]}", _ch["id"])
+                    )
+                    conn.commit()
+            except Exception:
+                pass
             from urllib.parse import quote as _quote
             hint = _quote(err_str[:120], safe="")
             return _Redirect(f"{frontend_base}/#channels?error=exchange_failed&hint={hint}")

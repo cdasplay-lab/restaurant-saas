@@ -2626,14 +2626,21 @@ async function handleOAuthReturn() {
   const platform = params.get('platform');
   history.replaceState(null, '', window.location.pathname + '#channels');
   if (error) {
-    const hint = params.get('hint') ? ` (${decodeURIComponent(params.get('hint'))})` : '';
+    const hint = params.get('hint') ? decodeURIComponent(params.get('hint')) : '';
     const msgs = {
       access_denied:   'تم رفض الإذن من المنصة',
       invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',
       state_expired:   'انتهت مهلة جلسة OAuth — حاول مجدداً',
-      exchange_failed: `فشل تبادل الرمز مع Meta${hint}`,
+      exchange_failed: `فشل ربط Meta`,
     };
-    toast(msgs[error] || `خطأ OAuth: ${error}${hint}`, 'error');
+    const mainMsg = msgs[error] || `خطأ: ${error}`;
+    const fullMsg = hint ? `${mainMsg}: ${hint}` : mainMsg;
+    // Show as persistent banner above channel cards
+    const banner = document.createElement('div');
+    banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4 break-all';
+    banner.innerHTML = `<strong>⚠️ ${mainMsg}</strong>${hint ? `<br><span class="text-xs opacity-80">${hint}</span>` : ''}`;
+    const content = document.getElementById('chansContent');
+    if (content) content.prepend(banner);
     return;
   }
   if (session && platform) {
@@ -2642,10 +2649,18 @@ async function handleOAuthReturn() {
       if (data.pages && data.pages.length > 0) {
         showPagePicker(session, data.pages, platform);
       } else if (platform === 'facebook') {
-        toast('لم يتم العثور على صفحات Facebook — يجب أن يكون حسابك مدير لصفحة Facebook لربط Messenger', 'error');
+        const banner = document.createElement('div');
+        banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
+        banner.innerHTML = `<strong>⚠️ لم يتم العثور على صفحات Facebook</strong><br><span class="text-xs opacity-80">يجب أن يكون حسابك مدير لصفحة Facebook لربط Messenger</span>`;
+        const content = document.getElementById('chansContent');
+        if (content) content.prepend(banner);
         loadChannels();
       } else if (platform === 'instagram') {
-        toast('لم يتم العثور على حسابات Instagram Business — تأكد من ربط حسابك بصفحة Facebook', 'error');
+        const banner = document.createElement('div');
+        banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
+        banner.innerHTML = `<strong>⚠️ لم يتم العثور على حسابات Instagram Business</strong><br><span class="text-xs opacity-80">تأكد من ربط حسابك بصفحة Facebook</span>`;
+        const content = document.getElementById('chansContent');
+        if (content) content.prepend(banner);
         loadChannels();
       } else {
         toast('تم الربط بنجاح!', 'success');
