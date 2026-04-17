@@ -2514,7 +2514,6 @@ async function loadChannels() {
     el.innerHTML = _chanPlatforms.map(p => renderChannelCard(p)).join('');
     document.getElementById('chansLoading').classList.add('hidden');
     document.getElementById('chansContent').classList.remove('hidden');
-    handleOAuthReturn();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -2694,62 +2693,87 @@ async function testChannelConnection(platform) {
 }
 
 // ── OAuth return handler ───────────────────────────────────────
-async function handleOAuthReturn() {
-  // Check query params first (new backend), then hash fragment (old backend)
-  const qp       = new URLSearchParams(window.location.search);
-  const hashStr  = window.location.hash;
-  const hqIdx    = hashStr.indexOf('?');
-  const hqp      = hqIdx >= 0 ? new URLSearchParams(hashStr.slice(hqIdx + 1)) : new URLSearchParams();
+let _oauthHandled = false;
 
-  const session  = qp.get('oauth_session')  || hqp.get('oauth_session');
-  const error    = qp.get('oauth_error')    || hqp.get('error');
-  const platform = qp.get('platform')       || hqp.get('platform');
-  const hint_raw = qp.get('hint')           || hqp.get('hint');
-  if (!session && !error) return;
-  // Clean URL immediately
+async function handleOAuthReturn() {
+  if (_oauthHandled) return;
+
+  const qp      = new URLSearchParams(window.location.search);
+  const hashStr = window.location.hash;
+  const hqIdx   = hashStr.indexOf('?');
+  const hqp     = hqIdx >= 0 ? new URLSearchParams(hashStr.slice(hqIdx + 1)) : new URLSearchParams();
+
+  const session  = qp.get('oauth_session') || hqp.get('oauth_session');
+  const error    = qp.get('oauth_error')   || hqp.get('error');
+  const platform = qp.get('platform')      || hqp.get('platform');
+  const hint_raw = qp.get('hint')          || hqp.get('hint');
+
+  console.log('[oauth] handleOAuthReturn called');
+  console.log('[oauth] window.location.search:', window.location.search);
+  console.log('[oauth] window.location.hash:', window.location.hash);
+  console.log('[oauth] session:', session, '| error:', error, '| platform:', platform);
+
+  if (!session && !error) {
+    console.log('[oauth] nothing to handle, returning');
+    return;
+  }
+
+  _oauthHandled = true;
   history.replaceState(null, '', window.location.pathname + '#channels');
+
   if (error) {
-    const hint = hint_raw ? decodeURIComponent(hint_raw) : '';
-    const msgs = {
+    const hint    = hint_raw ? decodeURIComponent(hint_raw) : '';
+    const msgs    = {
       access_denied:   'تم رفض الإذن من المنصة',
       invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',
       state_expired:   'انتهت مهلة جلسة OAuth — حاول مجدداً',
-      exchange_failed: `فشل ربط Meta`,
+      exchange_failed: 'فشل ربط Meta',
     };
     const mainMsg = msgs[error] || `خطأ: ${error}`;
-    const fullMsg = hint ? `${mainMsg}: ${hint}` : mainMsg;
-    // Show as persistent banner above channel cards
+    console.log('[oauth] error path:', error, hint);
+    await loadChannels();
     const banner = document.createElement('div');
     banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4 break-all';
     banner.innerHTML = `<strong>⚠️ ${mainMsg}</strong>${hint ? `<br><span class="text-xs opacity-80">${hint}</span>` : ''}`;
-    const content = document.getElementById('chansContent');
-    if (content) content.prepend(banner);
+    document.getElementById('chansContent')?.prepend(banner);
     return;
   }
-  if (session && platform) {
-    try {
-      const data = await api.get(`/api/integrations/oauth/pending/${session}`);
-      if (data.pages && data.pages.length > 0) {
-        showPagePicker(session, data.pages, platform);
-      } else if (platform === 'facebook') {
-        await loadChannels();
+
+  if (!session || !platform) {
+    console.warn('[oauth] session or platform missing, aborting');
+    return;
+  }
+
+  console.log('[oauth] fetching pending session:', session);
+  try {
+    const data  = await api.get(`/api/integrations/oauth/pending/${session}`);
+    console.log('[oauth] pending response:', JSON.stringify(data));
+    const pages = Array.isArray(data?.pages) ? data.pages : [];
+    console.log('[oauth] pages count:', pages.length);
+
+    if (pages.length > 0) {
+      console.log('[oauth] showing page picker');
+      await loadChannels();
+      showPagePicker(session, pages, platform);
+    } else {
+      console.warn('[oauth] no pages returned for platform:', platform);
+      await loadChannels();
+      const msgs = {
+        facebook:  `<strong>⚠️ لم يتم العثور على صفحات Facebook</strong><br><span class="text-xs opacity-80">يجب أن يكون حسابك مدير لصفحة Facebook Business لربط Messenger — أنشئ صفحة من <a href="https://www.facebook.com/pages/create" target="_blank" class="underline text-red-300">هنا</a> ثم أعد المحاولة</span>`,
+        instagram: `<strong>⚠️ لم يتم العثور على حسابات Instagram Business</strong><br><span class="text-xs opacity-80">تأكد من أن حسابك Instagram Professional (Business أو Creator) ومربوط بصفحة Facebook</span>`,
+      };
+      if (msgs[platform]) {
         const banner = document.createElement('div');
         banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
-        banner.innerHTML = `<strong>⚠️ لم يتم العثور على صفحات Facebook</strong><br><span class="text-xs opacity-80">يجب أن يكون حسابك مدير لصفحة Facebook Business لربط Messenger — أنشئ صفحة من <a href="https://www.facebook.com/pages/create" target="_blank" class="underline text-red-300">هنا</a> ثم أعد المحاولة</span>`;
-        const content = document.getElementById('chansContent');
-        if (content) content.prepend(banner);
-      } else if (platform === 'instagram') {
-        await loadChannels();
-        const banner = document.createElement('div');
-        banner.className = 'bg-red-900/60 border border-red-500 rounded-xl px-4 py-3 text-red-200 text-sm mb-4';
-        banner.innerHTML = `<strong>⚠️ لم يتم العثور على حسابات Instagram Business</strong><br><span class="text-xs opacity-80">تأكد من أن حسابك Instagram Professional (Business أو Creator) ومربوط بصفحة Facebook</span>`;
-        const content = document.getElementById('chansContent');
-        if (content) content.prepend(banner);
+        banner.innerHTML = msgs[platform];
+        document.getElementById('chansContent')?.prepend(banner);
       } else {
         toast('تم الربط بنجاح!', 'success');
-        loadChannels();
       }
-    } catch(e) { toast(`فشل استكمال الربط: ${e.message}`, 'error'); }
+    }
+  } catch(e) {
+    console.error('[oauth] pending fetch failed:', e.message, e);
+    toast(`فشل استكمال الربط: ${e.message}`, 'error');
   }
 }
 
@@ -3394,8 +3418,18 @@ async function init() {
     }
   });
 
+  const _oauthSession = new URLSearchParams(location.search).get('oauth_session');
+  const _oauthError   = new URLSearchParams(location.search).get('oauth_error');
   const page = (location.hash.replace('#', '') || 'dashboard').split('?')[0];
-  navigate(page);
+
+  if (_oauthSession || _oauthError) {
+    console.log('[oauth] OAuth session detected on init:', _oauthSession || _oauthError);
+    if (page !== 'channels') navigate('channels');
+    else navigate('channels');
+    handleOAuthReturn();
+  } else {
+    navigate(page);
+  }
 }
 
 // Bot config is loaded inside loadSettings() above
