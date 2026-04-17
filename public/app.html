@@ -2898,10 +2898,11 @@ function _launchWADialog() {
     } catch(e) { console.warn('[wa] message parse error:', e); }
   });
 
-  // Use default response_type (token) — avoids code-grant requirements that may not be configured
   const opts = {
-    config_id: window._META_CONFIG_ID,
-    extras:    { setup: {}, featureType: '', sessionInfoVersion: '3' },
+    config_id:                      window._META_CONFIG_ID,
+    response_type:                  'code',
+    override_default_response_type: true,
+    extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
   };
 
   console.log('[wa] calling FB.login — opts:', JSON.stringify(opts));
@@ -2912,47 +2913,40 @@ function _launchWADialog() {
     console.log('[wa] _authAtFinish:', JSON.stringify(_waData._authAtFinish));
     console.log('[wa] FB.getAuthResponse():', JSON.stringify(FB.getAuthResponse()));
 
-    const ar          = resp?.authResponse || _waData._authAtFinish || FB.getAuthResponse();
-    const code        = ar?.code;
-    const accessToken = ar?.accessToken;
+    // Try resp.authResponse first, then auth captured at FINISH time, then current session
+    const ar   = resp?.authResponse || _waData._authAtFinish || FB.getAuthResponse();
+    const code = ar?.code;
 
-    console.log('[wa] resolved — code:', !!code, '| accessToken:', !!accessToken, '| ar:', JSON.stringify(ar));
+    console.log('[wa] resolved ar:', JSON.stringify(ar));
+    console.log('[wa] code present:', !!code);
 
     if (code) {
-      console.log('[wa] → submitting via code');
+      console.log('[wa] → got code, submitting to backend');
       _waData.code      = code;
       _waData.tokenType = 'code';
       setTimeout(_submitWASignup, 800);
-    } else if (accessToken) {
-      console.log('[wa] → submitting via accessToken');
-      _waData.accessToken = accessToken;
-      _waData.tokenType   = 'token';
-      setTimeout(_submitWASignup, 800);
     } else {
-      const debugInfo = `status=${resp?.status} ar=${JSON.stringify(ar)}`;
-      console.error('[wa] FAILED — no auth received. Debug:', debugInfo);
-      console.error('[wa] Full resp object:', JSON.stringify(resp));
-      toast(`WhatsApp: لم يُستلم رمز تفويض — ${debugInfo}`, 'error');
+      // No code — surface full raw response in toast for diagnosis
+      const raw = JSON.stringify({ status: resp?.status, authResponse: resp?.authResponse, atFinish: _waData._authAtFinish });
+      console.error('[wa] FAILED — no code. Raw:', raw);
+      toast(`WhatsApp فشل — لم يُستلم code. Raw: ${raw}`, 'error');
     }
   }, opts);
 }
 
 async function _submitWASignup() {
-  const hasCode  = !!_waData.code;
-  const hasToken = !!_waData.accessToken;
-  console.log('[wa] _submitWASignup — tokenType:', _waData.tokenType, 'hasCode:', hasCode, 'hasToken:', hasToken, 'waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
+  console.log('[wa] _submitWASignup — code:', _waData.code ? _waData.code.slice(0,8)+'...' : 'MISSING', 'waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
 
-  if (!hasCode && !hasToken) {
-    toast('لا يوجد رمز تفويض من Meta', 'error');
+  if (!_waData.code) {
+    toast('لا يوجد code من Meta', 'error');
     return;
   }
 
   const payload = {
+    code:            _waData.code,
     waba_id:         _waData.waba_id         || '',
     phone_number_id: _waData.phone_number_id || '',
   };
-  if (hasCode)  payload.code         = _waData.code;
-  if (hasToken) payload.access_token = _waData.accessToken;
 
   console.log('[wa] posting to /api/integrations/whatsapp/embedded-signup — payload keys:', Object.keys(payload));
   try {
