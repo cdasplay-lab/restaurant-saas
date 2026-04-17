@@ -2574,11 +2574,21 @@ async def integrations_oauth_callback(
             hint = _quote(err_str[:120], safe="")
             return _Redirect(f"{frontend_base}/app?oauth_error=exchange_failed&hint={hint}#channels")
 
+        stored_pages = result.get("pages") or result.get("accounts") or []
+        if platform == "instagram":
+            for acct in stored_pages:
+                logger.info(
+                    f"[ig-oauth] account id={acct.get('id','')} "
+                    f"username={acct.get('username','')} "
+                    f"page_id={acct.get('page_id','')} "
+                    f"has_page_token={bool(acct.get('page_token',''))} "
+                    f"token_prefix={acct.get('page_token','')[:12] if acct.get('page_token') else 'EMPTY'}"
+                )
         pending_json = json.dumps({
             "access_token":     result.get("access_token", ""),
             "token_expires_at": result.get("token_expires_at", ""),
             "scopes_granted":   result.get("scopes_granted", ""),
-            "pages":            result.get("pages") or result.get("accounts") or [],
+            "pages":            stored_pages,
         })
         conn.execute("UPDATE oauth_states SET pages_json=? WHERE state=?", (pending_json, state))
         conn.commit()
@@ -2699,7 +2709,20 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             account_user  = data.get("account_username", "")
             picture_url   = data.get("picture_url", "")
             page_id       = data.get("page_id", "")
-            page_token    = data.get("page_token", long_token)
+            page_token    = data.get("page_token") or ""  # Facebook Page token — NOT user token
+
+            # If frontend didn't send page_token, recover it from pages_json by matching account/page
+            if not page_token:
+                for acct in pending.get("pages", []):
+                    if acct.get("page_id") == page_id or acct.get("id") == account_id:
+                        page_token = acct.get("page_token", "")
+                        logger.info(f"[ig] page_token recovered from pages_json — page_id={page_id}")
+                        break
+
+            logger.info(
+                f"[ig] select-page — account_id={account_id} page_id={page_id} "
+                f"has_page_token={bool(page_token)} token_prefix={page_token[:12] if page_token else 'EMPTY'}"
+            )
 
             channel_data = {
                 "restaurant_id": rid, "token": page_token, "page_id": page_id,
@@ -2709,8 +2732,9 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             try:
                 adapter.subscribe_webhook(channel_data, BASE_URL)
                 webhook_ok = True
+                logger.info(f"[ig] webhook subscribed OK — page_id={page_id}")
             except Exception as exc:
-                logger.warning(f"[ig] webhook subscribe failed: {exc}")
+                logger.warning(f"[ig] webhook subscribe failed (non-fatal): {exc}")
                 webhook_ok = False
 
             ch = _get_or_create_channel(conn, rid, "instagram")
@@ -2729,6 +2753,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
                   account_name or account_user, picture_url, account_user,
                   user["id"], "connected",
                   ch["id"]))
+            logger.info(f"[ig] channel updated — webhook_ok={webhook_ok} account={account_name or account_user}")
 
         elif platform == "whatsapp":
             phone_number_id = data.get("page_id",      "")   # phone_number_id

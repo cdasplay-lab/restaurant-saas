@@ -281,6 +281,16 @@ class InstagramAdapter(_MetaBase):
             except Exception as exc:
                 logger.warning(f"[instagram] skip page {page['id']}: {exc}")
 
+        logger.info(
+            f"[instagram] exchange_code — fb_pages={len(pages)} ig_accounts={len(ig_accounts)}"
+        )
+        for acct in ig_accounts:
+            logger.info(
+                f"[instagram]   acct id={acct['id']} username={acct.get('username','')} "
+                f"page_id={acct.get('page_id','')} "
+                f"has_page_token={bool(acct.get('page_token',''))} "
+                f"token_prefix={acct.get('page_token','')[:12] if acct.get('page_token') else 'EMPTY'}"
+            )
         return {
             "access_token":     long,
             "token_expires_at": exp,
