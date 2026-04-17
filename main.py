@@ -2584,6 +2584,15 @@ async def integrations_oauth_callback(
                     f"has_page_token={bool(acct.get('page_token',''))} "
                     f"token_prefix={acct.get('page_token','')[:12] if acct.get('page_token') else 'EMPTY'}"
                 )
+            # If no IG accounts found, redirect with a specific error so user knows why
+            if result.get("no_ig_accounts") and not stored_pages:
+                fb_pages = result.get("fb_pages_found", 0)
+                logger.warning(f"[ig-oauth] no IG accounts — fb_pages={fb_pages} — redirecting with error")
+                return _Redirect(
+                    f"{frontend_base}/app?oauth_error=no_ig_accounts"
+                    f"&hint=facebook_pages_{fb_pages}#channels"
+                )
+
         pending_json = json.dumps({
             "access_token":     result.get("access_token", ""),
             "token_expires_at": result.get("token_expires_at", ""),
@@ -3816,52 +3825,81 @@ async def instagram_diagnostic(user=Depends(current_user)):
             _step("oauth_url", "توليد OAuth URL", "FAIL", str(exc))
             return {"steps": steps, "fixed": fixed, "verdict": "oauth_url_failed"}
 
-        # ── 3. Last OAuth state for this restaurant ──────────────────────────────
-        last_state_row = conn.execute(
+        # ── 3. All Instagram OAuth states for this restaurant ────────────────────
+        all_ig_states = conn.execute(
             "SELECT * FROM oauth_states WHERE platform='instagram' AND restaurant_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at DESC LIMIT 20",
             (rid,)
-        ).fetchone()
+        ).fetchall()
+        all_ig_states = [dict(r) for r in all_ig_states]
 
         pages_data   = {}
         ig_accounts  = []
+        best_state   = None   # most recent completed state with accounts
 
-        if not last_state_row:
+        # Find the most recent COMPLETED state that has IG accounts with page_token
+        for s in all_ig_states:
+            if s.get("used", 0) != 1:
+                continue
+            try:
+                pd = json.loads(s.get("pages_json") or "{}")
+            except Exception:
+                continue
+            accts = pd.get("pages", [])
+            if accts and any(a.get("page_token") for a in accts):
+                best_state  = s
+                pages_data  = pd
+                ig_accounts = accts
+                break
+
+        last_state = all_ig_states[0] if all_ig_states else None
+
+        if not last_state:
             _step("oauth_state", "آخر OAuth state", "WARN",
                   "لا توجد محاولة Instagram OAuth بعد — اضغط ربط Instagram أولاً")
         else:
-            last_state = dict(last_state_row)
-            raw_pj = last_state.get("pages_json") or "{}"
-            try:
-                pages_data  = json.loads(raw_pj)
-                ig_accounts = pages_data.get("pages", [])
-            except Exception:
-                pages_data  = {}
-                ig_accounts = []
-
             if last_state.get("used", 0) == 0:
                 _step("oauth_state", "آخر OAuth state", "WARN",
                       f"OAuth بدأ لكن Callback لم يُستكمَل (used=0) — "
                       f"created_at={last_state.get('created_at','')}")
             else:
+                raw_pj = last_state.get("pages_json") or "{}"
+                try:
+                    last_pd    = json.loads(raw_pj)
+                    last_accts = last_pd.get("pages", [])
+                except Exception:
+                    last_pd    = {}
+                    last_accts = []
                 _step("oauth_state", "آخر OAuth state", "OK",
-                      f"completed (used=1) — accounts={len(ig_accounts)} "
-                      f"has_user_token={bool(pages_data.get('access_token'))}")
+                      f"completed (used=1) — accounts={len(last_accts)} "
+                      f"has_user_token={bool(last_pd.get('access_token'))}")
 
-            # ── 4. Accounts in pages_json ────────────────────────────────────────
-            if ig_accounts:
-                first = ig_accounts[0]
-                has_pt = bool(first.get("page_token", ""))
-                _step("oauth_accounts", "IG accounts في pages_json", "OK" if has_pt else "FAIL",
-                      f"accounts={len(ig_accounts)} — "
-                      f"account_id={first.get('id','?')} "
-                      f"page_id={first.get('page_id','?')} "
-                      f"has_page_token={has_pt} "
-                      f"token_prefix={first.get('page_token','')[:12] if has_pt else 'EMPTY'}")
+            if best_state:
+                _step("oauth_states_scan", f"فحص {len(all_ig_states)} OAuth state",
+                      "OK",
+                      f"عُثر على state صالح بـ {len(ig_accounts)} account(s) "
+                      f"created_at={best_state.get('created_at','')}")
             else:
-                _step("oauth_accounts", "IG accounts في pages_json", "FAIL",
-                      "لا توجد Instagram accounts — تأكد أن لديك Instagram Business Account "
-                      "مرتبطاً بصفحة Facebook تملكها")
+                _step("oauth_states_scan", f"فحص {len(all_ig_states)} OAuth state",
+                      "WARN",
+                      f"لا يوجد state مكتمل مع page_token صالح في أي من الـ {len(all_ig_states)} state")
+
+        # ── 4. Accounts in best pages_json ──────────────────────────────────────
+        if ig_accounts:
+            first = ig_accounts[0]
+            has_pt = bool(first.get("page_token", ""))
+            _step("oauth_accounts", "IG accounts في pages_json", "OK" if has_pt else "FAIL",
+                  f"accounts={len(ig_accounts)} — "
+                  f"account_id={first.get('id','?')} "
+                  f"page_id={first.get('page_id','?')} "
+                  f"has_page_token={has_pt} "
+                  f"token_prefix={first.get('page_token','')[:12] if has_pt else 'EMPTY'}")
+        else:
+            _step("oauth_accounts", "IG accounts في pages_json", "FAIL",
+                  "لا توجد Instagram accounts في أي OAuth state مكتمل — "
+                  "السبب: ربما صفحتك على Facebook ليس لها Instagram Business Account مرتبط. "
+                  "اذهب إلى إعدادات Instagram → الحساب → التحويل لحساب احترافي، "
+                  "ثم اربطه بصفحة Facebook من Meta Business Suite")
 
         # ── 5. Channel DB row ────────────────────────────────────────────────────
         ch_row = conn.execute(
@@ -3972,51 +4010,73 @@ async def instagram_diagnostic(user=Depends(current_user)):
                   "FAIL" if ch.get("last_error") else "OK",
                   ch.get("last_error") or "لا يوجد خطأ ✓")
 
-            # ── 11. Auto-fix: re-apply valid page_token from pages_json ──────────
-            if stored_token != "" or True:  # always attempt if we have ig_accounts
-                for acct in ig_accounts:
-                    candidate = acct.get("page_token", "")
-                    if not candidate or candidate == stored_token:
-                        continue
-                    # Validate this candidate against Meta
-                    try:
-                        import httpx as _httpx
-                        cr = _httpx.get(
-                            f"https://graph.facebook.com/v20.0/me",
-                            params={"access_token": candidate, "fields": "id,name"},
-                            timeout=10,
-                        )
-                        cdata = cr.json()
-                        if "error" not in cdata:
-                            # Valid token — apply it
-                            conn.execute(
-                                "UPDATE channels SET "
-                                "token=?, page_id=?, business_account_id=?, "
-                                "last_error='', reconnect_needed=0, connection_status='connected', "
-                                "oauth_completed_at=?, last_tested_at=CURRENT_TIMESTAMP "
-                                "WHERE id=?",
-                                (
-                                    candidate,
-                                    acct.get("page_id", ch.get("page_id", "")),
-                                    acct.get("id", ch.get("business_account_id", "")),
-                                    datetime.utcnow().isoformat(),
-                                    ch["id"],
-                                )
+            # ── 11. Auto-fix: re-apply valid page_token from any completed OAuth state ─
+            _auto_fixed = False
+            import httpx as _httpx
+            for acct in ig_accounts:
+                candidate = acct.get("page_token", "")
+                if not candidate:
+                    continue
+                # Validate this candidate token against Meta
+                try:
+                    cr = _httpx.get(
+                        "https://graph.facebook.com/v20.0/me",
+                        params={"access_token": candidate, "fields": "id,name"},
+                        timeout=10,
+                    )
+                    cdata = cr.json()
+                    if "error" not in cdata:
+                        # Valid token — apply it to the channel
+                        new_page_id = acct.get("page_id", "") or ch.get("page_id", "")
+                        new_biz_id  = acct.get("id", "")
+                        # Sanity: IG Business Account ID should be numeric, not a token
+                        if new_biz_id.startswith("EAA"):
+                            new_biz_id = ""  # was a token mistakenly stored — clear it
+                        conn.execute(
+                            "UPDATE channels SET "
+                            "token=?, page_id=?, business_account_id=?, "
+                            "last_error='', reconnect_needed=0, connection_status='connected', "
+                            "oauth_completed_at=?, last_tested_at=CURRENT_TIMESTAMP "
+                            "WHERE id=?",
+                            (
+                                candidate,
+                                new_page_id,
+                                new_biz_id,
+                                datetime.utcnow().isoformat(),
+                                ch["id"],
                             )
-                            conn.commit()
-                            fix_msg = (f"✅ تم إصلاح الـ token تلقائياً — "
-                                       f"تم حفظ page_token الصحيح من pages_json "
-                                       f"(account={acct.get('id','?')} page_id={acct.get('page_id','?')}) "
-                                       f"token_prefix={candidate[:12]}")
-                            fixed.append(fix_msg)
-                            _step("auto_fix", "إصلاح تلقائي", "FIXED", fix_msg)
-                            verdict = "fixed"
-                            break
-                        else:
-                            _step("auto_fix_candidate", "مرشح token من pages_json",
-                                  "FAIL", f"Token مرشح غير صالح: {cdata['error'].get('message','?')}")
-                    except Exception as fix_exc:
-                        logger.warning(f"[ig-diag] auto-fix candidate test failed: {fix_exc}")
+                        )
+                        conn.commit()
+                        fix_msg = (
+                            f"تم حفظ page_token الصحيح — "
+                            f"account_id={new_biz_id or '?'} page_id={new_page_id or '?'} "
+                            f"token_prefix={candidate[:12]}"
+                        )
+                        fixed.append(fix_msg)
+                        _step("auto_fix", "إصلاح تلقائي — token", "FIXED", fix_msg)
+                        verdict = "fixed"
+                        _auto_fixed = True
+                        break
+                    else:
+                        logger.info(f"[ig-diag] candidate token invalid: {cdata['error'].get('message','?')[:60]}")
+                except Exception as fix_exc:
+                    logger.warning(f"[ig-diag] auto-fix candidate test failed: {fix_exc}")
+
+            # If auto-fix couldn't find a valid token AND current token is broken → reset channel
+            if not _auto_fixed and verdict in ("token_cannot_decrypt", "token_expired",
+                                               "token_invalid", "token_wrong_type"):
+                conn.execute(
+                    "UPDATE channels SET "
+                    "token='', page_id='', business_account_id='', "
+                    "last_error='', reconnect_needed=1, connection_status='disconnected' "
+                    "WHERE id=?",
+                    (ch["id"],)
+                )
+                conn.commit()
+                reset_msg = "تم مسح الـ token المكسور والـ page_id الخاطئ — القناة جاهزة لإعادة الربط من الصفر"
+                fixed.append(reset_msg)
+                _step("auto_reset", "إعادة ضبط القناة", "FIXED", reset_msg)
+                verdict = "reset_for_reconnect"
 
         return {"steps": steps, "fixed": fixed, "verdict": verdict}
 

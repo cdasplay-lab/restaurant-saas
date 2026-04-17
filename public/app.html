@@ -2538,18 +2538,19 @@ async function runInstagramDiagnostic() {
     const verdict = d.verdict || 'unknown';
 
     const VERDICT_MSG = {
-      connected:         { cls: 'bg-green-900/40 border-green-700 text-green-300',  text: '✅ Instagram يعمل بشكل صحيح' },
-      fixed:             { cls: 'bg-blue-900/40 border-blue-700 text-blue-300',     text: '🔧 تم إصلاح المشكلة تلقائياً — حدّث الصفحة' },
-      token_cannot_decrypt: { cls: 'bg-red-900/40 border-red-700 text-red-300',    text: '❌ الـ token مكسور أو من تطبيق آخر — أعد الربط من الصفر' },
-      token_expired:     { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ الـ token منتهي الصلاحية — أعد الربط' },
-      token_invalid:     { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ الـ token غير صالح — أعد الربط' },
-      token_wrong_type:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تم حفظ User Token بدلاً من Page Token — أعد الربط' },
-      no_token:          { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ لا يوجد token محفوظ — يجب ربط Instagram أولاً' },
-      no_channel:        { cls: 'bg-slate-700 border-slate-600 text-slate-300',    text: 'ℹ️ لم يتم ربط Instagram بعد' },
-      oauth_incomplete:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ OAuth بدأ لكن لم يكتمل — حاول مرة أخرى' },
-      env_missing:       { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ متغيرات البيئة مفقودة في Render' },
-      meta_unreachable:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
-      unknown:           { cls: 'bg-slate-700 border-slate-600 text-slate-300',    text: 'ℹ️ غير محدد' },
+      connected:            { cls: 'bg-green-900/40 border-green-700 text-green-300',    text: '✅ Instagram يعمل بشكل صحيح' },
+      fixed:                { cls: 'bg-blue-900/40 border-blue-700 text-blue-300',       text: '🔧 تم إصلاح المشكلة تلقائياً — حدّث القنوات' },
+      reset_for_reconnect:  { cls: 'bg-blue-900/40 border-blue-700 text-blue-300',       text: '🔧 تم مسح الـ token المكسور — القناة جاهزة لإعادة الربط. اضغط الزر أدناه' },
+      token_cannot_decrypt: { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ الـ token مكسور أو من تطبيق آخر — سيتم مسحه وإعادة الضبط' },
+      token_expired:        { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ الـ token منتهي الصلاحية — أعد الربط' },
+      token_invalid:        { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ الـ token غير صالح — أعد الربط' },
+      token_wrong_type:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تم حفظ User Token بدلاً من Page Token — أعد الربط' },
+      no_token:             { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ لا يوجد token محفوظ — يجب ربط Instagram أولاً' },
+      no_channel:           { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ لم يتم ربط Instagram بعد' },
+      oauth_incomplete:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ OAuth بدأ لكن لم يكتمل — حاول مرة أخرى' },
+      env_missing:          { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ متغيرات البيئة مفقودة في Render' },
+      meta_unreachable:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
+      unknown:              { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ غير محدد' },
     };
 
     const vm = VERDICT_MSG[verdict] || VERDICT_MSG.unknown;
@@ -2583,6 +2584,15 @@ async function runInstagramDiagnostic() {
         class="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
         تحديث القنوات
       </button>`;
+    } else if (verdict === 'reset_for_reconnect') {
+      html += `
+        <div class="mt-3 bg-slate-700/60 rounded-xl px-3 py-2 text-xs text-slate-300 mb-2">
+          ℹ️ الـ token القديم المكسور تم مسحه. الآن اضغط الزر أدناه لبدء OAuth جديد وربط Instagram من الصفر.
+        </div>
+        <button onclick="closeModal();loadChannels().then(()=>startConnect('instagram'))"
+          class="mt-1 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
+          <i class="fa-brands fa-instagram mr-2"></i>ربط Instagram من الصفر
+        </button>`;
     } else if (['token_cannot_decrypt','token_expired','token_invalid','token_wrong_type','no_token','no_channel'].includes(verdict)) {
       html += `<button onclick="closeModal();startConnect('instagram')"
         class="mt-4 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
@@ -2838,10 +2848,11 @@ async function handleOAuthReturn() {
   if (error) {
     const hint    = hint_raw ? decodeURIComponent(hint_raw) : '';
     const msgs    = {
-      access_denied:   'تم رفض الإذن من المنصة',
-      invalid_state:   'جلسة OAuth غير صالحة — حاول مجدداً',
-      state_expired:   'انتهت مهلة جلسة OAuth — حاول مجدداً',
-      exchange_failed: 'فشل ربط Meta',
+      access_denied:    'تم رفض الإذن من المنصة',
+      invalid_state:    'جلسة OAuth غير صالحة — حاول مجدداً',
+      state_expired:    'انتهت مهلة جلسة OAuth — حاول مجدداً',
+      exchange_failed:  'فشل ربط Meta',
+      no_ig_accounts:   'لم يُعثر على Instagram Business Account — تأكد أن حسابك Instagram Professional (Business/Creator) ومربوط بصفحة Facebook، ثم أعد الربط',
     };
     const mainMsg = msgs[error] || `خطأ: ${error}`;
     console.log('[oauth] error path:', error, hint);

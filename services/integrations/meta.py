@@ -291,11 +291,21 @@ class InstagramAdapter(_MetaBase):
                 f"has_page_token={bool(acct.get('page_token',''))} "
                 f"token_prefix={acct.get('page_token','')[:12] if acct.get('page_token') else 'EMPTY'}"
             )
+
+        if not ig_accounts:
+            logger.warning(
+                f"[instagram] exchange_code — ZERO IG accounts found. "
+                f"fb_pages={len(pages)}. "
+                f"Make sure the Facebook Pages are connected to Instagram Business/Creator accounts."
+            )
+
         return {
             "access_token":     long,
             "token_expires_at": exp,
             "accounts":         ig_accounts,   # UI shows account picker
             "scopes_granted":   self._scopes,
+            "no_ig_accounts":   len(ig_accounts) == 0,  # flag for frontend error display
+            "fb_pages_found":   len(pages),
         }
 
     def subscribe_webhook(self, channel: dict, base_url: str) -> dict:
