@@ -2508,17 +2508,14 @@ async def integrations_oauth_callback(
     error: str = None,
     req: Request = None
 ):
-    """
-    Meta redirects here after the user approves the OAuth dialog.
-    This endpoint exchanges the code, then redirects the browser back to the
-    dashboard with an oauth_session ID so the JS can complete the flow.
-    """
     from fastapi.responses import RedirectResponse as _Redirect
-
     frontend_base = BASE_URL
 
-    # Use query params (not hash fragment) so redirect is preserved by proxies/browsers
+    # ── Log every incoming call ──────────────────────────────────
+    logger.info(f"[oauth-cb] HIT  code={'YES('+code[:8]+')' if code else 'MISSING'}  state={'YES('+state[:8]+')' if state else 'MISSING'}  error={error or 'none'}")
+
     if error or not state or not code:
+        logger.warning(f"[oauth-cb] EARLY EXIT — error={error} has_state={bool(state)} has_code={bool(code)}")
         return _Redirect(f"{frontend_base}/?oauth_error=access_denied#channels")
 
     conn = database.get_db()
@@ -2528,26 +2525,37 @@ async def integrations_oauth_callback(
             (state,)
         ).fetchone()
         if not row:
-            return _Redirect(f"{frontend_base}/?oauth_error=invalid_state#channels")
+            existing = conn.execute("SELECT used FROM oauth_states WHERE state=?", (state,)).fetchone()
+            if existing:
+                logger.warning(f"[oauth-cb] STATE ALREADY USED — state={state[:12]} used={existing['used']}")
+                return _Redirect(f"{frontend_base}/?oauth_error=invalid_state&hint=already_used#channels")
+            else:
+                logger.warning(f"[oauth-cb] STATE NOT FOUND — state={state[:12]}")
+                return _Redirect(f"{frontend_base}/?oauth_error=invalid_state#channels")
 
         row = dict(row)
+        logger.info(f"[oauth-cb] STATE OK — platform={row['platform']} restaurant={row['restaurant_id'][:8]} expires={row['expires_at']}")
+
         if row["expires_at"] < datetime.utcnow().isoformat():
+            logger.warning(f"[oauth-cb] STATE EXPIRED — expires_at={row['expires_at']}")
             return _Redirect(f"{frontend_base}/?oauth_error=state_expired#channels")
 
-        # Mark used
         conn.execute("UPDATE oauth_states SET used=1 WHERE state=?", (state,))
         conn.commit()
+        logger.info(f"[oauth-cb] STATE MARKED used=1")
 
         platform     = row["platform"]
         redirect_uri = f"{BASE_URL}/oauth/meta/callback"
         adapter      = get_adapter(platform)
+        logger.info(f"[oauth-cb] EXCHANGING CODE — platform={platform} redirect_uri={redirect_uri}")
 
         try:
             result = adapter.exchange_code(code, redirect_uri)
+            pages = result.get("pages") or result.get("accounts") or []
+            logger.info(f"[oauth-cb] EXCHANGE OK — pages={len(pages)} has_token={bool(result.get('access_token'))}")
         except Exception as exc:
             err_str = str(exc)
-            logger.error(f"[oauth] exchange_code failed platform={platform} redirect_uri={redirect_uri} error={err_str}")
-            # Write error to channel card so it's visible in the dashboard
+            logger.error(f"[oauth-cb] EXCHANGE FAILED — platform={platform} error={err_str}")
             try:
                 _ch = conn.execute(
                     "SELECT id FROM channels WHERE restaurant_id=? AND type=?",
@@ -2565,13 +2573,6 @@ async def integrations_oauth_callback(
             hint = _quote(err_str[:120], safe="")
             return _Redirect(f"{frontend_base}/?oauth_error=exchange_failed&hint={hint}#channels")
 
-        # Store pages/accounts in oauth_states so the picker endpoint can return them
-        pages_json = json.dumps(result.get("pages") or result.get("accounts") or [])
-        conn.execute(
-            "UPDATE oauth_states SET pages_json=? WHERE state=?",
-            (pages_json, state)
-        )
-        # Also stash access_token + expiry temporarily in pages_json row
         pending_json = json.dumps({
             "access_token":     result.get("access_token", ""),
             "token_expires_at": result.get("token_expires_at", ""),
@@ -2580,10 +2581,12 @@ async def integrations_oauth_callback(
         })
         conn.execute("UPDATE oauth_states SET pages_json=? WHERE state=?", (pending_json, state))
         conn.commit()
+        logger.info(f"[oauth-cb] COMPLETE — redirecting to frontend with session={state[:12]}")
 
-        # Redirect back with state ID as session token (the JS will call /pending/{state})
-        # Use query params (not hash fragment) — fragment can be stripped by proxies
         return _Redirect(f"{frontend_base}/?oauth_session={state}&platform={platform}#channels")
+    except Exception as exc:
+        logger.error(f"[oauth-cb] UNEXPECTED ERROR — {exc}", exc_info=True)
+        return _Redirect(f"{frontend_base}/?oauth_error=server_error#channels")
     finally:
         conn.close()
 
