@@ -2516,7 +2516,7 @@ async def integrations_oauth_callback(
 
     if error or not state or not code:
         logger.warning(f"[oauth-cb] EARLY EXIT — error={error} has_state={bool(state)} has_code={bool(code)}")
-        return _Redirect(f"{frontend_base}/?oauth_error=access_denied#channels")
+        return _Redirect(f"{frontend_base}/app?oauth_error=access_denied#channels")
 
     conn = database.get_db()
     try:
@@ -2528,17 +2528,17 @@ async def integrations_oauth_callback(
             existing = conn.execute("SELECT used FROM oauth_states WHERE state=?", (state,)).fetchone()
             if existing:
                 logger.warning(f"[oauth-cb] STATE ALREADY USED — state={state[:12]} used={existing['used']}")
-                return _Redirect(f"{frontend_base}/?oauth_error=invalid_state&hint=already_used#channels")
+                return _Redirect(f"{frontend_base}/app?oauth_error=invalid_state&hint=already_used#channels")
             else:
                 logger.warning(f"[oauth-cb] STATE NOT FOUND — state={state[:12]}")
-                return _Redirect(f"{frontend_base}/?oauth_error=invalid_state#channels")
+                return _Redirect(f"{frontend_base}/app?oauth_error=invalid_state#channels")
 
         row = dict(row)
         logger.info(f"[oauth-cb] STATE OK — platform={row['platform']} restaurant={row['restaurant_id'][:8]} expires={row['expires_at']}")
 
         if row["expires_at"] < datetime.utcnow().isoformat():
             logger.warning(f"[oauth-cb] STATE EXPIRED — expires_at={row['expires_at']}")
-            return _Redirect(f"{frontend_base}/?oauth_error=state_expired#channels")
+            return _Redirect(f"{frontend_base}/app?oauth_error=state_expired#channels")
 
         conn.execute("UPDATE oauth_states SET used=1 WHERE state=?", (state,))
         conn.commit()
@@ -2571,7 +2571,7 @@ async def integrations_oauth_callback(
                 pass
             from urllib.parse import quote as _quote
             hint = _quote(err_str[:120], safe="")
-            return _Redirect(f"{frontend_base}/?oauth_error=exchange_failed&hint={hint}#channels")
+            return _Redirect(f"{frontend_base}/app?oauth_error=exchange_failed&hint={hint}#channels")
 
         pending_json = json.dumps({
             "access_token":     result.get("access_token", ""),
@@ -2583,10 +2583,10 @@ async def integrations_oauth_callback(
         conn.commit()
         logger.info(f"[oauth-cb] COMPLETE — redirecting to frontend with session={state[:12]}")
 
-        return _Redirect(f"{frontend_base}/?oauth_session={state}&platform={platform}#channels")
+        return _Redirect(f"{frontend_base}/app?oauth_session={state}&platform={platform}#channels")
     except Exception as exc:
         logger.error(f"[oauth-cb] UNEXPECTED ERROR — {exc}", exc_info=True)
-        return _Redirect(f"{frontend_base}/?oauth_error=server_error#channels")
+        return _Redirect(f"{frontend_base}/app?oauth_error=server_error#channels")
     finally:
         conn.close()
 
