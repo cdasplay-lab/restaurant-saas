@@ -2868,39 +2868,87 @@ function startWAEmbeddedSignup(appId, configId) {
 
 function _launchWADialog() {
   console.log('[wa] _launchWADialog — config_id:', window._META_CONFIG_ID);
+
   window.addEventListener('message', function _waMsgHandler(event) {
     try {
       const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
       if (d?.type === 'WA_EMBEDDED_SIGNUP') {
-        console.log('[wa] WA_EMBEDDED_SIGNUP message:', JSON.stringify(d));
+        console.log('[wa] WA_EMBEDDED_SIGNUP message event=' + d?.event + ':', JSON.stringify(d));
         if (d?.event === 'FINISH') {
-          _waData.waba_id         = d.data?.waba_id || '';
+          _waData.waba_id         = d.data?.waba_id         || '';
           _waData.phone_number_id = d.data?.phone_number_id || '';
+          console.log('[wa] FINISH — waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
+          window.removeEventListener('message', _waMsgHandler);
+        } else if (d?.event === 'CANCEL') {
+          console.warn('[wa] user cancelled embedded signup');
+          window.removeEventListener('message', _waMsgHandler);
+        } else if (d?.event === 'ERROR') {
+          console.error('[wa] embedded signup error:', JSON.stringify(d));
           window.removeEventListener('message', _waMsgHandler);
         }
       }
     } catch(e) { console.warn('[wa] message parse error:', e); }
   });
+
   const _waLoginOpts = {
     config_id:                      window._META_CONFIG_ID,
     response_type:                  'code',
     override_default_response_type: true,
-    auth_type:                      'reauthorize',
     extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
   };
-  console.log('[wa] calling FB.login with opts:', JSON.stringify(_waLoginOpts));
-  FB.login(function(resp) {
-    console.log('[wa] FB.login response:', JSON.stringify(resp));
-    if (resp.authResponse?.code) {
-      console.log('[wa] got code, waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
-      _waData.code = resp.authResponse.code;
-      setTimeout(_submitWASignup, 800);
+
+  const _doFBLogin = function() {
+    console.log('[wa] calling FB.login with opts:', JSON.stringify(_waLoginOpts));
+    FB.login(function(resp) {
+      console.log('[wa] FB.login response status:', resp?.status);
+      console.log('[wa] FB.login authResponse:', JSON.stringify(resp?.authResponse));
+      console.log('[wa] _waData at callback:', JSON.stringify(_waData));
+
+      const code = resp?.authResponse?.code;
+      if (code) {
+        console.log('[wa] code received, proceeding to submit');
+        _waData.code = code;
+        setTimeout(_submitWASignup, 800);
+      } else {
+        const status = resp?.status || 'unknown';
+        console.warn('[wa] no code — status:', status);
+        if (status === 'connected' && _waData.waba_id) {
+          // Dialog completed (FINISH fired) but FB returned connected without new code
+          // Retry once with fresh logout to force code issuance
+          console.log('[wa] connected+waba_id but no code — retrying after logout...');
+          FB.logout(function() {
+            console.log('[wa] logged out, retrying FB.login...');
+            FB.login(function(resp2) {
+              console.log('[wa] retry FB.login response:', JSON.stringify(resp2?.authResponse));
+              if (resp2?.authResponse?.code) {
+                _waData.code = resp2.authResponse.code;
+                setTimeout(_submitWASignup, 800);
+              } else {
+                console.error('[wa] retry also failed:', resp2?.status);
+                toast('فشل الحصول على رمز WhatsApp — حاول مجدداً', 'error');
+              }
+            }, _waLoginOpts);
+          });
+        } else {
+          toast('لم يكتمل إعداد WhatsApp — أغلق النافذة وحاول مجدداً', 'error');
+        }
+      }
+    }, _waLoginOpts);
+  };
+
+  // Always ensure fresh session so FB issues a new code
+  FB.getLoginStatus(function(statusResp) {
+    console.log('[wa] current FB session status:', statusResp.status);
+    if (statusResp.status === 'connected') {
+      console.log('[wa] existing session found — logging out for fresh code...');
+      FB.logout(function() {
+        console.log('[wa] logged out, launching dialog');
+        _doFBLogin();
+      });
     } else {
-      const status = resp?.status || 'unknown';
-      console.warn('[wa] login failed — status:', status, 'full resp:', JSON.stringify(resp));
-      toast('لم يكتمل إعداد WhatsApp — أكمل جميع خطوات الـ Meta dialog', 'error');
+      _doFBLogin();
     }
-  }, _waLoginOpts);
+  });
 }
 
 async function _submitWASignup() {

@@ -2754,21 +2754,30 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
     phone_number_id = data.get("phone_number_id", "")
     rid             = user["restaurant_id"]
 
+    logger.info(f"[wa-signup] HIT — code={'YES('+code[:8]+')' if code else 'MISSING'} waba_id={waba_id!r} phone_number_id={phone_number_id!r} restaurant={rid}")
+
     if not code:
+        logger.error("[wa-signup] ABORT — no code")
         raise HTTPException(400, "code مطلوب")
     if not META_APP_ID:
+        logger.error("[wa-signup] ABORT — META_APP_ID missing")
         raise HTTPException(400, "META_APP_ID غير مضبوط")
+
+    logger.info(f"[wa-signup] META_APP_ID={META_APP_ID[:6]}... META_APP_SECRET={'SET' if META_APP_SECRET else 'MISSING'}")
 
     adapter = get_adapter("whatsapp")
     conn    = database.get_db()
     try:
+        logger.info("[wa-signup] exchanging code for token...")
         try:
             result = adapter.exchange_code(code)
         except Exception as exc:
+            logger.error(f"[wa-signup] exchange_code FAILED: {exc}")
             raise HTTPException(400, f"فشل تبادل التوكن: {exc}")
 
         token      = result["access_token"]
         expires_at = result.get("token_expires_at", "")
+        logger.info(f"[wa-signup] exchange OK — token={'YES('+token[:8]+')' if token else 'MISSING'} expires={expires_at}")
 
         # Confirm phone number + get display number
         phone_display = phone_number_id
@@ -2793,13 +2802,16 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
         }
 
         # Subscribe webhook
+        logger.info(f"[wa-signup] subscribing webhook waba_id={waba_id!r} phone_number_id={phone_number_id!r}")
         try:
             adapter.subscribe_webhook(channel_data, BASE_URL)
+            logger.info("[wa-signup] webhook subscribed OK")
         except Exception as exc:
-            logger.warning(f"[wa] webhook subscribe failed: {exc}")
+            logger.warning(f"[wa-signup] webhook subscribe failed (non-fatal): {exc}")
 
         now_iso = datetime.utcnow().isoformat()
         ch = _get_or_create_channel(conn, rid, "whatsapp")
+        logger.info(f"[wa-signup] updating channel id={ch['id']} phone_display={phone_display!r}")
         conn.execute("""
             UPDATE channels SET
                 token=?, waba_id=?, business_account_id=?,
@@ -2817,6 +2829,7 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
               user["id"], "connected",
               ch["id"]))
         conn.commit()
+        logger.info(f"[wa-signup] DB committed — connection_status=connected")
 
         log_activity(conn, rid, "channel_oauth_connected", "channel", "whatsapp",
                      "WhatsApp Embedded Signup completed",
@@ -2826,6 +2839,7 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
         updated = conn.execute(
             "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'", (rid,)
         ).fetchone()
+        logger.info(f"[wa-signup] COMPLETE — connection_status={updated['connection_status'] if updated else 'ROW_NOT_FOUND'}")
         return {"ok": True, "channel": _channel_to_dict(updated)}
     finally:
         conn.close()
