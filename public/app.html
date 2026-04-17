@@ -2695,12 +2695,16 @@ async function testChannelConnection(platform) {
 
 // ── OAuth return handler ───────────────────────────────────────
 async function handleOAuthReturn() {
-  // Read from query params (backend redirects with ?oauth_session=...#channels)
-  const qp      = new URLSearchParams(window.location.search);
-  const session  = qp.get('oauth_session');
-  const error    = qp.get('oauth_error');
-  const platform = qp.get('platform');
-  const hint_raw = qp.get('hint');
+  // Check query params first (new backend), then hash fragment (old backend)
+  const qp       = new URLSearchParams(window.location.search);
+  const hashStr  = window.location.hash;
+  const hqIdx    = hashStr.indexOf('?');
+  const hqp      = hqIdx >= 0 ? new URLSearchParams(hashStr.slice(hqIdx + 1)) : new URLSearchParams();
+
+  const session  = qp.get('oauth_session')  || hqp.get('oauth_session');
+  const error    = qp.get('oauth_error')    || hqp.get('error');
+  const platform = qp.get('platform')       || hqp.get('platform');
+  const hint_raw = qp.get('hint')           || hqp.get('hint');
   if (!session && !error) return;
   // Clean URL immediately
   history.replaceState(null, '', window.location.pathname + '#channels');

@@ -2608,8 +2608,8 @@ async def integrations_oauth_pending(state_id: str, user=Depends(current_user)):
     conn = database.get_db()
     try:
         row = conn.execute(
-            "SELECT * FROM oauth_states WHERE state=? AND restaurant_id=?",
-            (state_id, user["restaurant_id"])
+            "SELECT * FROM oauth_states WHERE state=?",
+            (state_id,)
         ).fetchone()
         if not row:
             raise HTTPException(404, "OAuth session not found")
