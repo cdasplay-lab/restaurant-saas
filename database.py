@@ -140,7 +140,14 @@ class _PgConnection:
         print(f"[DB] executescript: {ok}/{len(stmts)} statements OK")
 
     def commit(self):
-        self._conn.commit()
+        if not self._conn.autocommit:
+            self._conn.commit()
+
+    def rollback(self):
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
 
     def close(self):
         if self._pool is not None:
@@ -435,6 +442,9 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
 
 def _create_indexes(conn):
     """Create performance indexes (safe — IF NOT EXISTS)."""
+    _pg = IS_POSTGRES and hasattr(conn, '_conn')
+    if _pg:
+        conn._conn.autocommit = True
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_orders_restaurant ON orders(restaurant_id)",
         "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
@@ -455,10 +465,17 @@ def _create_indexes(conn):
             conn.execute(idx)
         except Exception:
             pass
+    if _pg:
+        conn._conn.autocommit = False
 
 
 def _migrate_db(conn):
     """Add new columns to existing tables. Safe — ignores if column already exists."""
+    # Run all DDL in autocommit mode on PostgreSQL so one failure doesn't abort the transaction
+    _pg = IS_POSTGRES and hasattr(conn, '_conn')
+    if _pg:
+        conn._conn.autocommit = True
+
     migrations = [
         # channels new columns
         ("channels", "webhook_secret",       "TEXT DEFAULT ''"),
@@ -642,6 +659,9 @@ def _migrate_db(conn):
             except Exception:
                 pass
         conn.commit()
+
+    if _pg:
+        conn._conn.autocommit = False
 
 
 def init_db():
