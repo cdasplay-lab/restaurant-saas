@@ -2881,6 +2881,14 @@ function _launchWADialog() {
       }
     } catch(e) { console.warn('[wa] message parse error:', e); }
   });
+  const _waLoginOpts = {
+    config_id:                      window._META_CONFIG_ID,
+    response_type:                  'code',
+    override_default_response_type: true,
+    auth_type:                      'reauthorize',
+    extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
+  };
+  console.log('[wa] calling FB.login with opts:', JSON.stringify(_waLoginOpts));
   FB.login(function(resp) {
     console.log('[wa] FB.login response:', JSON.stringify(resp));
     if (resp.authResponse?.code) {
@@ -2889,18 +2897,10 @@ function _launchWADialog() {
       setTimeout(_submitWASignup, 800);
     } else {
       const status = resp?.status || 'unknown';
-      const reason = status === 'not_authorized' ? 'لم تأذن بالتطبيق'
-                   : status === 'unknown'        ? 'أُغلقت النافذة أو لم تكتمل'
-                   : `status=${status}`;
       console.warn('[wa] login failed — status:', status, 'full resp:', JSON.stringify(resp));
-      toast(`لم يكتمل إعداد WhatsApp — ${reason}`, 'error');
+      toast('لم يكتمل إعداد WhatsApp — أكمل جميع خطوات الـ Meta dialog', 'error');
     }
-  }, {
-    config_id:                      window._META_CONFIG_ID,
-    response_type:                  'code',
-    override_default_response_type: true,
-    extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
-  });
+  }, _waLoginOpts);
 }
 
 async function _submitWASignup() {
