@@ -2551,6 +2551,7 @@ async function runInstagramDiagnostic() {
       env_missing:          { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ متغيرات البيئة مفقودة في Render' },
       meta_unreachable:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
       unknown:              { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ غير محدد' },
+      internal_error:       { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ خطأ داخلي في الفحص — راجع تفاصيل الخطأ أدناه' },
     };
 
     const vm = VERDICT_MSG[verdict] || VERDICT_MSG.unknown;

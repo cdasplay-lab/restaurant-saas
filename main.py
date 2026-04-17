@@ -3843,8 +3843,10 @@ async def instagram_diagnostic(user=Depends(current_user)):
                 continue
             try:
                 pd = json.loads(s.get("pages_json") or "{}")
+                if not isinstance(pd, dict):
+                    pd = {}   # default was '[]' not '{}' — guard against list
             except Exception:
-                continue
+                pd = {}
             accts = pd.get("pages", [])
             if accts and any(a.get("page_token") for a in accts):
                 best_state  = s
@@ -3865,7 +3867,9 @@ async def instagram_diagnostic(user=Depends(current_user)):
             else:
                 raw_pj = last_state.get("pages_json") or "{}"
                 try:
-                    last_pd    = json.loads(raw_pj)
+                    last_pd = json.loads(raw_pj)
+                    if not isinstance(last_pd, dict):
+                        last_pd = {}
                     last_accts = last_pd.get("pages", [])
                 except Exception:
                     last_pd    = {}
@@ -4080,6 +4084,10 @@ async def instagram_diagnostic(user=Depends(current_user)):
 
         return {"steps": steps, "fixed": fixed, "verdict": verdict}
 
+    except Exception as _diag_exc:
+        logger.error(f"[ig-diag] unhandled exception: {_diag_exc}", exc_info=True)
+        _step("internal_error", "خطأ داخلي في الفحص", "FAIL", str(_diag_exc)[:300])
+        return {"steps": steps, "fixed": fixed, "verdict": "internal_error"}
     finally:
         conn.close()
 
