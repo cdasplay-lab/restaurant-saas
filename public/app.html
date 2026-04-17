@@ -2502,6 +2502,101 @@ async function runSystemCheck() {
   box.innerHTML = `<div class="font-semibold text-white mb-3">نتيجة فحص النظام</div>` + checks.join('');
 }
 
+// ── Instagram Diagnostic ──────────────────────────────────────
+async function runInstagramDiagnostic() {
+  const STATUS_ICON = { OK: '✅', FAIL: '❌', WARN: '⚠️', FIXED: '🔧', INFO: 'ℹ️' };
+  const STATUS_CLS  = {
+    OK:    'text-green-300',
+    FAIL:  'text-red-300',
+    WARN:  'text-yellow-300',
+    FIXED: 'text-blue-300',
+    INFO:  'text-slate-300',
+  };
+
+  openModal(`
+    <div class="flex items-center gap-3 mb-5">
+      <div class="w-10 h-10 rounded-xl flex items-center justify-center"
+           style="background:linear-gradient(135deg,#7c3aed,#ec4899)">
+        <i class="fa-brands fa-instagram text-white text-xl"></i>
+      </div>
+      <div>
+        <h3 class="text-white font-bold text-lg">فحص Instagram المفصّل</h3>
+        <p class="text-slate-400 text-xs">يفحص كل خطوة من OAuth حتى الـ token</p>
+      </div>
+    </div>
+    <div id="igDiagBody" class="space-y-2 text-sm">
+      <div class="text-slate-400 flex items-center gap-2">
+        <div class="spinner w-4 h-4"></div> جاري الفحص…
+      </div>
+    </div>
+  `);
+
+  try {
+    const d = await api.get('/api/debug/instagram-diagnostic');
+    const steps  = d.steps  || [];
+    const fixed  = d.fixed  || [];
+    const verdict = d.verdict || 'unknown';
+
+    const VERDICT_MSG = {
+      connected:         { cls: 'bg-green-900/40 border-green-700 text-green-300',  text: '✅ Instagram يعمل بشكل صحيح' },
+      fixed:             { cls: 'bg-blue-900/40 border-blue-700 text-blue-300',     text: '🔧 تم إصلاح المشكلة تلقائياً — حدّث الصفحة' },
+      token_cannot_decrypt: { cls: 'bg-red-900/40 border-red-700 text-red-300',    text: '❌ الـ token مكسور أو من تطبيق آخر — أعد الربط من الصفر' },
+      token_expired:     { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ الـ token منتهي الصلاحية — أعد الربط' },
+      token_invalid:     { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ الـ token غير صالح — أعد الربط' },
+      token_wrong_type:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تم حفظ User Token بدلاً من Page Token — أعد الربط' },
+      no_token:          { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ لا يوجد token محفوظ — يجب ربط Instagram أولاً' },
+      no_channel:        { cls: 'bg-slate-700 border-slate-600 text-slate-300',    text: 'ℹ️ لم يتم ربط Instagram بعد' },
+      oauth_incomplete:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ OAuth بدأ لكن لم يكتمل — حاول مرة أخرى' },
+      env_missing:       { cls: 'bg-red-900/40 border-red-700 text-red-300',       text: '❌ متغيرات البيئة مفقودة في Render' },
+      meta_unreachable:  { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
+      unknown:           { cls: 'bg-slate-700 border-slate-600 text-slate-300',    text: 'ℹ️ غير محدد' },
+    };
+
+    const vm = VERDICT_MSG[verdict] || VERDICT_MSG.unknown;
+
+    let html = `<div class="rounded-xl border px-4 py-3 mb-4 text-sm font-semibold ${vm.cls}">${vm.text}</div>`;
+
+    if (fixed.length) {
+      html += `<div class="bg-blue-900/30 border border-blue-700/50 rounded-xl px-3 py-2 text-blue-300 text-xs mb-3">
+        <div class="font-semibold mb-1">🔧 إصلاحات تلقائية:</div>
+        ${fixed.map(f => `<div>• ${f}</div>`).join('')}
+      </div>`;
+    }
+
+    html += `<div class="space-y-1.5">`;
+    for (const s of steps) {
+      const icon = STATUS_ICON[s.status] || 'ℹ️';
+      const cls  = STATUS_CLS[s.status]  || 'text-slate-300';
+      html += `
+        <div class="flex items-start gap-2 bg-slate-700/50 rounded-xl px-3 py-2">
+          <span class="mt-0.5 flex-shrink-0">${icon}</span>
+          <div class="flex-1 min-w-0">
+            <span class="text-slate-200 font-medium text-xs">${s.label}</span>
+            ${s.detail ? `<div class="${cls} text-xs mt-0.5 break-all">${s.detail}</div>` : ''}
+          </div>
+        </div>`;
+    }
+    html += `</div>`;
+
+    if (verdict === 'fixed') {
+      html += `<button onclick="loadChannels();closeModal()"
+        class="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
+        تحديث القنوات
+      </button>`;
+    } else if (['token_cannot_decrypt','token_expired','token_invalid','token_wrong_type','no_token','no_channel'].includes(verdict)) {
+      html += `<button onclick="closeModal();startConnect('instagram')"
+        class="mt-4 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
+        <i class="fa-brands fa-instagram mr-2"></i>ربط Instagram الآن
+      </button>`;
+    }
+
+    document.getElementById('igDiagBody').innerHTML = html;
+  } catch(e) {
+    document.getElementById('igDiagBody').innerHTML =
+      `<div class="text-red-300 text-sm">❌ فشل جلب نتيجة الفحص: ${e.message}</div>`;
+  }
+}
+
 // ── Channels / Integrations Hub ───────────────────────────────
 let _chanPlatforms = [];
 
@@ -2592,6 +2687,14 @@ function renderChannelCard(p) {
     ? `<p class="text-slate-600 text-xs mb-3">آخر مزامنة: ${new Date(p.last_tested_at).toLocaleString('en-GB')}</p>` : '';
 
   // Action buttons
+  const igDiagBtn = p.platform === 'instagram'
+    ? `<button onclick="runInstagramDiagnostic()"
+         class="bg-pink-500/15 hover:bg-pink-500/25 text-pink-400 text-xs py-2 px-3 rounded-xl transition"
+         title="فحص Instagram المفصّل">
+         <i class="fa-solid fa-stethoscope mr-1"></i>فحص
+       </button>`
+    : '';
+
   let actions;
   if (isConnected && !needsReconnect) {
     actions = `<div class="flex gap-2 flex-wrap">
@@ -2608,6 +2711,7 @@ function renderChannelCard(p) {
           class="bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs py-2 px-3 rounded-xl transition">
           <i class="fa-solid fa-plug-circle-check mr-1"></i>اختبار
         </button>
+        ${igDiagBtn}
         <button onclick="disconnectChannel('${p.platform}')"
           class="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs py-2 px-3 rounded-xl transition">
           <i class="fa-solid fa-link-slash mr-1"></i>فصل
@@ -2624,6 +2728,7 @@ function renderChannelCard(p) {
           class="${btnCls} text-white text-xs py-2.5 px-4 rounded-xl transition font-semibold flex items-center gap-2 flex-1 justify-center">
           <i class="fa-solid ${btnIcon}"></i> ${btnLabel}
         </button>
+        ${igDiagBtn}
         ${needsReconnect ? `<button onclick="disconnectChannel('${p.platform}')"
           class="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs py-2 px-3 rounded-xl transition">
           <i class="fa-solid fa-link-slash"></i></button>` : ''}

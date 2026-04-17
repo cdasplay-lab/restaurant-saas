@@ -3778,6 +3778,252 @@ async def debug_meta_config():
     }
 
 
+@app.get("/api/debug/instagram-diagnostic")
+async def instagram_diagnostic(user=Depends(current_user)):
+    """
+    Full Instagram integration diagnostic for a restaurant.
+    Checks every step of the OAuth→token→channel pipeline and auto-fixes what it can.
+    """
+    rid     = user["restaurant_id"]
+    steps   = []   # list of {id, label, status, detail}
+    fixed   = []
+    verdict = "unknown"
+
+    def _step(sid, label, status, detail=""):
+        steps.append({"id": sid, "label": label, "status": status, "detail": str(detail)})
+        logger.info(f"[ig-diag] {sid} → {status}: {str(detail)[:120]}")
+
+    conn = database.get_db()
+    try:
+        # ── 1. Env vars ─────────────────────────────────────────────────────────
+        if not META_APP_ID:
+            _step("env_app_id", "META_APP_ID", "FAIL", "غير موجود في Render — أضفه من Meta Developers")
+            return {"steps": steps, "fixed": fixed, "verdict": "env_missing"}
+        _step("env_app_id", "META_APP_ID", "OK", META_APP_ID[:6] + "…")
+
+        if not META_APP_SECRET:
+            _step("env_app_secret", "META_APP_SECRET", "FAIL", "غير موجود في Render")
+            return {"steps": steps, "fixed": fixed, "verdict": "env_missing"}
+        _step("env_app_secret", "META_APP_SECRET", "OK", "موجود ✓")
+
+        # ── 2. OAuth URL generation ──────────────────────────────────────────────
+        try:
+            adapter     = get_adapter("instagram")
+            redirect_uri = f"{BASE_URL}/oauth/meta/callback"
+            auth_url    = adapter.build_auth_url("diag_test", redirect_uri)
+            _step("oauth_url", "توليد OAuth URL", "OK", auth_url[:80] + "…")
+        except Exception as exc:
+            _step("oauth_url", "توليد OAuth URL", "FAIL", str(exc))
+            return {"steps": steps, "fixed": fixed, "verdict": "oauth_url_failed"}
+
+        # ── 3. Last OAuth state for this restaurant ──────────────────────────────
+        last_state_row = conn.execute(
+            "SELECT * FROM oauth_states WHERE platform='instagram' AND restaurant_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (rid,)
+        ).fetchone()
+
+        pages_data   = {}
+        ig_accounts  = []
+
+        if not last_state_row:
+            _step("oauth_state", "آخر OAuth state", "WARN",
+                  "لا توجد محاولة Instagram OAuth بعد — اضغط ربط Instagram أولاً")
+        else:
+            last_state = dict(last_state_row)
+            raw_pj = last_state.get("pages_json") or "{}"
+            try:
+                pages_data  = json.loads(raw_pj)
+                ig_accounts = pages_data.get("pages", [])
+            except Exception:
+                pages_data  = {}
+                ig_accounts = []
+
+            if last_state.get("used", 0) == 0:
+                _step("oauth_state", "آخر OAuth state", "WARN",
+                      f"OAuth بدأ لكن Callback لم يُستكمَل (used=0) — "
+                      f"created_at={last_state.get('created_at','')}")
+            else:
+                _step("oauth_state", "آخر OAuth state", "OK",
+                      f"completed (used=1) — accounts={len(ig_accounts)} "
+                      f"has_user_token={bool(pages_data.get('access_token'))}")
+
+            # ── 4. Accounts in pages_json ────────────────────────────────────────
+            if ig_accounts:
+                first = ig_accounts[0]
+                has_pt = bool(first.get("page_token", ""))
+                _step("oauth_accounts", "IG accounts في pages_json", "OK" if has_pt else "FAIL",
+                      f"accounts={len(ig_accounts)} — "
+                      f"account_id={first.get('id','?')} "
+                      f"page_id={first.get('page_id','?')} "
+                      f"has_page_token={has_pt} "
+                      f"token_prefix={first.get('page_token','')[:12] if has_pt else 'EMPTY'}")
+            else:
+                _step("oauth_accounts", "IG accounts في pages_json", "FAIL",
+                      "لا توجد Instagram accounts — تأكد أن لديك Instagram Business Account "
+                      "مرتبطاً بصفحة Facebook تملكها")
+
+        # ── 5. Channel DB row ────────────────────────────────────────────────────
+        ch_row = conn.execute(
+            "SELECT * FROM channels WHERE restaurant_id=? AND type='instagram'", (rid,)
+        ).fetchone()
+
+        if not ch_row:
+            _step("channel_row", "صف Instagram في DB", "WARN", "لا يوجد بعد — ربط Instagram لم يكتمل")
+            verdict = "no_channel"
+        else:
+            ch = dict(ch_row)
+            _step("channel_row", "صف Instagram في DB", "OK",
+                  f"id={ch['id'][:8]} status={ch.get('connection_status','?')} "
+                  f"enabled={ch.get('enabled',0)} reconnect_needed={ch.get('reconnect_needed',0)}")
+
+            stored_token = ch.get("token", "") or ""
+
+            # ── 6. Token present check ───────────────────────────────────────────
+            if not stored_token:
+                _step("token_present", "Token موجود في DB", "FAIL",
+                      "الـ token فارغ في عمود channels.token — لم يُحفظ page token")
+                verdict = "no_token"
+            else:
+                _step("token_present", "Token موجود في DB", "OK",
+                      f"length={len(stored_token)} prefix={stored_token[:12]}")
+
+                # ── 7. Token format check ────────────────────────────────────────
+                if stored_token.startswith("EAA"):
+                    _step("token_format", "تنسيق الـ token", "OK",
+                          "يبدأ بـ EAA — Facebook token format صحيح")
+                else:
+                    _step("token_format", "تنسيق الـ token", "WARN",
+                          f"لا يبدأ بـ EAA — prefix={stored_token[:12]} — قد يكون غير صحيح")
+
+                # ── 8. Meta API token validation ─────────────────────────────────
+                try:
+                    import httpx as _httpx
+                    vr = _httpx.get(
+                        f"https://graph.facebook.com/v20.0/me",
+                        params={"access_token": stored_token, "fields": "id,name"},
+                        timeout=10,
+                    )
+                    vdata = vr.json()
+
+                    if "error" in vdata:
+                        meta_err  = vdata["error"]
+                        code      = str(meta_err.get("code", ""))
+                        subcode   = str(meta_err.get("error_subcode", ""))
+                        msg       = meta_err.get("message", "")
+
+                        if "could not be decrypted" in msg.lower():
+                            _step("token_meta_valid", "Meta API: token صالح؟", "FAIL",
+                                  f"❌ THE ACCESS TOKEN COULD NOT BE DECRYPTED — "
+                                  f"Token مكسور أو من Facebook App مختلف (code=190/467). "
+                                  f"السبب: تم حفظ token خاطئ أو من تطبيق آخر.")
+                            verdict = "token_cannot_decrypt"
+                        elif code == "190":
+                            _step("token_meta_valid", "Meta API: token صالح؟", "FAIL",
+                                  f"Token منتهي أو ملغى (code=190 subcode={subcode}): {msg}")
+                            verdict = "token_expired"
+                        else:
+                            _step("token_meta_valid", "Meta API: token صالح؟", "FAIL",
+                                  f"Meta error code={code}: {msg}")
+                            verdict = "token_invalid"
+                    else:
+                        _name = vdata.get("name", vdata.get("id", ""))
+                        _step("token_meta_valid", "Meta API: token صالح؟", "OK",
+                              f"Token صالح — /me يرجع: {_name} (id={vdata.get('id','?')})")
+
+                        # ── 9. Token type check (user vs page) ───────────────────
+                        # Try fetching pages — user tokens can; page tokens cannot
+                        try:
+                            pr = _httpx.get(
+                                f"https://graph.facebook.com/v20.0/me/accounts",
+                                params={"access_token": stored_token},
+                                timeout=10,
+                            )
+                            pdata = pr.json()
+                            if "error" not in pdata:
+                                _step("token_type", "نوع الـ token", "WARN",
+                                      "الـ token المحفوظ هو USER token وليس PAGE token — "
+                                      "يعمل مع /me لكن سيفشل مع Instagram DM API. "
+                                      "يجب إعادة الربط وأخذ page_token من /me/accounts")
+                                verdict = "token_wrong_type"
+                            else:
+                                _step("token_type", "نوع الـ token", "OK",
+                                      "لا يعمل مع /me/accounts — على الأرجح PAGE token ✓")
+                                verdict = "connected"
+                        except Exception:
+                            _step("token_type", "نوع الـ token", "WARN", "لم يمكن التحقق من نوع الـ token")
+                            verdict = "connected"
+
+                except Exception as exc:
+                    _step("token_meta_valid", "Meta API: token صالح؟", "FAIL",
+                          f"فشل الاتصال بـ Meta API: {exc}")
+                    verdict = "meta_unreachable"
+
+            # ── 10. Key columns check ────────────────────────────────────────────
+            col_ok  = lambda v: "موجود: " + str(v)[:20]
+            col_bad = lambda f: f"فارغ — {f} غير محفوظ"
+            _step("col_page_id",    "channels.page_id (Facebook Page ID)",
+                  "OK" if ch.get("page_id") else "FAIL",
+                  col_ok(ch["page_id"]) if ch.get("page_id") else col_bad("Facebook Page ID"))
+            _step("col_biz_id",     "channels.business_account_id (IG Business Account)",
+                  "OK" if ch.get("business_account_id") else "WARN",
+                  col_ok(ch["business_account_id"]) if ch.get("business_account_id") else "فارغ")
+            _step("col_last_error", "channels.last_error",
+                  "FAIL" if ch.get("last_error") else "OK",
+                  ch.get("last_error") or "لا يوجد خطأ ✓")
+
+            # ── 11. Auto-fix: re-apply valid page_token from pages_json ──────────
+            if stored_token != "" or True:  # always attempt if we have ig_accounts
+                for acct in ig_accounts:
+                    candidate = acct.get("page_token", "")
+                    if not candidate or candidate == stored_token:
+                        continue
+                    # Validate this candidate against Meta
+                    try:
+                        import httpx as _httpx
+                        cr = _httpx.get(
+                            f"https://graph.facebook.com/v20.0/me",
+                            params={"access_token": candidate, "fields": "id,name"},
+                            timeout=10,
+                        )
+                        cdata = cr.json()
+                        if "error" not in cdata:
+                            # Valid token — apply it
+                            conn.execute(
+                                "UPDATE channels SET "
+                                "token=?, page_id=?, business_account_id=?, "
+                                "last_error='', reconnect_needed=0, connection_status='connected', "
+                                "oauth_completed_at=?, last_tested_at=CURRENT_TIMESTAMP "
+                                "WHERE id=?",
+                                (
+                                    candidate,
+                                    acct.get("page_id", ch.get("page_id", "")),
+                                    acct.get("id", ch.get("business_account_id", "")),
+                                    datetime.utcnow().isoformat(),
+                                    ch["id"],
+                                )
+                            )
+                            conn.commit()
+                            fix_msg = (f"✅ تم إصلاح الـ token تلقائياً — "
+                                       f"تم حفظ page_token الصحيح من pages_json "
+                                       f"(account={acct.get('id','?')} page_id={acct.get('page_id','?')}) "
+                                       f"token_prefix={candidate[:12]}")
+                            fixed.append(fix_msg)
+                            _step("auto_fix", "إصلاح تلقائي", "FIXED", fix_msg)
+                            verdict = "fixed"
+                            break
+                        else:
+                            _step("auto_fix_candidate", "مرشح token من pages_json",
+                                  "FAIL", f"Token مرشح غير صالح: {cdata['error'].get('message','?')}")
+                    except Exception as fix_exc:
+                        logger.warning(f"[ig-diag] auto-fix candidate test failed: {fix_exc}")
+
+        return {"steps": steps, "fixed": fixed, "verdict": verdict}
+
+    finally:
+        conn.close()
+
+
 @app.post("/connect/facebook")
 async def connect_facebook(user=Depends(current_user)):
     """Start Facebook OAuth flow. Returns {auth_url, state}."""
