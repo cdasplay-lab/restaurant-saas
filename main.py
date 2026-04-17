@@ -2498,6 +2498,7 @@ async def integrations_oauth_start(data: dict, user=Depends(current_user)):
         conn.close()
 
     auth_url = adapter.build_auth_url(state, redirect_uri)
+    logger.info(f"[oauth-start] platform={platform} state={state[:8]} redirect_uri={redirect_uri} auth_url_prefix={auth_url[:80]}")
     return {"auth_url": auth_url, "state": state}
 
 

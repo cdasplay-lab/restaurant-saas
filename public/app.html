@@ -2654,13 +2654,22 @@ async function startConnect(platform) {
   if (platform === 'telegram') { openTelegramModal(); return; }
   try {
     toast('جاري التحضير...', 'info');
+    console.log('[connect] POST /connect/' + platform);
     const r = await api.post(`/connect/${platform}`);
+    console.log('[connect] response:', JSON.stringify(r));
     if (r.auth_url) {
-      window.location.href = r.auth_url;
+      console.log('[connect] redirecting to auth_url:', r.auth_url);
+      window.location.assign(r.auth_url);
     } else if (r.auth_type === 'embedded_signup') {
       startWAEmbeddedSignup(r.meta_app_id, r.config_id);
+    } else {
+      console.warn('[connect] unexpected response — no auth_url, no embedded_signup:', r);
+      toast('استجابة غير متوقعة من الخادم', 'error');
     }
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) {
+    console.error('[connect] error:', e.message, e);
+    toast(e.message, 'error');
+  }
 }
 
 async function disconnectChannel(platform) {
