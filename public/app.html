@@ -2868,77 +2868,70 @@ function startWAEmbeddedSignup(appId, configId) {
 
 function _launchWADialog() {
   console.log('[wa] _launchWADialog — config_id:', window._META_CONFIG_ID);
+  _waData._authAtFinish = null;
 
   window.addEventListener('message', function _waMsgHandler(event) {
     try {
       const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
       if (d?.type === 'WA_EMBEDDED_SIGNUP') {
-        console.log('[wa] WA_EMBEDDED_SIGNUP message event=' + d?.event + ':', JSON.stringify(d));
+        console.log('[wa] WA_EMBEDDED_SIGNUP event=' + d?.event + ' data:', JSON.stringify(d?.data));
         if (d?.event === 'FINISH') {
           _waData.waba_id         = d.data?.waba_id         || '';
           _waData.phone_number_id = d.data?.phone_number_id || '';
-          console.log('[wa] FINISH — waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
+          // Capture FB auth immediately at FINISH — before FB.login callback fires
+          const ar = FB.getAuthResponse();
+          console.log('[wa] FB.getAuthResponse() at FINISH:', JSON.stringify(ar));
+          if (ar?.code || ar?.accessToken) _waData._authAtFinish = ar;
           window.removeEventListener('message', _waMsgHandler);
         } else if (d?.event === 'CANCEL') {
-          console.warn('[wa] user cancelled embedded signup');
+          console.warn('[wa] user cancelled');
           window.removeEventListener('message', _waMsgHandler);
         } else if (d?.event === 'ERROR') {
-          console.error('[wa] embedded signup error:', JSON.stringify(d));
+          console.error('[wa] Meta returned ERROR:', JSON.stringify(d));
           window.removeEventListener('message', _waMsgHandler);
         }
       }
     } catch(e) { console.warn('[wa] message parse error:', e); }
   });
 
-  const _waLoginOpts = {
+  const opts = {
     config_id:                      window._META_CONFIG_ID,
     response_type:                  'code',
     override_default_response_type: true,
     extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
   };
 
-  const _doFBLogin = function() {
-    console.log('[wa] calling FB.login with opts:', JSON.stringify(_waLoginOpts));
-    FB.login(function(resp) {
-      console.log('[wa] FB.login status:', resp?.status);
-      console.log('[wa] FB.login authResponse keys:', Object.keys(resp?.authResponse || {}));
-      console.log('[wa] FB.login authResponse:', JSON.stringify(resp?.authResponse));
-      console.log('[wa] _waData at callback:', JSON.stringify(_waData));
+  console.log('[wa] calling FB.login — opts:', JSON.stringify(opts));
+  FB.login(function(resp) {
+    console.log('[wa] FB.login callback fired');
+    console.log('[wa]   status:', resp?.status);
+    console.log('[wa]   authResponse:', JSON.stringify(resp?.authResponse));
+    console.log('[wa]   _authAtFinish:', JSON.stringify(_waData._authAtFinish));
+    console.log('[wa]   FB.getAuthResponse():', JSON.stringify(FB.getAuthResponse()));
 
-      const code        = resp?.authResponse?.code;
-      const accessToken = resp?.authResponse?.accessToken;
+    // Use callback authResponse, then FINISH-time capture, then current session — in priority order
+    const ar          = resp?.authResponse || _waData._authAtFinish || FB.getAuthResponse();
+    const code        = ar?.code;
+    const accessToken = ar?.accessToken;
 
-      if (code) {
-        console.log('[wa] got code — submitting via code exchange');
-        _waData.code      = code;
-        _waData.tokenType = 'code';
-        setTimeout(_submitWASignup, 800);
-      } else if (accessToken) {
-        console.log('[wa] got accessToken (no code) — submitting token directly');
-        _waData.accessToken = accessToken;
-        _waData.tokenType   = 'token';
-        setTimeout(_submitWASignup, 800);
-      } else {
-        console.warn('[wa] neither code nor accessToken in authResponse — status:', resp?.status);
-        console.warn('[wa] full response:', JSON.stringify(resp));
-        toast('لم يكتمل إعداد WhatsApp — لم يتم استلام رمز التفويض', 'error');
-      }
-    }, _waLoginOpts);
-  };
+    console.log('[wa] resolved ar:', JSON.stringify(ar), '| code:', !!code, '| accessToken:', !!accessToken);
 
-  // Always ensure fresh session so FB issues a new code
-  FB.getLoginStatus(function(statusResp) {
-    console.log('[wa] current FB session status:', statusResp.status);
-    if (statusResp.status === 'connected') {
-      console.log('[wa] existing session found — logging out for fresh code...');
-      FB.logout(function() {
-        console.log('[wa] logged out, launching dialog');
-        _doFBLogin();
-      });
+    if (code) {
+      console.log('[wa] submitting via code');
+      _waData.code      = code;
+      _waData.tokenType = 'code';
+      setTimeout(_submitWASignup, 800);
+    } else if (accessToken) {
+      console.log('[wa] submitting via accessToken');
+      _waData.accessToken = accessToken;
+      _waData.tokenType   = 'token';
+      setTimeout(_submitWASignup, 800);
     } else {
-      _doFBLogin();
+      console.error('[wa] FAILED — no code, no accessToken, status:', resp?.status);
+      console.error('[wa] Full resp:', JSON.stringify(resp));
+      toast('لم يكتمل إعداد WhatsApp — يُرجى مشاركة الـ console log لمعرفة السبب', 'error');
     }
-  });
+  }, opts);
 }
 
 async function _submitWASignup() {
