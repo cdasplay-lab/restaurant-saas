@@ -2846,11 +2846,15 @@ function startWAEmbeddedSignup(appId, configId) {
   window._META_APP_ID    = appId;
   window._META_CONFIG_ID = configId;
   _waData = {};
+  const _fbInit = () => {
+    console.log('[wa] FB.init appId:', appId);
+    FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0', status: true, oauth: true });
+  };
   if (typeof FB === 'undefined') {
     console.log('[wa] FB SDK not loaded yet, injecting script...');
     window.fbAsyncInit = function() {
-      console.log('[wa] FB SDK loaded, initializing...');
-      FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0' });
+      console.log('[wa] FB SDK loaded');
+      _fbInit();
       _launchWADialog();
     };
     if (!document.getElementById('facebook-jssdk')) {
@@ -2861,7 +2865,7 @@ function startWAEmbeddedSignup(appId, configId) {
     }
   } else {
     console.log('[wa] FB SDK already loaded, re-initializing...');
-    FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0' });
+    _fbInit();
     _launchWADialog();
   }
 }
@@ -2894,42 +2898,41 @@ function _launchWADialog() {
     } catch(e) { console.warn('[wa] message parse error:', e); }
   });
 
+  // Use default response_type (token) — avoids code-grant requirements that may not be configured
   const opts = {
-    config_id:                      window._META_CONFIG_ID,
-    response_type:                  'code',
-    override_default_response_type: true,
-    extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
+    config_id: window._META_CONFIG_ID,
+    extras:    { setup: {}, featureType: '', sessionInfoVersion: '3' },
   };
 
   console.log('[wa] calling FB.login — opts:', JSON.stringify(opts));
   FB.login(function(resp) {
-    console.log('[wa] FB.login callback fired');
-    console.log('[wa]   status:', resp?.status);
-    console.log('[wa]   authResponse:', JSON.stringify(resp?.authResponse));
-    console.log('[wa]   _authAtFinish:', JSON.stringify(_waData._authAtFinish));
-    console.log('[wa]   FB.getAuthResponse():', JSON.stringify(FB.getAuthResponse()));
+    console.log('[wa] ===== FB.login callback =====');
+    console.log('[wa] status:', resp?.status);
+    console.log('[wa] authResponse:', JSON.stringify(resp?.authResponse));
+    console.log('[wa] _authAtFinish:', JSON.stringify(_waData._authAtFinish));
+    console.log('[wa] FB.getAuthResponse():', JSON.stringify(FB.getAuthResponse()));
 
-    // Use callback authResponse, then FINISH-time capture, then current session — in priority order
     const ar          = resp?.authResponse || _waData._authAtFinish || FB.getAuthResponse();
     const code        = ar?.code;
     const accessToken = ar?.accessToken;
 
-    console.log('[wa] resolved ar:', JSON.stringify(ar), '| code:', !!code, '| accessToken:', !!accessToken);
+    console.log('[wa] resolved — code:', !!code, '| accessToken:', !!accessToken, '| ar:', JSON.stringify(ar));
 
     if (code) {
-      console.log('[wa] submitting via code');
+      console.log('[wa] → submitting via code');
       _waData.code      = code;
       _waData.tokenType = 'code';
       setTimeout(_submitWASignup, 800);
     } else if (accessToken) {
-      console.log('[wa] submitting via accessToken');
+      console.log('[wa] → submitting via accessToken');
       _waData.accessToken = accessToken;
       _waData.tokenType   = 'token';
       setTimeout(_submitWASignup, 800);
     } else {
-      console.error('[wa] FAILED — no code, no accessToken, status:', resp?.status);
-      console.error('[wa] Full resp:', JSON.stringify(resp));
-      toast('لم يكتمل إعداد WhatsApp — يُرجى مشاركة الـ console log لمعرفة السبب', 'error');
+      const debugInfo = `status=${resp?.status} ar=${JSON.stringify(ar)}`;
+      console.error('[wa] FAILED — no auth received. Debug:', debugInfo);
+      console.error('[wa] Full resp object:', JSON.stringify(resp));
+      toast(`WhatsApp: لم يُستلم رمز تفويض — ${debugInfo}`, 'error');
     }
   }, opts);
 }
