@@ -2900,38 +2900,28 @@ function _launchWADialog() {
   const _doFBLogin = function() {
     console.log('[wa] calling FB.login with opts:', JSON.stringify(_waLoginOpts));
     FB.login(function(resp) {
-      console.log('[wa] FB.login response status:', resp?.status);
+      console.log('[wa] FB.login status:', resp?.status);
+      console.log('[wa] FB.login authResponse keys:', Object.keys(resp?.authResponse || {}));
       console.log('[wa] FB.login authResponse:', JSON.stringify(resp?.authResponse));
       console.log('[wa] _waData at callback:', JSON.stringify(_waData));
 
-      const code = resp?.authResponse?.code;
+      const code        = resp?.authResponse?.code;
+      const accessToken = resp?.authResponse?.accessToken;
+
       if (code) {
-        console.log('[wa] code received, proceeding to submit');
-        _waData.code = code;
+        console.log('[wa] got code — submitting via code exchange');
+        _waData.code      = code;
+        _waData.tokenType = 'code';
+        setTimeout(_submitWASignup, 800);
+      } else if (accessToken) {
+        console.log('[wa] got accessToken (no code) — submitting token directly');
+        _waData.accessToken = accessToken;
+        _waData.tokenType   = 'token';
         setTimeout(_submitWASignup, 800);
       } else {
-        const status = resp?.status || 'unknown';
-        console.warn('[wa] no code — status:', status);
-        if (status === 'connected' && _waData.waba_id) {
-          // Dialog completed (FINISH fired) but FB returned connected without new code
-          // Retry once with fresh logout to force code issuance
-          console.log('[wa] connected+waba_id but no code — retrying after logout...');
-          FB.logout(function() {
-            console.log('[wa] logged out, retrying FB.login...');
-            FB.login(function(resp2) {
-              console.log('[wa] retry FB.login response:', JSON.stringify(resp2?.authResponse));
-              if (resp2?.authResponse?.code) {
-                _waData.code = resp2.authResponse.code;
-                setTimeout(_submitWASignup, 800);
-              } else {
-                console.error('[wa] retry also failed:', resp2?.status);
-                toast('فشل الحصول على رمز WhatsApp — حاول مجدداً', 'error');
-              }
-            }, _waLoginOpts);
-          });
-        } else {
-          toast('لم يكتمل إعداد WhatsApp — أغلق النافذة وحاول مجدداً', 'error');
-        }
+        console.warn('[wa] neither code nor accessToken in authResponse — status:', resp?.status);
+        console.warn('[wa] full response:', JSON.stringify(resp));
+        toast('لم يكتمل إعداد WhatsApp — لم يتم استلام رمز التفويض', 'error');
       }
     }, _waLoginOpts);
   };
@@ -2952,20 +2942,31 @@ function _launchWADialog() {
 }
 
 async function _submitWASignup() {
-  console.log('[wa] _submitWASignup — code:', _waData.code ? _waData.code.slice(0,8)+'...' : 'MISSING', 'waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
-  if (!_waData.code) { toast('لا يوجد code من Meta', 'error'); return; }
+  const hasCode  = !!_waData.code;
+  const hasToken = !!_waData.accessToken;
+  console.log('[wa] _submitWASignup — tokenType:', _waData.tokenType, 'hasCode:', hasCode, 'hasToken:', hasToken, 'waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
+
+  if (!hasCode && !hasToken) {
+    toast('لا يوجد رمز تفويض من Meta', 'error');
+    return;
+  }
+
+  const payload = {
+    waba_id:         _waData.waba_id         || '',
+    phone_number_id: _waData.phone_number_id || '',
+  };
+  if (hasCode)  payload.code         = _waData.code;
+  if (hasToken) payload.access_token = _waData.accessToken;
+
+  console.log('[wa] posting to /api/integrations/whatsapp/embedded-signup — payload keys:', Object.keys(payload));
   try {
     toast('جاري ربط WhatsApp...', 'info');
-    const result = await api.post('/api/integrations/whatsapp/embedded-signup', {
-      code:            _waData.code,
-      waba_id:         _waData.waba_id || '',
-      phone_number_id: _waData.phone_number_id || '',
-    });
+    const result = await api.post('/api/integrations/whatsapp/embedded-signup', payload);
     console.log('[wa] embedded-signup result:', JSON.stringify(result));
     toast('تم ربط WhatsApp بنجاح! 🎉', 'success');
     loadChannels();
   } catch(e) {
-    console.error('[wa] embedded-signup error:', e.message);
+    console.error('[wa] embedded-signup error:', e.message, e);
     toast(e.message, 'error');
   }
 }

@@ -2754,11 +2754,12 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
     phone_number_id = data.get("phone_number_id", "")
     rid             = user["restaurant_id"]
 
-    logger.info(f"[wa-signup] HIT — code={'YES('+code[:8]+')' if code else 'MISSING'} waba_id={waba_id!r} phone_number_id={phone_number_id!r} restaurant={rid}")
+    access_token_direct = data.get("access_token", "")   # direct token path (no code exchange)
+    logger.info(f"[wa-signup] HIT — code={'YES('+code[:8]+')' if code else 'MISSING'} access_token_direct={'YES('+access_token_direct[:8]+')' if access_token_direct else 'MISSING'} waba_id={waba_id!r} phone_number_id={phone_number_id!r} restaurant={rid}")
 
-    if not code:
-        logger.error("[wa-signup] ABORT — no code")
-        raise HTTPException(400, "code مطلوب")
+    if not code and not access_token_direct:
+        logger.error("[wa-signup] ABORT — no code and no access_token")
+        raise HTTPException(400, "code أو access_token مطلوب")
     if not META_APP_ID:
         logger.error("[wa-signup] ABORT — META_APP_ID missing")
         raise HTTPException(400, "META_APP_ID غير مضبوط")
@@ -2768,16 +2769,36 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
     adapter = get_adapter("whatsapp")
     conn    = database.get_db()
     try:
-        logger.info("[wa-signup] exchanging code for token...")
-        try:
-            result = adapter.exchange_code(code)
-        except Exception as exc:
-            logger.error(f"[wa-signup] exchange_code FAILED: {exc}")
-            raise HTTPException(400, f"فشل تبادل التوكن: {exc}")
-
-        token      = result["access_token"]
-        expires_at = result.get("token_expires_at", "")
-        logger.info(f"[wa-signup] exchange OK — token={'YES('+token[:8]+')' if token else 'MISSING'} expires={expires_at}")
+        if code:
+            logger.info("[wa-signup] exchanging code for token...")
+            try:
+                result = adapter.exchange_code(code)
+            except Exception as exc:
+                logger.error(f"[wa-signup] exchange_code FAILED: {exc}")
+                raise HTTPException(400, f"فشل تبادل التوكن: {exc}")
+            token      = result["access_token"]
+            expires_at = result.get("token_expires_at", "")
+            logger.info(f"[wa-signup] code exchange OK — token={'YES('+token[:8]+')' if token else 'MISSING'} expires={expires_at}")
+        else:
+            logger.info("[wa-signup] using direct access_token — extending to long-lived...")
+            try:
+                import httpx as _httpx
+                r = _httpx.get("https://graph.facebook.com/oauth/access_token", params={
+                    "grant_type":      "fb_exchange_token",
+                    "client_id":       META_APP_ID,
+                    "client_secret":   META_APP_SECRET,
+                    "fb_exchange_token": access_token_direct,
+                }, timeout=15)
+                ext = r.json()
+                logger.info(f"[wa-signup] token extension response: {list(ext.keys())}")
+                token      = ext.get("access_token", access_token_direct)
+                expires_in = ext.get("expires_in", 0)
+                expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat() if expires_in else ""
+                logger.info(f"[wa-signup] extended token OK — expires={expires_at}")
+            except Exception as exc:
+                logger.warning(f"[wa-signup] token extension failed, using raw token: {exc}")
+                token      = access_token_direct
+                expires_at = ""
 
         # Confirm phone number + get display number
         phone_display = phone_number_id
