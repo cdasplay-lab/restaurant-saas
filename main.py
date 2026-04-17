@@ -3646,6 +3646,7 @@ async def debug_oauth_log():
                 "pages_count":  pages_count,
                 "has_token":    has_token,
                 "pages_json_len": len(pj),
+                "state":          r["state"],
             })
         ch_rows = conn.execute(
             "SELECT type, connection_status, last_error, reconnect_needed FROM channels "
