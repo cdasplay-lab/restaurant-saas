@@ -3790,20 +3790,25 @@ async def debug_meta_config():
 @app.get("/api/debug/instagram-diagnostic")
 async def instagram_diagnostic(user=Depends(current_user)):
     """
-    Full Instagram integration diagnostic for a restaurant.
-    Checks every step of the OAuth→token→channel pipeline and auto-fixes what it can.
+    Full Instagram integration diagnostic — NEVER returns HTTP 500.
+    All errors are caught and returned as structured JSON with a verdict.
     """
     rid     = user["restaurant_id"]
-    steps   = []   # list of {id, label, status, detail}
+    steps   = []
     fixed   = []
     verdict = "unknown"
+    conn    = None   # initialise before try so finally is always safe
 
     def _step(sid, label, status, detail=""):
-        steps.append({"id": sid, "label": label, "status": status, "detail": str(detail)})
-        logger.info(f"[ig-diag] {sid} → {status}: {str(detail)[:120]}")
+        try:
+            steps.append({"id": sid, "label": label, "status": status,
+                          "detail": str(detail)[:500]})
+            logger.info(f"[ig-diag] {sid}={status}: {str(detail)[:100]}")
+        except Exception:
+            pass  # never let _step itself crash the endpoint
 
-    conn = database.get_db()
     try:
+        conn = database.get_db()
         # ── 1. Env vars ─────────────────────────────────────────────────────────
         if not META_APP_ID:
             _step("env_app_id", "META_APP_ID", "FAIL", "غير موجود في Render — أضفه من Meta Developers")
@@ -4089,7 +4094,11 @@ async def instagram_diagnostic(user=Depends(current_user)):
         _step("internal_error", "خطأ داخلي في الفحص", "FAIL", str(_diag_exc)[:300])
         return {"steps": steps, "fixed": fixed, "verdict": "internal_error"}
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.post("/connect/facebook")
