@@ -2729,6 +2729,43 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
                   user["id"], "connected",
                   ch["id"]))
 
+        elif platform == "whatsapp":
+            phone_number_id = data.get("page_id",      "")   # phone_number_id
+            waba_id         = data.get("account_id",   "")   # waba_id
+            phone_display   = data.get("page_name",    "") or data.get("account_name", "")
+
+            channel_data = {
+                "restaurant_id":       rid,
+                "token":               long_token,
+                "waba_id":             waba_id,
+                "business_account_id": waba_id,
+                "phone_number_id":     phone_number_id,
+                "verify_token":        verify_token,
+            }
+            adapter = get_adapter("whatsapp")
+            try:
+                adapter.subscribe_webhook(channel_data, BASE_URL)
+            except Exception as exc:
+                logger.warning(f"[wa] webhook subscribe failed (non-fatal): {exc}")
+
+            ch = _get_or_create_channel(conn, rid, "whatsapp")
+            conn.execute("""
+                UPDATE channels SET
+                    token=?, waba_id=?, business_account_id=?,
+                    phone_number_id=?, phone_number_display=?,
+                    verify_token=?, token_expires_at=?,
+                    oauth_completed_at=?, account_display_name=?,
+                    connected_by_user_id=?, connection_status=?,
+                    enabled=1, verified=1, reconnect_needed=0, last_error='',
+                    last_tested_at=CURRENT_TIMESTAMP
+                WHERE id=?
+            """, (long_token, waba_id, waba_id,
+                  phone_number_id, phone_display,
+                  verify_token, expires_at,
+                  now_iso, phone_display,
+                  user["id"], "connected",
+                  ch["id"]))
+
         conn.commit()
         log_activity(conn, rid, "channel_oauth_connected", "channel", platform,
                      f"OAuth connection completed for {platform}",
@@ -3729,18 +3766,12 @@ async def connect_instagram(user=Depends(current_user)):
 
 @app.post("/connect/whatsapp")
 async def connect_whatsapp(user=Depends(current_user)):
-    """Return WhatsApp Embedded Signup config. Returns {meta_app_id, config_id, auth_type}."""
+    """Start WhatsApp OAuth flow via server-side redirect (same as Facebook/Instagram)."""
     if not META_APP_ID:
         raise HTTPException(400, "META_APP_ID غير مضبوط في .env")
     if not META_WA_CONFIG_ID:
         raise HTTPException(400, "META_WA_CONFIG_ID غير مضبوط — أضفه من Meta Business Manager → Facebook Login for Business → Configuration ID")
-    return {
-        "auth_type":    "embedded_signup",
-        "meta_app_id":  META_APP_ID,
-        "config_id":    META_WA_CONFIG_ID,
-        "webhook_url":  f"{BASE_URL}/webhooks/meta",
-        "verify_token": META_VERIFY_TOKEN,
-    }
+    return await integrations_oauth_start({"platform": "whatsapp"}, user)
 
 
 # ── Webhooks (public, no auth) ────────────────────────────────────────────────

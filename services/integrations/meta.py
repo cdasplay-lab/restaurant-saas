@@ -17,10 +17,13 @@ from .base import BaseChannelAdapter
 
 logger = logging.getLogger(__name__)
 
-META_APP_ID     = os.getenv("META_APP_ID", "")
-META_APP_SECRET = os.getenv("META_APP_SECRET", "")
-GRAPH_VERSION   = "v20.0"
-GRAPH           = f"https://graph.facebook.com/{GRAPH_VERSION}"
+import urllib.parse as _urlparse
+
+META_APP_ID       = os.getenv("META_APP_ID", "")
+META_APP_SECRET   = os.getenv("META_APP_SECRET", "")
+META_WA_CONFIG_ID = os.getenv("META_WA_CONFIG_ID", "")
+GRAPH_VERSION     = "v20.0"
+GRAPH             = f"https://graph.facebook.com/{GRAPH_VERSION}"
 
 # ── SVG icons (inline, no external font dependency) ───────────────────────────
 _FB_ICON = (
@@ -320,34 +323,100 @@ class WhatsAppAdapter(_MetaBase):
     brand_color  = "text-green-400"
     brand_bg     = "bg-green-600"
     icon_svg     = _WA_ICON
-    auth_type    = "embedded_signup"   # different flow from regular OAuth
+    auth_type    = "oauth2"   # server-side redirect like Facebook/Instagram
 
     def build_auth_url(self, state: str, redirect_uri: str) -> str:
-        # WhatsApp uses the Embedded Signup JS SDK in-browser; no redirect URL needed.
-        raise NotImplementedError("WhatsApp uses Embedded Signup JS flow (client-side SDK)")
+        """Build WhatsApp Business Login OAuth URL using config_id."""
+        if not META_WA_CONFIG_ID:
+            raise ValueError("META_WA_CONFIG_ID غير مضبوط — أضفه من Meta Business Manager → Facebook Login for Business → Configuration ID")
+        return (
+            f"https://www.facebook.com/{GRAPH_VERSION}/dialog/oauth"
+            f"?client_id={META_APP_ID}"
+            f"&redirect_uri={_urlparse.quote(redirect_uri, safe='')}"
+            f"&config_id={META_WA_CONFIG_ID}"
+            f"&response_type=code"
+            f"&state={state}"
+        )
 
     def exchange_code(self, code: str, redirect_uri: str = "") -> dict:
-        """Exchange the Embedded Signup short-lived code → access token."""
-        r = httpx.get(f"{GRAPH}/oauth/access_token", params={
+        """Exchange redirect code → long-lived token, then fetch phone numbers for picker."""
+        params = {
             "client_id":     META_APP_ID,
             "client_secret": META_APP_SECRET,
             "code":          code,
-        }, timeout=15)
+        }
+        if redirect_uri:
+            params["redirect_uri"] = redirect_uri
+
+        r = httpx.get(f"{GRAPH}/oauth/access_token", params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
         if "error" in data:
             raise ValueError(data["error"].get("message", "WhatsApp token exchange failed"))
-        token      = data["access_token"]
-        expires_in = data.get("expires_in", 0)
-        expires_at = (
-            (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
-            if expires_in else ""
-        )
+
+        short_token = data["access_token"]
+
+        # Extend to long-lived token (~60 days)
+        try:
+            token, expires_at = self._extend_token(short_token)
+        except Exception as exc:
+            logger.warning(f"[wa] token extension failed, using short-lived: {exc}")
+            token      = short_token
+            expires_in = data.get("expires_in", 0)
+            expires_at = (
+                (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+                if expires_in else ""
+            )
+
+        pages = self._get_wa_phone_pages(token)
+        logger.info(f"[wa] exchange_code OK — token={'YES' if token else 'NO'} pages={len(pages)}")
+
         return {
             "access_token":     token,
             "token_expires_at": expires_at,
             "scopes_granted":   "whatsapp_business_management,whatsapp_business_messaging",
+            "pages":            pages,
         }
+
+    def _get_wa_phone_pages(self, token: str) -> list:
+        """Return WABA phone numbers as page-picker compatible objects."""
+        try:
+            r = httpx.get(f"{GRAPH}/me/whatsapp_business_accounts", params={
+                "access_token": token,
+                "fields":       "id,name",
+            }, timeout=15)
+            r.raise_for_status()
+            wabas = r.json().get("data", [])
+        except Exception as exc:
+            logger.warning(f"[wa] get_waba_accounts failed: {exc}")
+            return []
+
+        pages = []
+        for waba in wabas:
+            waba_id   = waba["id"]
+            waba_name = waba.get("name", "WhatsApp Business")
+            try:
+                ph_r = httpx.get(f"{GRAPH}/{waba_id}/phone_numbers", params={
+                    "access_token": token,
+                    "fields":       "id,display_phone_number,verified_name",
+                }, timeout=15)
+                ph_r.raise_for_status()
+                for phone in ph_r.json().get("data", []):
+                    pid   = phone["id"]
+                    pdisp = phone.get("display_phone_number", "")
+                    pname = phone.get("verified_name") or pdisp or waba_name
+                    pages.append({
+                        "id":           waba_id,   # → account_id in select-page = waba_id
+                        "name":         pdisp or pname,
+                        "access_token": token,
+                        "page_id":      pid,       # → page_id in select-page = phone_number_id
+                        "page_name":    pdisp or pname,
+                        "account_name": waba_name,
+                    })
+            except Exception as exc:
+                logger.warning(f"[wa] get_phone_numbers for waba {waba_id} failed: {exc}")
+
+        return pages
 
     def get_waba_phone_numbers(self, token: str, waba_id: str) -> list:
         """Return phone numbers registered under a WhatsApp Business Account."""
