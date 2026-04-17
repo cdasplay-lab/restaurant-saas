@@ -2840,66 +2840,86 @@ function closeOAuthPicker() {
 let _waData = {};
 
 function startWAEmbeddedSignup(appId, configId) {
-  if (!appId) { toast('META_APP_ID غير مضبوط في الخادم', 'error'); return; }
+  console.log('[wa] startWAEmbeddedSignup — appId:', appId, 'configId:', configId);
+  if (!appId)    { toast('META_APP_ID غير مضبوط في الخادم', 'error'); return; }
   if (!configId) { toast('META_WA_CONFIG_ID غير مضبوط — أضفه في Render من Meta Business Manager', 'error'); return; }
   window._META_APP_ID    = appId;
   window._META_CONFIG_ID = configId;
   _waData = {};
   if (typeof FB === 'undefined') {
+    console.log('[wa] FB SDK not loaded yet, injecting script...');
     window.fbAsyncInit = function() {
-      FB.init({ appId, cookie: true, xfbml: false, version: 'v20.0' });
+      console.log('[wa] FB SDK loaded, initializing...');
+      FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0' });
       _launchWADialog();
     };
     if (!document.getElementById('facebook-jssdk')) {
       const s = document.createElement('script');
-      s.id = 'facebook-jssdk';
+      s.id  = 'facebook-jssdk';
       s.src = 'https://connect.facebook.net/en_US/sdk.js';
       document.head.appendChild(s);
     }
   } else {
-    FB.init({ appId, cookie: true, xfbml: false, version: 'v20.0' });
+    console.log('[wa] FB SDK already loaded, re-initializing...');
+    FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0' });
     _launchWADialog();
   }
 }
 
 function _launchWADialog() {
+  console.log('[wa] _launchWADialog — config_id:', window._META_CONFIG_ID);
   window.addEventListener('message', function _waMsgHandler(event) {
     try {
       const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      if (d?.type === 'WA_EMBEDDED_SIGNUP' && d?.event === 'FINISH') {
-        _waData.waba_id         = d.data?.waba_id || '';
-        _waData.phone_number_id = d.data?.phone_number_id || '';
-        window.removeEventListener('message', _waMsgHandler);
+      if (d?.type === 'WA_EMBEDDED_SIGNUP') {
+        console.log('[wa] WA_EMBEDDED_SIGNUP message:', JSON.stringify(d));
+        if (d?.event === 'FINISH') {
+          _waData.waba_id         = d.data?.waba_id || '';
+          _waData.phone_number_id = d.data?.phone_number_id || '';
+          window.removeEventListener('message', _waMsgHandler);
+        }
       }
-    } catch(e) {}
+    } catch(e) { console.warn('[wa] message parse error:', e); }
   });
   FB.login(function(resp) {
+    console.log('[wa] FB.login response:', JSON.stringify(resp));
     if (resp.authResponse?.code) {
+      console.log('[wa] got code, waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
       _waData.code = resp.authResponse.code;
-      setTimeout(_submitWASignup, 600);
+      setTimeout(_submitWASignup, 800);
     } else {
-      toast('لم يكتمل إعداد WhatsApp', 'error');
+      const status = resp?.status || 'unknown';
+      const reason = status === 'not_authorized' ? 'لم تأذن بالتطبيق'
+                   : status === 'unknown'        ? 'أُغلقت النافذة أو لم تكتمل'
+                   : `status=${status}`;
+      console.warn('[wa] login failed — status:', status, 'full resp:', JSON.stringify(resp));
+      toast(`لم يكتمل إعداد WhatsApp — ${reason}`, 'error');
     }
   }, {
-    config_id: window._META_CONFIG_ID,          // Configuration ID from Meta Business Manager (not APP_ID)
-    response_type: 'code',
+    config_id:                      window._META_CONFIG_ID,
+    response_type:                  'code',
     override_default_response_type: true,
     extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
   });
 }
 
 async function _submitWASignup() {
-  if (!_waData.code) return;
+  console.log('[wa] _submitWASignup — code:', _waData.code ? _waData.code.slice(0,8)+'...' : 'MISSING', 'waba_id:', _waData.waba_id, 'phone_number_id:', _waData.phone_number_id);
+  if (!_waData.code) { toast('لا يوجد code من Meta', 'error'); return; }
   try {
     toast('جاري ربط WhatsApp...', 'info');
-    await api.post('/api/integrations/whatsapp/embedded-signup', {
+    const result = await api.post('/api/integrations/whatsapp/embedded-signup', {
       code:            _waData.code,
       waba_id:         _waData.waba_id || '',
       phone_number_id: _waData.phone_number_id || '',
     });
+    console.log('[wa] embedded-signup result:', JSON.stringify(result));
     toast('تم ربط WhatsApp بنجاح! 🎉', 'success');
     loadChannels();
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) {
+    console.error('[wa] embedded-signup error:', e.message);
+    toast(e.message, 'error');
+  }
 }
 
 // ── Telegram modal ────────────────────────────────────────────
