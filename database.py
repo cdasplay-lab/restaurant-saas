@@ -647,6 +647,20 @@ def _migrate_db(conn):
     """)
     conn.commit()
 
+    # ── Data fix: every WhatsApp channel must have a verify_token ─────────────
+    # The column exists but may be empty for channels connected before this was added.
+    import uuid as _uuid
+    empty_wa = conn.execute(
+        "SELECT id FROM channels WHERE type='whatsapp' AND (verify_token IS NULL OR verify_token='')"
+    ).fetchall()
+    for row in empty_wa:
+        conn.execute(
+            "UPDATE channels SET verify_token=? WHERE id=?",
+            (str(_uuid.uuid4()), row["id"] if hasattr(row, "keys") else row[0])
+        )
+    if empty_wa:
+        conn.commit()
+
     if IS_POSTGRES:
         # PostgreSQL supports ADD COLUMN IF NOT EXISTS
         for table, column, col_def in migrations:

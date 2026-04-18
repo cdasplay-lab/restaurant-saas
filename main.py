@@ -4035,6 +4035,43 @@ async def debug_meta_roles():
     }
 
 
+@app.get("/api/channels/whatsapp/webhook-info")
+async def wa_webhook_info(user=Depends(current_user)):
+    """
+    Returns the exact Callback URL and Verify Token for this restaurant's WhatsApp webhook.
+    Auto-generates and persists a verify_token if one isn't stored yet.
+    """
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT id, verify_token FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+            (rid,)
+        ).fetchone()
+        if not ch:
+            raise HTTPException(404, "لم يتم ربط WhatsApp بعد")
+
+        verify_token = ch["verify_token"] if ch["verify_token"] else ""
+        if not verify_token:
+            verify_token = str(uuid.uuid4())
+            conn.execute(
+                "UPDATE channels SET verify_token=? WHERE id=?",
+                (verify_token, ch["id"])
+            )
+            conn.commit()
+            logger.info(f"[wa-webhook-info] auto-generated verify_token for channel {ch['id']}")
+
+        callback_url = f"{BASE_URL}/webhook/whatsapp/{rid}"
+        return {
+            "callback_url":   callback_url,
+            "verify_token":   verify_token,
+            "subscribe_fields": ["messages"],
+            "note": "Paste both values into Meta → WhatsApp → Configuration → Webhook",
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/debug/meta-page-r1")
 async def debug_meta_page_r1(key: str = ""):
     """
