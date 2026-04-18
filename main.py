@@ -2832,6 +2832,11 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             phone_number_id = data.get("page_id",      "")   # phone_number_id
             waba_id         = data.get("account_id",   "")   # waba_id
             phone_display   = data.get("page_name",    "") or data.get("account_name", "")
+            logger.info(f"[wa-select] SELECT-PAGE — phone_number_id={phone_number_id!r} waba_id={waba_id!r} phone_display={phone_display!r} restaurant={rid[:8]}")
+
+            if not phone_number_id or not waba_id:
+                logger.error(f"[wa-select] ABORT — missing phone_number_id or waba_id from OAuth data keys={list(data.keys())}")
+                raise HTTPException(400, "بيانات WhatsApp غير مكتملة — phone_number_id أو waba_id مفقود")
 
             channel_data = {
                 "restaurant_id":       rid,
@@ -2844,10 +2849,12 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             adapter = get_adapter("whatsapp")
             try:
                 await asyncio.to_thread(adapter.subscribe_webhook, channel_data, BASE_URL)
+                logger.info(f"[wa-select] webhook subscribed OK")
             except Exception as exc:
-                logger.warning(f"[wa] webhook subscribe failed (non-fatal): {exc}")
+                logger.warning(f"[wa-select] webhook subscribe failed (non-fatal): {exc}")
 
             ch = _get_or_create_channel(conn, rid, "whatsapp")
+            logger.info(f"[wa-select] updating channel id={ch['id']}")
             conn.execute("""
                 UPDATE channels SET
                     token=?, waba_id=?, business_account_id=?,
@@ -2864,6 +2871,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
                   now_iso, phone_display,
                   user["id"], "connected",
                   ch["id"]))
+            logger.info(f"[wa-select] DB updated — connection_status=connected phone={phone_display!r}")
 
         conn.commit()
         log_activity(conn, rid, "channel_oauth_connected", "channel", platform,
@@ -4035,6 +4043,51 @@ async def debug_meta_roles():
     }
 
 
+@app.get("/api/debug/wa-state")
+async def debug_wa_state(user=Depends(current_user)):
+    """
+    Returns the exact DB state of the WhatsApp channel for this restaurant.
+    Use this to confirm whether the connect flow completed or stalled.
+    """
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT id, connection_status, phone_number_id, phone_number_display, "
+            "waba_id, verify_token, oauth_completed_at, last_error, enabled, "
+            "reconnect_needed, last_tested_at, token_expires_at, "
+            "CASE WHEN token != '' AND token IS NOT NULL THEN 'SET' ELSE 'MISSING' END as token_state "
+            "FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+            (rid,)
+        ).fetchone()
+        if not ch:
+            return {"status": "NO_ROW", "message": "WhatsApp channel row does not exist yet"}
+
+        d = dict(ch)
+
+        # Check recent oauth_states for this restaurant to see if flow was started
+        recent_states = conn.execute(
+            "SELECT platform, state, used, expires_at, created_at "
+            "FROM oauth_states WHERE restaurant_id=? AND platform='whatsapp' "
+            "ORDER BY created_at DESC LIMIT 5",
+            (rid,)
+        ).fetchall()
+        d["recent_oauth_states"] = [dict(r) for r in recent_states]
+
+        # Summary
+        d["diagnosis"] = (
+            "CONNECTED — flow completed"
+            if d["connection_status"] == "connected"
+            else f"NOT_CONNECTED — status='{d['connection_status']}' "
+                 f"last_error='{d['last_error'] or 'none'}' "
+                 f"waba_id={'SET' if d['waba_id'] else 'MISSING'} "
+                 f"phone_number_id={'SET' if d['phone_number_id'] else 'MISSING'}"
+        )
+        return d
+    finally:
+        conn.close()
+
+
 @app.get("/api/channels/whatsapp/webhook-info")
 async def wa_webhook_info(user=Depends(current_user)):
     """
@@ -5055,12 +5108,18 @@ async def connect_instagram(user=Depends(current_user)):
 
 @app.post("/connect/whatsapp")
 async def connect_whatsapp(user=Depends(current_user)):
-    """Start WhatsApp OAuth flow via server-side redirect (same as Facebook/Instagram)."""
+    """Start WhatsApp OAuth flow via server-side redirect."""
+    logger.info(f"[wa-connect] START — restaurant={user['restaurant_id'][:8]} user={user.get('name','?')}")
+    logger.info(f"[wa-connect] META_APP_ID={'SET('+META_APP_ID[:6]+')' if META_APP_ID else 'MISSING'} META_WA_CONFIG_ID={'SET('+META_WA_CONFIG_ID[:8]+')' if META_WA_CONFIG_ID else 'MISSING'}")
     if not META_APP_ID:
+        logger.error("[wa-connect] ABORT — META_APP_ID missing")
         raise HTTPException(400, "META_APP_ID غير مضبوط في .env")
     if not META_WA_CONFIG_ID:
+        logger.error("[wa-connect] ABORT — META_WA_CONFIG_ID missing")
         raise HTTPException(400, "META_WA_CONFIG_ID غير مضبوط — أضفه من Meta Business Manager → Facebook Login for Business → Configuration ID")
-    return await integrations_oauth_start({"platform": "whatsapp"}, user)
+    result = await integrations_oauth_start({"platform": "whatsapp"}, user)
+    logger.info(f"[wa-connect] auth_url built — prefix={result.get('auth_url','')[:80]}")
+    return result
 
 
 # ── Webhooks (public, no auth) ────────────────────────────────────────────────
