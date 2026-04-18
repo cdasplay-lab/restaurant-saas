@@ -4012,6 +4012,29 @@ async def debug_meta_subscriptions():
     }
 
 
+@app.get("/api/debug/meta-roles")
+async def debug_meta_roles():
+    """
+    Lists all accepted roles on this Meta app (admins, developers, testers).
+    Uses GET /{app_id}/roles via app access token.
+    No key guard — read-only, non-sensitive output.
+    """
+    if not META_APP_ID or not META_APP_SECRET:
+        return {"error": "META_APP_ID or META_APP_SECRET not set"}
+    import httpx as _httpx
+    app_token = f"{META_APP_ID}|{META_APP_SECRET}"
+    r = _httpx.get(
+        f"https://graph.facebook.com/v20.0/{META_APP_ID}/roles",
+        params={"access_token": app_token},
+        timeout=10,
+    )
+    return {
+        "meta_app_id": META_APP_ID,
+        "http_status": r.status_code,
+        "roles": r.json(),
+    }
+
+
 @app.get("/api/debug/meta-page-r1")
 async def debug_meta_page_r1(key: str = ""):
     """
