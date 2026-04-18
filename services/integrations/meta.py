@@ -21,6 +21,7 @@ import urllib.parse as _urlparse
 
 META_APP_ID       = os.getenv("META_APP_ID", "")
 META_APP_SECRET   = os.getenv("META_APP_SECRET", "")
+META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "")
 META_WA_CONFIG_ID = os.getenv("META_WA_CONFIG_ID", "")
 GRAPH_VERSION     = "v20.0"
 GRAPH             = f"https://graph.facebook.com/{GRAPH_VERSION}"
@@ -274,10 +275,10 @@ class FacebookAdapter(_MetaBase):
     def subscribe_webhook(self, channel: dict, base_url: str) -> dict:
         page_token    = channel["token"]
         page_id       = channel["page_id"]
-        restaurant_id = channel["restaurant_id"]
-        verify_token  = channel.get("verify_token", "")
-        callback_url  = self.webhook_url(base_url, restaurant_id)
         app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
+        # Always use the unified endpoint — Meta posts ALL events to one URL
+        callback_url  = f"{base_url}/webhooks/meta"
+        unified_token = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
 
         # r1: subscribe the Page to receive Messenger events from this app
         r1 = httpx.post(f"{GRAPH}/{page_id}/subscribed_apps", params={
@@ -295,11 +296,11 @@ class FacebookAdapter(_MetaBase):
             logger.info(f"[facebook] subscribe_webhook r1 OK — page_id={page_id} body={r1_body}")
         r1.raise_for_status()
 
-        # r2: register app-level webhook URL so Meta knows where to POST events
+        # r2: register unified app-level webhook URL so Meta knows where to POST events
         r2 = httpx.post(f"{GRAPH}/{META_APP_ID}/subscriptions", params={
             "object":        "page",
             "callback_url":  callback_url,
-            "verify_token":  verify_token,
+            "verify_token":  unified_token,
             "fields":        "messages,messaging_postbacks",
             "access_token":  app_token,
         }, timeout=15)
@@ -480,10 +481,10 @@ class InstagramAdapter(_MetaBase):
     def subscribe_webhook(self, channel: dict, base_url: str) -> dict:
         page_token    = channel["token"]
         page_id       = channel["page_id"]
-        restaurant_id = channel["restaurant_id"]
-        verify_token  = channel.get("verify_token", "")
-        callback_url  = self.webhook_url(base_url, restaurant_id)
         app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
+        # Always use the unified endpoint — Meta posts ALL events to one URL
+        callback_url  = f"{base_url}/webhooks/meta"
+        unified_token = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
 
         # r1: subscribe the Page to receive IG events from this app
         r1 = httpx.post(f"{GRAPH}/{page_id}/subscribed_apps", params={
@@ -501,11 +502,11 @@ class InstagramAdapter(_MetaBase):
             logger.info(f"[instagram] subscribe_webhook r1 OK — page_id={page_id} body={r1_body}")
         r1.raise_for_status()
 
-        # r2: register app-level webhook URL so Meta knows where to POST events
+        # r2: register unified app-level webhook URL so Meta knows where to POST events
         r2 = httpx.post(f"{GRAPH}/{META_APP_ID}/subscriptions", params={
             "object":       "instagram",
             "callback_url": callback_url,
-            "verify_token": verify_token,
+            "verify_token": unified_token,
             "fields":       "messages,messaging_postbacks",
             "access_token": app_token,
         }, timeout=15)

@@ -3672,11 +3672,12 @@ async def meta_webhook_verify(req: Request):
     token     = p.get("hub.verify_token", "")
     challenge = p.get("hub.challenge", "")
 
-    if mode == "subscribe" and token and META_VERIFY_TOKEN and token == META_VERIFY_TOKEN:
-        logger.info("[webhooks/meta] verification OK")
+    expected = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
+    if mode == "subscribe" and token and expected and token == expected:
+        logger.info(f"[meta-webhook-hit] GET verification OK — challenge={challenge[:20]}")
         return PlainTextResponse(challenge)
 
-    logger.warning(f"[webhooks/meta] verify failed — mode={mode} token_match={token==META_VERIFY_TOKEN}")
+    logger.warning(f"[webhooks/meta] verify failed — mode={mode} got={token!r} expected={expected!r}")
     raise HTTPException(403, "Webhook verification failed")
 
 
@@ -3687,6 +3688,7 @@ async def meta_webhook_unified(req: Request, background_tasks: BackgroundTasks):
     Routes each event to the correct restaurant by looking up page_id or
     phone_number_id in the channels table.
     """
+    logger.info("[meta-webhook-hit] POST received")  # must be first — proves delivery
     raw_body = await req.body()
     logger.info(
         f"[meta-incoming] POST /webhooks/meta — "
@@ -3855,6 +3857,31 @@ async def debug_meta_config():
         "meta_verify_token_set":  bool(META_VERIFY_TOKEN),
         "meta_wa_config_id_set":  bool(META_WA_CONFIG_ID),
         "meta_wa_config_id_prefix": META_WA_CONFIG_ID[:6] + "…" if META_WA_CONFIG_ID else "NOT SET — WhatsApp Embedded Signup will fail",
+    }
+
+
+@app.get("/api/debug/meta-subscriptions")
+async def debug_meta_subscriptions():
+    """
+    Calls GET /{META_APP_ID}/subscriptions to show what callback URL Meta has
+    registered for this app. Use this to confirm /webhooks/meta is registered.
+    """
+    if not META_APP_ID or not META_APP_SECRET:
+        return {"error": "META_APP_ID or META_APP_SECRET not set"}
+    import httpx as _httpx
+    app_token = f"{META_APP_ID}|{META_APP_SECRET}"
+    r = _httpx.get(
+        f"https://graph.facebook.com/v20.0/{META_APP_ID}/subscriptions",
+        params={"access_token": app_token},
+        timeout=10,
+    )
+    body = r.json()
+    derived_token = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
+    return {
+        "meta_app_id":         META_APP_ID,
+        "expected_callback":   f"{BASE_URL}/webhooks/meta",
+        "expected_token_hint": derived_token[:8] + "…",
+        "subscriptions":       body,
     }
 
 
