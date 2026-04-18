@@ -3945,6 +3945,48 @@ async def debug_meta_pipeline_check(key: str = ""):
         conn.close()
 
 
+@app.post("/api/debug/meta-subscriptions-sample")
+async def debug_meta_subscriptions_sample(key: str = "", object_type: str = "instagram"):
+    """
+    Tells Meta to fire a sample test event to our webhook URL.
+    If our logs show [meta-live-post] after this call, Meta CAN reach us.
+    If not, Meta's delivery is blocked at their side.
+    Protected by ?key=<first-8-of-META_APP_ID>.
+    """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+
+    import httpx as _httpx
+    app_token = f"{META_APP_ID}|{META_APP_SECRET}"
+
+    def _do_sample(obj: str, field: str) -> dict:
+        r = _httpx.post(
+            f"https://graph.facebook.com/v20.0/{META_APP_ID}/subscriptions_sample",
+            params={
+                "object_type":  obj,
+                "field_name":   field,
+                "access_token": app_token,
+            },
+            timeout=15,
+        )
+        body = r.json()
+        logger.info(f"[meta-sample] object={obj} field={field} status={r.status_code} body={body}")
+        return {"http_status": r.status_code, "body": body}
+
+    results = {}
+    if object_type in ("instagram", "both"):
+        results["instagram_messages"] = await asyncio.to_thread(_do_sample, "instagram", "messages")
+    if object_type in ("page", "both"):
+        results["page_messages"] = await asyncio.to_thread(_do_sample, "page", "messages")
+    if object_type not in ("instagram", "page", "both"):
+        results[object_type] = await asyncio.to_thread(_do_sample, object_type, "messages")
+
+    return {
+        "note": "Check Render logs for [meta-live-post] within 10 seconds of this response",
+        "results": results,
+    }
+
+
 @app.get("/api/debug/meta-subscriptions")
 async def debug_meta_subscriptions():
     """
