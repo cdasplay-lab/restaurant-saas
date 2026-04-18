@@ -3894,6 +3894,50 @@ async def debug_meta_config():
     }
 
 
+@app.get("/api/debug/meta-pipeline-check")
+async def debug_meta_pipeline_check(key: str = ""):
+    """
+    Check whether fire-test events were actually processed and stored in DB.
+    Looks for the fake sender_id (111111111111111) in customers + conversations.
+    Protected by ?key=<first-8-of-META_APP_ID>.
+    """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+    conn = database.get_db()
+    try:
+        fake_customer = conn.execute(
+            "SELECT id, restaurant_id, platform, name FROM customers WHERE external_id='111111111111111'"
+        ).fetchall()
+        conv_count = 0
+        msg_count  = 0
+        if fake_customer:
+            cids = [dict(r)["id"] for r in fake_customer]
+            for cid in cids:
+                convs = conn.execute(
+                    "SELECT id FROM conversations WHERE customer_id=?", (cid,)
+                ).fetchall()
+                conv_count += len(convs)
+                for conv in convs:
+                    msgs = conn.execute(
+                        "SELECT COUNT(*) as n FROM messages WHERE conversation_id=?",
+                        (conv["id"],)
+                    ).fetchone()
+                    msg_count += msgs["n"] if msgs else 0
+        pe = conn.execute(
+            "SELECT provider, event_id, created_at FROM processed_events "
+            "WHERE event_id='fake_mid_test' ORDER BY created_at DESC LIMIT 10"
+        ).fetchall()
+        return {
+            "fake_customers_found": len(fake_customer),
+            "fake_customers": [dict(r) for r in fake_customer],
+            "conversations_for_fake_sender": conv_count,
+            "messages_for_fake_sender": msg_count,
+            "dedup_entries_for_fake_mid": [dict(r) for r in pe],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/debug/meta-subscriptions")
 async def debug_meta_subscriptions():
     """
