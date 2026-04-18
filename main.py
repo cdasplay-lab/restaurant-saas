@@ -3885,6 +3885,103 @@ async def debug_meta_subscriptions():
     }
 
 
+@app.get("/api/debug/meta-page-r1")
+async def debug_meta_page_r1(user=Depends(current_user)):
+    """
+    Check r1 (page-level) subscription: GET /{page_id}/subscribed_apps
+    Verifies the Page is actually subscribed to receive events from this app.
+    """
+    conn = database.get_db()
+    try:
+        results = {}
+        for platform in ("facebook", "instagram"):
+            row = conn.execute(
+                "SELECT page_id, token, business_account_id FROM channels "
+                "WHERE restaurant_id=? AND type=? AND enabled=1",
+                (user["restaurant_id"], platform)
+            ).fetchone()
+            if not row or not row["page_id"]:
+                results[platform] = {"error": "no channel or page_id stored"}
+                continue
+            import httpx as _httpx
+            r = _httpx.get(
+                f"https://graph.facebook.com/v20.0/{row['page_id']}/subscribed_apps",
+                params={"access_token": row["token"]},
+                timeout=10,
+            )
+            results[platform] = {
+                "page_id": row["page_id"],
+                "business_account_id": row.get("business_account_id", ""),
+                "http_status": r.status_code,
+                "body": r.json(),
+            }
+        return results
+    finally:
+        conn.close()
+
+
+@app.post("/api/debug/meta-fire-test")
+async def debug_meta_fire_test(req: Request, user=Depends(current_user)):
+    """
+    Simulate a real Meta webhook event and run it through the full pipeline.
+    POST with {"platform": "instagram"|"facebook"} to fire a fake DM event.
+    This confirms routing + handler code works without waiting for Meta.
+    """
+    body = await req.json()
+    platform = body.get("platform", "instagram")
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT page_id, business_account_id FROM channels "
+            "WHERE restaurant_id=? AND type=? AND enabled=1",
+            (user["restaurant_id"], platform)
+        ).fetchone()
+        if not row:
+            return {"error": f"no {platform} channel connected"}
+        entry_id = row["business_account_id"] or row["page_id"] if platform == "instagram" else row["page_id"]
+        if not entry_id:
+            return {"error": "no page_id/business_account_id stored"}
+    finally:
+        conn.close()
+
+    import time as _time
+    fake_sender_id = "111111111111111"
+    fake_ts = int(_time.time() * 1000)
+
+    if platform == "instagram":
+        fake_payload = {
+            "object": "instagram",
+            "entry": [{
+                "id": entry_id,
+                "time": fake_ts,
+                "messaging": [{
+                    "sender":    {"id": fake_sender_id},
+                    "recipient": {"id": entry_id},
+                    "timestamp": fake_ts,
+                    "message":   {"mid": "fake_mid_test", "text": "TEST MESSAGE — debug fire"},
+                }]
+            }]
+        }
+    else:
+        fake_payload = {
+            "object": "page",
+            "entry": [{
+                "id": entry_id,
+                "time": fake_ts,
+                "messaging": [{
+                    "sender":    {"id": fake_sender_id},
+                    "recipient": {"id": entry_id},
+                    "timestamp": fake_ts,
+                    "message":   {"mid": "fake_mid_test", "text": "TEST MESSAGE — debug fire"},
+                }]
+            }]
+        }
+
+    logger.info(f"[debug-fire-test] firing fake {platform} event entry_id={entry_id}")
+    _route_meta_event(fake_payload)
+    return {"fired": True, "platform": platform, "entry_id": entry_id, "payload": fake_payload}
+
+
 @app.get("/api/debug/instagram-diagnostic")
 async def instagram_diagnostic(user=Depends(current_user)):
     """
