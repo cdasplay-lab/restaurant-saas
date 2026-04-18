@@ -123,13 +123,20 @@ class _MetaBase(BaseChannelAdapter):
             "limit": 50,
         }, timeout=15)
         r.raise_for_status()
+        body = r.json()
+        if "error" in body:
+            err = body["error"]
+            raise ValueError(
+                f"Meta /me/accounts error {err.get('code','?')}: {err.get('message','unknown')}"
+            )
+        logger.info(f"[meta] /me/accounts returned {len(body.get('data', []))} pages")
         pages = []
-        for p in r.json().get("data", []):
+        for p in body.get("data", []):
             pages.append({
-                "id":          p["id"],
-                "name":        p["name"],
+                "id":           p["id"],
+                "name":         p["name"],
                 "access_token": p.get("access_token", ""),
-                "picture_url": (p.get("picture") or {}).get("data", {}).get("url", ""),
+                "picture_url":  (p.get("picture") or {}).get("data", {}).get("url", ""),
             })
         return pages
 
@@ -252,7 +259,8 @@ class InstagramAdapter(_MetaBase):
     brand_bg     = "bg-gradient-to-br from-purple-600 to-pink-500"
     icon_svg     = _IG_ICON
     _scopes      = ("instagram_basic,instagram_manage_messages,"
-                    "pages_show_list,pages_read_engagement")
+                    "pages_show_list,pages_read_engagement,"
+                    "pages_manage_metadata,pages_messaging")
 
     def exchange_code(self, code: str, redirect_uri: str) -> dict:
         short     = self._exchange_short_token(code, redirect_uri)
@@ -267,7 +275,15 @@ class InstagramAdapter(_MetaBase):
                     "fields":        "instagram_business_account{id,name,profile_picture_url,username}",
                     "access_token":  page["access_token"],
                 }, timeout=10)
-                ig = r.json().get("instagram_business_account", {})
+                body = r.json()
+                if "error" in body:
+                    err = body["error"]
+                    logger.warning(
+                        f"[instagram] page {page['id']} IG lookup error "
+                        f"{err.get('code','?')}: {err.get('message','?')[:100]}"
+                    )
+                    continue
+                ig = body.get("instagram_business_account", {})
                 if ig:
                     ig_accounts.append({
                         "id":           ig["id"],
@@ -278,6 +294,11 @@ class InstagramAdapter(_MetaBase):
                         "page_name":    page["name"],
                         "page_token":   page["access_token"],
                     })
+                else:
+                    logger.warning(
+                        f"[instagram] page {page['id']} ({page['name']}) "
+                        f"has no linked instagram_business_account"
+                    )
             except Exception as exc:
                 logger.warning(f"[instagram] skip page {page['id']}: {exc}")
 
