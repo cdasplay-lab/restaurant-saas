@@ -279,14 +279,23 @@ class FacebookAdapter(_MetaBase):
         callback_url  = self.webhook_url(base_url, restaurant_id)
         app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
 
-        # Subscribe page to app
+        # r1: subscribe the Page to receive Messenger events from this app
         r1 = httpx.post(f"{GRAPH}/{page_id}/subscribed_apps", params={
             "access_token":       page_token,
             "subscribed_fields":  "messages,messaging_postbacks,messaging_referrals",
         }, timeout=15)
+        r1_body = r1.json()
+        if "error" in r1_body:
+            logger.error(
+                f"[facebook] subscribe_webhook r1 error: "
+                f"code={r1_body['error'].get('code','?')} "
+                f"msg={r1_body['error'].get('message','?')[:100]}"
+            )
+        else:
+            logger.info(f"[facebook] subscribe_webhook r1 OK — page_id={page_id} body={r1_body}")
         r1.raise_for_status()
 
-        # Register webhook on app level
+        # r2: register app-level webhook URL so Meta knows where to POST events
         r2 = httpx.post(f"{GRAPH}/{META_APP_ID}/subscriptions", params={
             "object":        "page",
             "callback_url":  callback_url,
@@ -294,9 +303,18 @@ class FacebookAdapter(_MetaBase):
             "fields":        "messages,messaging_postbacks",
             "access_token":  app_token,
         }, timeout=15)
+        r2_body = r2.json()
+        if "error" in r2_body:
+            logger.error(
+                f"[facebook] subscribe_webhook r2 error: "
+                f"code={r2_body['error'].get('code','?')} "
+                f"msg={r2_body['error'].get('message','?')[:100]}"
+            )
+        else:
+            logger.info(f"[facebook] subscribe_webhook r2 OK — callback_url={callback_url} body={r2_body}")
         r2.raise_for_status()
 
-        return {"success": True, "detail": r2.json()}
+        return {"success": True, "detail": r2_body}
 
 
 # ── Instagram DM adapter ──────────────────────────────────────────────────────
@@ -467,12 +485,23 @@ class InstagramAdapter(_MetaBase):
         callback_url  = self.webhook_url(base_url, restaurant_id)
         app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
 
+        # r1: subscribe the Page to receive IG events from this app
         r1 = httpx.post(f"{GRAPH}/{page_id}/subscribed_apps", params={
             "access_token":      page_token,
-            "subscribed_fields": "messages,messaging_postbacks,instagram_manage_messages",
+            "subscribed_fields": "messages,messaging_postbacks",
         }, timeout=15)
+        r1_body = r1.json()
+        if "error" in r1_body:
+            logger.error(
+                f"[instagram] subscribe_webhook r1 error: "
+                f"code={r1_body['error'].get('code','?')} "
+                f"msg={r1_body['error'].get('message','?')[:100]}"
+            )
+        else:
+            logger.info(f"[instagram] subscribe_webhook r1 OK — page_id={page_id} body={r1_body}")
         r1.raise_for_status()
 
+        # r2: register app-level webhook URL so Meta knows where to POST events
         r2 = httpx.post(f"{GRAPH}/{META_APP_ID}/subscriptions", params={
             "object":       "instagram",
             "callback_url": callback_url,
@@ -480,9 +509,18 @@ class InstagramAdapter(_MetaBase):
             "fields":       "messages,messaging_postbacks",
             "access_token": app_token,
         }, timeout=15)
+        r2_body = r2.json()
+        if "error" in r2_body:
+            logger.error(
+                f"[instagram] subscribe_webhook r2 error: "
+                f"code={r2_body['error'].get('code','?')} "
+                f"msg={r2_body['error'].get('message','?')[:100]}"
+            )
+        else:
+            logger.info(f"[instagram] subscribe_webhook r2 OK — callback_url={callback_url} body={r2_body}")
         r2.raise_for_status()
 
-        return {"success": True, "detail": r2.json()}
+        return {"success": True, "detail": r2_body}
 
 
 # ── WhatsApp Business adapter ─────────────────────────────────────────────────

@@ -2713,19 +2713,27 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             page_name    = data.get("page_name", "")
             picture_url  = data.get("picture_url", "")
 
+            # Save verify_token to DB FIRST so Meta's verification GET can match it
+            ch = _get_or_create_channel(conn, rid, "facebook")
+            conn.execute(
+                "UPDATE channels SET verify_token=?, page_id=?, enabled=1 WHERE id=?",
+                (verify_token, page_id, ch["id"])
+            )
+            conn.commit()
+
             channel_data = {
                 "restaurant_id": rid, "token": page_token, "page_id": page_id,
                 "page_name": page_name, "verify_token": verify_token,
             }
             adapter = get_adapter("facebook")
             try:
-                adapter.subscribe_webhook(channel_data, BASE_URL)
+                result_wb = adapter.subscribe_webhook(channel_data, BASE_URL)
                 webhook_ok = True
+                logger.info(f"[meta-incoming] FB webhook subscribed OK — page_id={page_id} detail={result_wb}")
             except Exception as exc:
-                logger.warning(f"[fb] webhook subscribe failed: {exc}")
+                logger.warning(f"[meta-incoming] FB webhook subscribe failed: {exc}")
                 webhook_ok = False
 
-            ch = _get_or_create_channel(conn, rid, "facebook")
             conn.execute("""
                 UPDATE channels SET
                     token=?, page_id=?, page_name=?, verify_token=?,
@@ -2738,7 +2746,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             """, (page_token, page_id, page_name, verify_token,
                   expires_at, scopes, now_iso,
                   page_name, picture_url,
-                  user["id"], "connected" if webhook_ok else "connected",
+                  user["id"], "connected",
                   ch["id"]))
 
         elif platform == "instagram":
@@ -2762,20 +2770,27 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
                 f"has_page_token={bool(page_token)} token_prefix={page_token[:12] if page_token else 'EMPTY'}"
             )
 
+            # Save verify_token + page_id to DB FIRST so Meta's verification GET can match it
+            ch = _get_or_create_channel(conn, rid, "instagram")
+            conn.execute(
+                "UPDATE channels SET verify_token=?, page_id=?, business_account_id=?, enabled=1 WHERE id=?",
+                (verify_token, page_id, account_id, ch["id"])
+            )
+            conn.commit()
+
             channel_data = {
                 "restaurant_id": rid, "token": page_token, "page_id": page_id,
                 "business_account_id": account_id, "verify_token": verify_token,
             }
             adapter = get_adapter("instagram")
             try:
-                adapter.subscribe_webhook(channel_data, BASE_URL)
+                result_wb = adapter.subscribe_webhook(channel_data, BASE_URL)
                 webhook_ok = True
-                logger.info(f"[ig] webhook subscribed OK — page_id={page_id}")
+                logger.info(f"[meta-incoming] IG webhook subscribed OK — page_id={page_id} biz_id={account_id} detail={result_wb}")
             except Exception as exc:
-                logger.warning(f"[ig] webhook subscribe failed (non-fatal): {exc}")
+                logger.warning(f"[meta-incoming] IG webhook subscribe failed: {exc}")
                 webhook_ok = False
 
-            ch = _get_or_create_channel(conn, rid, "instagram")
             conn.execute("""
                 UPDATE channels SET
                     token=?, page_id=?, business_account_id=?,
@@ -2791,7 +2806,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
                   account_name or account_user, picture_url, account_user,
                   user["id"], "connected",
                   ch["id"]))
-            logger.info(f"[ig] channel updated — webhook_ok={webhook_ok} account={account_name or account_user}")
+            logger.info(f"[meta-incoming] IG channel updated — webhook_ok={webhook_ok} account={account_name or account_user}")
 
         elif platform == "whatsapp":
             phone_number_id = data.get("page_id",      "")   # phone_number_id
@@ -3673,6 +3688,12 @@ async def meta_webhook_unified(req: Request, background_tasks: BackgroundTasks):
     phone_number_id in the channels table.
     """
     raw_body = await req.body()
+    logger.info(
+        f"[meta-incoming] POST /webhooks/meta — "
+        f"size={len(raw_body)} "
+        f"has_sig={bool(req.headers.get('X-Hub-Signature-256',''))} "
+        f"body_preview={raw_body[:200]}"
+    )
 
     # HMAC signature check using app-level META_APP_SECRET
     sig_header = req.headers.get("X-Hub-Signature-256", "")
@@ -3756,11 +3777,19 @@ def _route_meta_event(payload: dict) -> None:
                     (page_id,)
                 ).fetchone()
                 if row:
-                    logger.info(f"[webhooks/meta] FB → restaurant={row['restaurant_id'][:8]}")
+                    logger.info(
+                        f"[meta-messenger-parsed] routing FB → restaurant={row['restaurant_id'][:8]} "
+                        f"entry_id={page_id}"
+                    )
                     webhooks.handle_facebook(row["restaurant_id"], payload)
+                else:
+                    logger.warning(
+                        f"[meta-incoming] NO CHANNEL FOUND for FB page_id={page_id} — "
+                        f"check channels.page_id matches"
+                    )
 
         else:
-            logger.debug(f"[webhooks/meta] unknown object type: {object_type}")
+            logger.warning(f"[meta-incoming] unrecognised object type: {object_type} — full payload={json.dumps(payload)[:300]}")
 
     except Exception as exc:
         logger.error(f"[webhooks/meta] routing error: {exc}")
