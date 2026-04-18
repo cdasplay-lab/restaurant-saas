@@ -324,8 +324,9 @@ class InstagramAdapter(_MetaBase):
             "access_token":     long,
             "token_expires_at": exp,
             "accounts":         ig_accounts,   # UI shows account picker
+            "raw_pages":        pages,          # all FB pages (with page_token), for diagnostic storage
             "scopes_granted":   self._scopes,
-            "no_ig_accounts":   len(ig_accounts) == 0,  # flag for frontend error display
+            "no_ig_accounts":   len(ig_accounts) == 0,
             "fb_pages_found":   len(pages),
         }
 

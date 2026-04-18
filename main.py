@@ -2584,10 +2584,28 @@ async def integrations_oauth_callback(
                     f"has_page_token={bool(acct.get('page_token',''))} "
                     f"token_prefix={acct.get('page_token','')[:12] if acct.get('page_token') else 'EMPTY'}"
                 )
-            # If no IG accounts found, redirect with a specific error so user knows why
+            # If no IG accounts found, store debug data FIRST then redirect with error
             if result.get("no_ig_accounts") and not stored_pages:
-                fb_pages = result.get("fb_pages_found", 0)
-                logger.warning(f"[ig-oauth] no IG accounts — fb_pages={fb_pages} — redirecting with error")
+                fb_pages  = result.get("fb_pages_found", 0)
+                raw_pages = result.get("raw_pages", [])
+                # Persist user token + raw FB pages so the diagnostic can call Meta live
+                debug_json = json.dumps({
+                    "access_token":     result.get("access_token", ""),
+                    "token_expires_at": result.get("token_expires_at", ""),
+                    "scopes_granted":   result.get("scopes_granted", ""),
+                    "pages":            [],          # no IG accounts to pick
+                    "raw_fb_pages":     raw_pages,   # raw FB pages list for diagnostic
+                    "no_ig_accounts":   True,
+                    "fb_pages_found":   fb_pages,
+                })
+                conn.execute("UPDATE oauth_states SET pages_json=? WHERE state=?",
+                             (debug_json, state))
+                conn.commit()
+                logger.warning(
+                    f"[ig-oauth] no IG accounts — fb_pages={fb_pages} — "
+                    f"stored debug data (user_token={'YES' if result.get('access_token') else 'NO'}) "
+                    f"raw_pages={[p.get('id','?') for p in raw_pages]}"
+                )
                 return _Redirect(
                     f"{frontend_base}/app?oauth_error=no_ig_accounts"
                     f"&hint=facebook_pages_{fb_pages}#channels"
@@ -3892,6 +3910,106 @@ async def instagram_diagnostic(user=Depends(current_user)):
                 _step("oauth_states_scan", f"فحص {len(all_ig_states)} OAuth state",
                       "WARN",
                       f"لا يوجد state مكتمل مع page_token صالح في أي من الـ {len(all_ig_states)} state")
+
+        # ── 3b. Live Meta API check using stored user token ─────────────────────
+        # Extract user token from the most recent completed OAuth state (any state, even no_ig)
+        _live_user_token = ""
+        _live_raw_fb_pages = []
+        if last_state and last_state.get("used") == 1:
+            try:
+                _lp = json.loads(last_state.get("pages_json") or "{}")
+                if not isinstance(_lp, dict):
+                    _lp = {}
+                _live_user_token   = _lp.get("access_token", "")
+                _live_raw_fb_pages = _lp.get("raw_fb_pages", [])
+            except Exception:
+                pass
+
+        if _live_user_token:
+            try:
+                import httpx as _httpx2
+                _accts_r = _httpx2.get(
+                    "https://graph.facebook.com/v20.0/me/accounts",
+                    params={"access_token": _live_user_token,
+                            "fields": "id,name,access_token"},
+                    timeout=12,
+                )
+                _accts_body = _accts_r.json()
+                if "error" in _accts_body:
+                    _err = _accts_body["error"]
+                    _step("live_api", "فحص مباشر /me/accounts",
+                          "FAIL",
+                          f"Meta error {_err.get('code','?')}: {_err.get('message','?')[:120]}")
+                else:
+                    _fb_live = _accts_body.get("data", [])
+                    if not _fb_live:
+                        _step("live_api", "فحص مباشر /me/accounts",
+                              "WARN",
+                              "Meta أرجع 0 صفحات — "
+                              "تأكد أن المستخدم الذي أجرى OAuth هو مدير صفحة Facebook")
+                    else:
+                        # Check each page for instagram_business_account
+                        _ig_live = []
+                        for _fp in _fb_live:
+                            try:
+                                _ir = _httpx2.get(
+                                    f"https://graph.facebook.com/v20.0/{_fp['id']}",
+                                    params={
+                                        "fields": "instagram_business_account{id,username,name}",
+                                        "access_token": _fp.get("access_token", _live_user_token),
+                                    },
+                                    timeout=10,
+                                )
+                                _ib = _ir.json()
+                                _ig = _ib.get("instagram_business_account", {})
+                                if _ig:
+                                    _ig_live.append({
+                                        "page_id":      _fp["id"],
+                                        "page_name":    _fp["name"],
+                                        "page_token":   _fp.get("access_token", ""),
+                                        "ig_id":        _ig.get("id", ""),
+                                        "ig_username":  _ig.get("username", ""),
+                                    })
+                                else:
+                                    logger.info(
+                                        f"[ig-diag] live: page {_fp['id']} ({_fp['name']}) "
+                                        f"has NO instagram_business_account"
+                                    )
+                            except Exception as _pgexc:
+                                logger.warning(f"[ig-diag] live page check: {_pgexc}")
+
+                        if _ig_live:
+                            _first_ig = _ig_live[0]
+                            _step("live_api", "فحص مباشر /me/accounts",
+                                  "OK",
+                                  f"{len(_fb_live)} صفحة Facebook — {len(_ig_live)} IG Business Account — "
+                                  f"ig_id={_first_ig['ig_id']} "
+                                  f"username={_first_ig['ig_username']} "
+                                  f"page_id={_first_ig['page_id']} "
+                                  f"has_page_token={bool(_first_ig['page_token'])}")
+                            # Promote these to ig_accounts so auto-fix can use them
+                            if not ig_accounts:
+                                ig_accounts = [{
+                                    "id":         _a["ig_id"],
+                                    "page_id":    _a["page_id"],
+                                    "page_token": _a["page_token"],
+                                    "username":   _a["ig_username"],
+                                } for _a in _ig_live]
+                        else:
+                            _pnames = ", ".join(_fp["name"] for _fp in _fb_live[:3])
+                            _step("live_api", "فحص مباشر /me/accounts",
+                                  "WARN",
+                                  f"{len(_fb_live)} صفحة Facebook ({_pnames}) — "
+                                  f"لكن لا instagram_business_account مرتبط بأي منها. "
+                                  f"تأكد أن حساب Instagram Professional (Business/Creator) "
+                                  f"مربوط بالصفحة من Meta Business Suite → إعدادات Instagram")
+            except Exception as _live_exc:
+                _step("live_api", "فحص مباشر /me/accounts", "FAIL",
+                      f"فشل الاتصال: {str(_live_exc)[:150]}")
+        else:
+            _step("live_api", "فحص مباشر /me/accounts",
+                  "WARN",
+                  "لا يوجد user token مخزن — أعد تشغيل Instagram OAuth أولاً لتخزين token")
 
         # ── 4. Accounts in best pages_json ──────────────────────────────────────
         if ig_accounts:
