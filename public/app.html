@@ -2881,8 +2881,8 @@ async function loadChannels() {
     const notice = document.getElementById('metaAccessNotice');
     if (notice) notice.classList.toggle('hidden', !hasMetaConnected);
     // Populate WhatsApp webhook info if connected
-    const waConnected = _chanPlatforms.find(p => p.platform === 'whatsapp' && p.connection_status === 'connected');
-    if (waConnected) loadWAWebhookInfo();
+    const waExists = _chanPlatforms.find(p => p.platform === 'whatsapp');
+    if (waExists) loadWAWebhookInfo();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -2968,7 +2968,7 @@ function renderChannelCard(p) {
         <button onclick="copyText('${p.webhook_url}')" class="text-slate-500 hover:text-white text-xs px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 flex-shrink-0">
           <i class="fa-solid fa-copy"></i></button>
       </div>`;
-  if (isConnected && p.platform === 'whatsapp')
+  if (p.platform === 'whatsapp')
     webhookRow = `<div id="waWebhookInfo" class="bg-green-900/20 border border-green-800/40 rounded-xl p-3 mb-3">
         <p class="text-green-400 text-xs font-semibold mb-2">⚙️ إعداد Webhook في Meta</p>
         <div class="space-y-2">
