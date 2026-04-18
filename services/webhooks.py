@@ -657,10 +657,8 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
 def handle_instagram(restaurant_id: str, data: dict) -> None:
     """Process an incoming Instagram message, including story replies."""
     logger.info(
-        f"[ig-incoming] restaurant={restaurant_id[:8]} "
-        f"object={data.get('object','?')} "
-        f"entries={len(data.get('entry', []))} "
-        f"raw={json.dumps(data)[:300]}"
+        f"[meta-live-message] platform=instagram restaurant={restaurant_id[:8]} "
+        f"entries={len(data.get('entry', []))} raw={json.dumps(data)[:300]}"
     )
 
     _conn = database.get_db()
@@ -746,6 +744,11 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         text = "👍"
 
     if not text:
+        logger.warning(
+            f"[meta-live-message] platform=instagram sender={sender_id} "
+            f"DROPPED — no text and no parseable attachment "
+            f"message_keys={list(message.keys())}"
+        )
         return
 
     conn = database.get_db()
@@ -802,23 +805,42 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
 
 def handle_facebook(restaurant_id: str, data: dict) -> None:
     """Process an incoming Facebook Messenger message."""
+    logger.info(
+        f"[meta-live-message] platform=facebook restaurant={restaurant_id[:8]} "
+        f"entries={len(data.get('entry', []))} raw={json.dumps(data)[:300]}"
+    )
+
     _conn = database.get_db()
     _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
     _conn.close()
     if not _rest:
-        logger.error(f"[facebook] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB. Re-register after PostgreSQL migration.")
+        logger.error(f"[facebook] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB")
         return
 
     try:
         entry = data["entry"][0]
         messaging = entry["messaging"][0]
-    except (KeyError, IndexError):
+    except (KeyError, IndexError) as exc:
+        logger.error(
+            f"[facebook] failed to parse entry/messaging: {exc} — "
+            f"entry keys={list(data['entry'][0].keys()) if data.get('entry') else 'NO_ENTRIES'} "
+            f"raw={json.dumps(data)[:300]}"
+        )
         return
 
     sender_id = messaging.get("sender", {}).get("id", "")
+    recipient_id = messaging.get("recipient", {}).get("id", "")
     message = messaging.get("message", {})
     text = message.get("text", "").strip()
+    mid_fb = message.get("mid", "")
+    logger.info(
+        f"[meta-live-message] platform=facebook sender={sender_id} "
+        f"recipient={recipient_id} mid={mid_fb} "
+        f"has_text={bool(text)} text_preview={text[:60] if text else 'EMPTY'} "
+        f"attachments={len(message.get('attachments', []))}"
+    )
     if not sender_id:
+        logger.warning(f"[facebook] no sender_id — dropping")
         return
 
     # Dedup — Meta retries unacknowledged messages
@@ -863,6 +885,11 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
         text = "👍"
 
     if not text:
+        logger.warning(
+            f"[meta-live-message] platform=facebook sender={sender_id} "
+            f"DROPPED — no text and no parseable attachment "
+            f"message_keys={list(message.keys())}"
+        )
         return
 
     conn = database.get_db()
@@ -886,6 +913,11 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
         )
         conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
         conn.commit()
+        logger.info(
+            f"[meta-live-message] platform=facebook CONVERSATION CREATED/FOUND "
+            f"customer={customer['id'][:8]} conversation={conversation['id'][:8]} "
+            f"text={text[:60]}"
+        )
 
         channel_data = {
             "platform": "facebook",

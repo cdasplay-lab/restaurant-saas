@@ -3728,10 +3728,24 @@ async def meta_webhook_unified(req: Request, background_tasks: BackgroundTasks):
             logger.warning("[webhooks/meta] invalid HMAC signature — rejecting")
             raise HTTPException(403, "Invalid signature")
 
+    has_sig = bool(sig_header)
     try:
         payload = json.loads(raw_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON payload")
+
+    # Real Meta events always carry X-Hub-Signature-256; debug/curl do not
+    obj_type = payload.get("object", "?")
+    entries  = payload.get("entry", [])
+    if has_sig:
+        msg_count = sum(len(e.get("messaging", [])) for e in entries)
+        logger.info(
+            f"[meta-live-post] REAL Meta POST — object={obj_type} "
+            f"entries={len(entries)} messages={msg_count} "
+            f"raw={raw_body[:300]}"
+        )
+    else:
+        logger.info(f"[meta-debug-post] unsigned POST (debug/test) — object={obj_type}")
 
     background_tasks.add_task(_route_meta_event, payload)
     return {"status": "ok"}
