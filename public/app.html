@@ -652,6 +652,33 @@
           </button>
         </div>
       </div>
+      <!-- Meta Advanced Access notice — shown for Instagram/Facebook channels -->
+      <div id="metaAccessNotice" class="hidden mb-5 rounded-xl border border-amber-500/40 bg-amber-900/20 p-4">
+        <div class="flex gap-3">
+          <span class="text-2xl mt-0.5">⚠️</span>
+          <div class="text-sm">
+            <p class="text-amber-300 font-bold mb-1">الوصول المتقدم مطلوب لاستقبال رسائل العملاء الحقيقيين</p>
+            <p class="text-amber-200/80 mb-2">
+              منصة Meta (Instagram / Messenger) تشترط <strong>Advanced Access</strong> لصلاحية
+              <code class="bg-black/30 px-1 rounded text-xs">instagram_manage_messages</code> و
+              <code class="bg-black/30 px-1 rounded text-xs">pages_messaging</code>
+              حتى تصل رسائل العملاء الجدد (طلبات التواصل الأولى) ورسائل الزبائن غير المتابعين.
+              بدون هذا الوصول، لن تصل أي رسالة من عميل حقيقي — حتى لو ظهر الاتصال ناجحاً.
+            </p>
+            <p class="text-amber-200/70 text-xs mb-3">
+              الوصول المتقدم يشمل جميع أنواع الرسائل: المتابعين، غير المتابعين، طلبات التواصل الأولى، والمحادثات الجديدة.
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <a href="https://developers.facebook.com/apps/" target="_blank"
+                class="inline-flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition">
+                <i class="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+                افتح Meta Developer Console
+              </a>
+              <span class="text-amber-400/60 text-xs self-center">→ App Review → Permissions → instagram_manage_messages → Request Advanced Access</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div id="sysCheckResult" class="hidden mb-5"></div>
       <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
@@ -1528,10 +1555,11 @@ function renderConvList() {
     <div onclick="openConv('${c.id}')"
       class="p-3 rounded-xl cursor-pointer transition ${S.activeConv === c.id ? 'bg-indigo-600/20 border border-indigo-500/50' : 'hover:bg-slate-700/50 border border-transparent'}">
       <div class="flex items-center gap-2 mb-1">
-        <div class="w-7 h-7 bg-indigo-600 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
+        <div class="w-7 h-7 ${c.first_contact ? 'bg-amber-600' : 'bg-indigo-600'} rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
           ${c.customer_name?.[0] || '?'}
         </div>
         <p class="text-white text-sm font-medium flex-1 truncate">${c.customer_name}</p>
+        ${c.first_contact ? '<span class="badge bg-amber-500/20 text-amber-400 text-xs" title="رسالة أولى — طلب تواصل جديد">طلب جديد</span>' : ''}
         ${c.urgent ? '<span class="badge bg-red-500/20 text-red-400"><i class="fa-solid fa-triangle-exclamation"></i></span>' : ''}
         ${c.unread_count > 0 ? `<span class="badge bg-indigo-500 text-white">${c.unread_count}</span>` : ''}
       </div>
@@ -2683,6 +2711,12 @@ async function loadChannels() {
     el.innerHTML = _chanPlatforms.map(p => renderChannelCard(p)).join('');
     document.getElementById('chansLoading').classList.add('hidden');
     document.getElementById('chansContent').classList.remove('hidden');
+    // Show Advanced Access notice if Instagram or Facebook is connected
+    const hasMetaConnected = _chanPlatforms.some(
+      p => (p.platform === 'instagram' || p.platform === 'facebook') && p.connection_status === 'connected'
+    );
+    const notice = document.getElementById('metaAccessNotice');
+    if (notice) notice.classList.toggle('hidden', !hasMetaConnected);
   } catch(e) { toast(e.message, 'error'); }
 }
 

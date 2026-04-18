@@ -772,12 +772,22 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         customer = _find_or_create_customer(
             conn, restaurant_id, "instagram", sender_id, "Instagram User", ""
         )
-        conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
+        # first_contact = customer has no prior conversations with this restaurant
+        prior_convs = conn.execute(
+            "SELECT COUNT(*) as n FROM conversations WHERE restaurant_id=? AND customer_id=?",
+            (restaurant_id, customer["id"])
+        ).fetchone()
+        is_first_contact = (prior_convs["n"] == 0)
+        conversation = _find_or_create_conversation(
+            conn, restaurant_id, customer["id"],
+            channel="instagram", first_contact=is_first_contact
+        )
         conn.commit()
         logger.info(
-            f"[ig-db-created] customer={customer['id'][:8]} "
-            f"conversation={conversation['id'][:8]} "
-            f"restaurant={restaurant_id[:8]}"
+            f"[meta-live-message] platform=instagram "
+            f"first_contact={is_first_contact} is_new_conv={conversation.get('_is_new', False)} "
+            f"customer={customer['id'][:8]} conversation={conversation['id'][:8]} "
+            f"sender={sender_id} text={text[:60]}"
         )
 
         channel_data = {
@@ -911,12 +921,21 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
         customer = _find_or_create_customer(
             conn, restaurant_id, "facebook", sender_id, "Facebook User", ""
         )
-        conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
+        prior_convs = conn.execute(
+            "SELECT COUNT(*) as n FROM conversations WHERE restaurant_id=? AND customer_id=?",
+            (restaurant_id, customer["id"])
+        ).fetchone()
+        is_first_contact = (prior_convs["n"] == 0)
+        conversation = _find_or_create_conversation(
+            conn, restaurant_id, customer["id"],
+            channel="facebook", first_contact=is_first_contact
+        )
         conn.commit()
         logger.info(
-            f"[meta-live-message] platform=facebook CONVERSATION CREATED/FOUND "
+            f"[meta-live-message] platform=facebook "
+            f"first_contact={is_first_contact} is_new_conv={conversation.get('_is_new', False)} "
             f"customer={customer['id'][:8]} conversation={conversation['id'][:8]} "
-            f"text={text[:60]}"
+            f"sender={sender_id} text={text[:60]}"
         )
 
         channel_data = {
@@ -1274,21 +1293,29 @@ def _find_or_create_customer(
     }
 
 
-def _find_or_create_conversation(conn, restaurant_id: str, customer_id: str) -> dict:
-    """Find open conversation for customer or create one."""
+def _find_or_create_conversation(
+    conn, restaurant_id: str, customer_id: str,
+    channel: str = "", first_contact: bool = False
+) -> dict:
+    """Find open conversation for customer or create one.
+    Returns the conversation dict with '_is_new' key indicating whether it was just created.
+    """
     row = conn.execute(
         "SELECT * FROM conversations WHERE restaurant_id=? AND customer_id=? AND status='open' ORDER BY updated_at DESC LIMIT 1",
         (restaurant_id, customer_id)
     ).fetchone()
 
     if row:
-        return dict(row)
+        d = dict(row)
+        d["_is_new"] = False
+        return d
 
     conv_id = str(uuid.uuid4())
     conn.execute("""
-        INSERT INTO conversations (id, restaurant_id, customer_id, mode, status, urgent, unread_count, bot_turn_count)
-        VALUES (?, ?, ?, 'bot', 'open', 0, 0, 0)
-    """, (conv_id, restaurant_id, customer_id))
+        INSERT INTO conversations
+            (id, restaurant_id, customer_id, mode, status, urgent, unread_count, bot_turn_count, channel, first_contact)
+        VALUES (?, ?, ?, 'bot', 'open', 0, 0, 0, ?, ?)
+    """, (conv_id, restaurant_id, customer_id, channel, 1 if first_contact else 0))
 
     return {
         "id": conv_id,
@@ -1299,6 +1326,9 @@ def _find_or_create_conversation(conn, restaurant_id: str, customer_id: str) -> 
         "urgent": 0,
         "unread_count": 0,
         "bot_turn_count": 0,
+        "channel": channel,
+        "first_contact": 1 if first_contact else 0,
+        "_is_new": True,
     }
 
 

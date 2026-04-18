@@ -560,6 +560,10 @@ def _migrate_db(conn):
         ("channels", "phone_number_display",   "TEXT DEFAULT ''"),
         # oauth_states — pages_json stores Meta page list during OAuth handshake
         ("oauth_states", "pages_json",         "TEXT DEFAULT '[]'"),
+        # conversations — which platform channel this belongs to
+        ("conversations", "channel",           "TEXT DEFAULT ''"),
+        # conversations — 1 if this is the customer's first-ever message (request/cold-start)
+        ("conversations", "first_contact",     "INTEGER DEFAULT 0"),
     ]
 
     # Create oauth_states table (CSRF + session for OAuth flows)
