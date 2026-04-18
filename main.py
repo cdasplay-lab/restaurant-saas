@@ -3905,31 +3905,38 @@ async def debug_meta_pipeline_check(key: str = ""):
         raise HTTPException(403, "bad key")
     conn = database.get_db()
     try:
-        fake_customer = conn.execute(
-            "SELECT id, restaurant_id, platform, name FROM customers WHERE external_id='111111111111111'"
+        # external_id is stored in conversation_memory, not directly on customers
+        mem_rows = conn.execute(
+            "SELECT customer_id FROM conversation_memory "
+            "WHERE memory_key='external_id' AND memory_value='111111111111111'"
         ).fetchall()
+        fake_cids  = [r["customer_id"] for r in mem_rows]
         conv_count = 0
         msg_count  = 0
-        if fake_customer:
-            cids = [dict(r)["id"] for r in fake_customer]
-            for cid in cids:
-                convs = conn.execute(
-                    "SELECT id FROM conversations WHERE customer_id=?", (cid,)
-                ).fetchall()
-                conv_count += len(convs)
-                for conv in convs:
-                    msgs = conn.execute(
-                        "SELECT COUNT(*) as n FROM messages WHERE conversation_id=?",
-                        (conv["id"],)
-                    ).fetchone()
-                    msg_count += msgs["n"] if msgs else 0
+        fake_customers_detail = []
+        for cid in fake_cids:
+            cust = conn.execute(
+                "SELECT id, restaurant_id, platform, name FROM customers WHERE id=?", (cid,)
+            ).fetchone()
+            if cust:
+                fake_customers_detail.append(dict(cust))
+            convs = conn.execute(
+                "SELECT id FROM conversations WHERE customer_id=?", (cid,)
+            ).fetchall()
+            conv_count += len(convs)
+            for conv in convs:
+                msgs = conn.execute(
+                    "SELECT COUNT(*) as n FROM messages WHERE conversation_id=?",
+                    (conv["id"],)
+                ).fetchone()
+                msg_count += msgs["n"] if msgs else 0
         pe = conn.execute(
             "SELECT provider, event_id, created_at FROM processed_events "
             "WHERE event_id='fake_mid_test' ORDER BY created_at DESC LIMIT 10"
         ).fetchall()
         return {
-            "fake_customers_found": len(fake_customer),
-            "fake_customers": [dict(r) for r in fake_customer],
+            "fake_customers_found": len(fake_cids),
+            "fake_customers": fake_customers_detail,
             "conversations_for_fake_sender": conv_count,
             "messages_for_fake_sender": msg_count,
             "dedup_entries_for_fake_mid": [dict(r) for r in pe],
