@@ -3886,34 +3886,41 @@ async def debug_meta_subscriptions():
 
 
 @app.get("/api/debug/meta-page-r1")
-async def debug_meta_page_r1(user=Depends(current_user)):
+async def debug_meta_page_r1(key: str = ""):
     """
-    Check r1 (page-level) subscription: GET /{page_id}/subscribed_apps
-    Verifies the Page is actually subscribed to receive events from this app.
+    Check r1 (page-level) subscription for ALL Meta channels.
+    Protected by ?key=<first-8-chars-of-META_APP_ID>.
     """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+    import httpx as _httpx
     conn = database.get_db()
     try:
         results = {}
-        for platform in ("facebook", "instagram"):
-            row = conn.execute(
-                "SELECT page_id, token, business_account_id FROM channels "
-                "WHERE restaurant_id=? AND type=? AND enabled=1",
-                (user["restaurant_id"], platform)
-            ).fetchone()
-            if not row or not row["page_id"]:
-                results[platform] = {"error": "no channel or page_id stored"}
+        rows = conn.execute(
+            "SELECT type, page_id, token, business_account_id, restaurant_id, "
+            "       token_expires_at, scopes_granted "
+            "FROM channels WHERE type IN ('facebook','instagram') AND enabled=1"
+        ).fetchall()
+        for row in rows:
+            platform = row["type"]
+            rid_hint  = row["restaurant_id"][:8]
+            label     = f"{platform}:{rid_hint}"
+            if not row["page_id"]:
+                results[label] = {"error": "no page_id stored"}
                 continue
-            import httpx as _httpx
             r = _httpx.get(
                 f"https://graph.facebook.com/v20.0/{row['page_id']}/subscribed_apps",
                 params={"access_token": row["token"]},
                 timeout=10,
             )
-            results[platform] = {
-                "page_id": row["page_id"],
-                "business_account_id": row.get("business_account_id", ""),
-                "http_status": r.status_code,
-                "body": r.json(),
+            results[label] = {
+                "page_id":             row["page_id"],
+                "business_account_id": row["business_account_id"] or "",
+                "token_expires_at":    row["token_expires_at"] or "",
+                "scopes_granted":      row["scopes_granted"] or "",
+                "http_status":         r.status_code,
+                "r1_body":             r.json(),
             }
         return results
     finally:
