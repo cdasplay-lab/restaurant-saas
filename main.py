@@ -2744,7 +2744,10 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             }
             adapter = get_adapter("facebook")
             try:
-                result_wb = adapter.subscribe_webhook(channel_data, BASE_URL)
+                # Run in thread — sync httpx must NOT block the async event loop
+                # (Meta immediately GETs /webhooks/meta to verify; if event loop
+                #  is frozen the GET times out and r2 fails with curl_errno=28)
+                result_wb = await asyncio.to_thread(adapter.subscribe_webhook, channel_data, BASE_URL)
                 webhook_ok = True
                 logger.info(f"[meta-incoming] FB webhook subscribed OK — page_id={page_id} detail={result_wb}")
             except Exception as exc:
@@ -2801,7 +2804,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             }
             adapter = get_adapter("instagram")
             try:
-                result_wb = adapter.subscribe_webhook(channel_data, BASE_URL)
+                result_wb = await asyncio.to_thread(adapter.subscribe_webhook, channel_data, BASE_URL)
                 webhook_ok = True
                 logger.info(f"[meta-incoming] IG webhook subscribed OK — page_id={page_id} biz_id={account_id} detail={result_wb}")
             except Exception as exc:
@@ -2840,7 +2843,7 @@ async def integrations_oauth_select_page(data: dict, user=Depends(current_user))
             }
             adapter = get_adapter("whatsapp")
             try:
-                adapter.subscribe_webhook(channel_data, BASE_URL)
+                await asyncio.to_thread(adapter.subscribe_webhook, channel_data, BASE_URL)
             except Exception as exc:
                 logger.warning(f"[wa] webhook subscribe failed (non-fatal): {exc}")
 
@@ -2958,7 +2961,7 @@ async def integrations_wa_embedded_signup(data: dict, user=Depends(current_user)
         # Subscribe webhook
         logger.info(f"[wa-signup] subscribing webhook waba_id={waba_id!r} phone_number_id={phone_number_id!r}")
         try:
-            adapter.subscribe_webhook(channel_data, BASE_URL)
+            await asyncio.to_thread(adapter.subscribe_webhook, channel_data, BASE_URL)
             logger.info("[wa-signup] webhook subscribed OK")
         except Exception as exc:
             logger.warning(f"[wa-signup] webhook subscribe failed (non-fatal): {exc}")
@@ -4012,17 +4015,19 @@ async def debug_meta_fire_test(req: Request, key: str = ""):
 async def debug_meta_force_r2(key: str = ""):
     """
     Force-register both 'page' and 'instagram' app-level subscriptions (r2).
-    Use when Meta's subscription list is incomplete.
+    Runs each httpx call in asyncio.to_thread so the event loop stays free
+    to handle Meta's immediate GET verification (6-second window).
     Protected by ?key=<first-8-of-META_APP_ID>.
     """
     if not META_APP_ID or key != META_APP_ID[:8]:
         raise HTTPException(403, "bad key")
     import httpx as _httpx
-    app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
-    callback_url  = f"{BASE_URL}/webhooks/meta"
-    verify_token  = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
+    app_token    = f"{META_APP_ID}|{META_APP_SECRET}"
+    callback_url = f"{BASE_URL}/webhooks/meta"
+    verify_token = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
     results = {}
-    for obj in ("page", "instagram"):
+
+    def _do_r2(obj: str) -> dict:
         r = _httpx.post(
             f"https://graph.facebook.com/v20.0/{META_APP_ID}/subscriptions",
             params={
@@ -4036,8 +4041,12 @@ async def debug_meta_force_r2(key: str = ""):
         )
         body = r.json()
         logger.info(f"[meta-force-r2] object={obj} status={r.status_code} body={body}")
-        results[obj] = {"http_status": r.status_code, "body": body}
-    return {"callback_url": callback_url, "results": results}
+        return {"http_status": r.status_code, "body": body}
+
+    for obj in ("page", "instagram"):
+        results[obj] = await asyncio.to_thread(_do_r2, obj)
+
+    return {"callback_url": callback_url, "verify_token_hint": verify_token[:8] + "…", "results": results}
 
 
 @app.get("/api/debug/instagram-diagnostic")
