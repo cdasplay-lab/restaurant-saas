@@ -656,23 +656,48 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
 
 def handle_instagram(restaurant_id: str, data: dict) -> None:
     """Process an incoming Instagram message, including story replies."""
+    logger.info(
+        f"[ig-incoming] restaurant={restaurant_id[:8]} "
+        f"object={data.get('object','?')} "
+        f"entries={len(data.get('entry', []))} "
+        f"raw={json.dumps(data)[:300]}"
+    )
+
     _conn = database.get_db()
     _rest = _conn.execute("SELECT id FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
     _conn.close()
     if not _rest:
-        logger.error(f"[instagram] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB. Re-register after PostgreSQL migration.")
+        logger.error(
+            f"[ig-error] ORPHANED WEBHOOK — restaurant_id={restaurant_id} not in DB"
+        )
         return
 
     try:
         entry = data["entry"][0]
-        messaging = entry["messaging"][0]
-    except (KeyError, IndexError):
+        messaging = entry.get("messaging", [])
+        if not messaging:
+            logger.warning(
+                f"[ig-incoming] no messaging[] in entry — "
+                f"entry keys={list(entry.keys())} "
+                f"(could be a non-DM event: story_mention, comment, etc.)"
+            )
+            return
+        messaging = messaging[0]
+    except (KeyError, IndexError) as exc:
+        logger.error(f"[ig-error] failed to parse entry/messaging: {exc} — data={json.dumps(data)[:300]}")
         return
 
     sender_id = messaging.get("sender", {}).get("id", "")
+    recipient_id = messaging.get("recipient", {}).get("id", "")
     message = messaging.get("message", {})
     text = message.get("text", "").strip()
+    logger.info(
+        f"[ig-parsed] sender={sender_id} recipient={recipient_id} "
+        f"has_text={bool(text)} text_preview={text[:60] if text else 'EMPTY'} "
+        f"attachments={len(message.get('attachments', []))}"
+    )
     if not sender_id:
+        logger.warning(f"[ig-error] no sender_id in messaging — skipping")
         return
 
     # Dedup — Meta retries unacknowledged messages
@@ -730,6 +755,8 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             (restaurant_id,)
         ).fetchone()
         access_token = ch["token"] if ch else None
+        if not ch:
+            logger.warning(f"[ig-error] no instagram channel row for restaurant={restaurant_id[:8]}")
 
         # Analyze story media smartly (image OR video thumbnail)
         if replied_story_id and replied_story_media_url:
@@ -737,13 +764,18 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
                 replied_story_media_url, replied_story_id,
                 restaurant_id, access_token or "", "instagram"
             )
-            logger.info(f"[instagram] story_context: {story_context[:80]}")
+            logger.info(f"[ig-parsed] story_context: {story_context[:80]}")
 
         customer = _find_or_create_customer(
             conn, restaurant_id, "instagram", sender_id, "Instagram User", ""
         )
         conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
         conn.commit()
+        logger.info(
+            f"[ig-db-created] customer={customer['id'][:8]} "
+            f"conversation={conversation['id'][:8]} "
+            f"restaurant={restaurant_id[:8]}"
+        )
 
         channel_data = {
             "platform": "instagram",
@@ -758,7 +790,10 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             "replied_story_media_url": replied_story_media_url,
             "story_context": story_context,
         }
+        logger.info(f"[ig-parsed] calling _process_incoming — text={text[:60]}")
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
+    except Exception as exc:
+        logger.error(f"[ig-error] unhandled exception in handle_instagram: {exc}", exc_info=True)
     finally:
         conn.close()
 
@@ -975,10 +1010,11 @@ def _process_incoming(
                 channel_data.get("to") or
                 channel_data.get("recipient_id") or ""
             )
+            _tag = f"[{platform[:2]}-reply-{'sent' if send_ok else 'error'}]"
             logger.info(
-                f"[outbound] req={req_id} restaurant={restaurant_id} "
-                f"conv={conv_id} channel={platform} "
-                f"status={'sent' if send_ok else 'failed'}"
+                f"{_tag} req={req_id} restaurant={restaurant_id} "
+                f"conv={conv_id} recipient={recipient_id[:12] if recipient_id else '?'} "
+                f"reply_len={len(reply_text)}"
                 + (f" error={send_err}" if not send_ok else "")
             )
             conn.execute(

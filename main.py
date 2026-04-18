@@ -3722,16 +3722,29 @@ def _route_meta_event(payload: dict) -> None:
 
         elif object_type == "instagram":
             for entry in payload.get("entry", []):
-                page_id = entry.get("id", "")
-                if not page_id:
+                entry_id = entry.get("id", "")
+                if not entry_id:
                     continue
+                # entry.id can be either the Facebook Page ID or the IG Business Account ID
+                # depending on how Meta sends it — check both columns.
                 row = conn.execute(
-                    "SELECT restaurant_id FROM channels WHERE page_id=? AND type='instagram' AND enabled=1",
-                    (page_id,)
+                    "SELECT restaurant_id FROM channels "
+                    "WHERE (page_id=? OR business_account_id=?) "
+                    "AND type='instagram' AND enabled=1",
+                    (entry_id, entry_id)
                 ).fetchone()
                 if row:
-                    logger.info(f"[webhooks/meta] IG → restaurant={row['restaurant_id'][:8]}")
+                    logger.info(
+                        f"[ig-incoming] routing → restaurant={row['restaurant_id'][:8]} "
+                        f"entry_id={entry_id}"
+                    )
                     webhooks.handle_instagram(row["restaurant_id"], payload)
+                else:
+                    logger.warning(
+                        f"[ig-incoming] NO CHANNEL FOUND for entry_id={entry_id} — "
+                        f"check that channels.page_id or channels.business_account_id matches. "
+                        f"Raw entry keys: {list(entry.keys())}"
+                    )
 
         elif object_type == "page":
             for entry in payload.get("entry", []):
@@ -4258,6 +4271,43 @@ async def instagram_diagnostic(user=Depends(current_user)):
             _step("col_last_error", "channels.last_error",
                   "FAIL" if ch.get("last_error") else "OK",
                   ch.get("last_error") or "لا يوجد خطأ ✓")
+
+            # ── 10b. Webhook subscription check ─────────────────────────────────
+            _page_id_for_sub  = ch.get("page_id", "")
+            _biz_id_for_sub   = ch.get("business_account_id", "")
+            if stored_token and _page_id_for_sub:
+                try:
+                    import httpx as _httpx_sub
+                    _sub_r = _httpx_sub.get(
+                        f"https://graph.facebook.com/v20.0/{_page_id_for_sub}/subscribed_apps",
+                        params={"access_token": stored_token},
+                        timeout=10,
+                    )
+                    _sub_body = _sub_r.json()
+                    if "error" in _sub_body:
+                        _step("webhook_sub", "Webhook مشترك في Meta",
+                              "FAIL",
+                              f"Meta error {_sub_body['error'].get('code','?')}: "
+                              f"{_sub_body['error'].get('message','?')[:100]}")
+                    else:
+                        _subs = _sub_body.get("data", [])
+                        _sub_fields = [f for s in _subs for f in (s.get("subscribed_fields") or [])]
+                        if _sub_fields:
+                            _step("webhook_sub", "Webhook مشترك في Meta",
+                                  "OK" if "messages" in _sub_fields else "WARN",
+                                  f"مشترك — fields={_sub_fields} "
+                                  f"{'✓ messages موجود' if 'messages' in _sub_fields else '⚠️ messages غير موجود!'}")
+                        else:
+                            _step("webhook_sub", "Webhook مشترك في Meta",
+                                  "WARN",
+                                  f"لا يوجد اشتراك نشط — الـ webhook غير مسجّل للصفحة. "
+                                  f"page_id={_page_id_for_sub} biz_id={_biz_id_for_sub}")
+                except Exception as _sub_exc:
+                    _step("webhook_sub", "Webhook مشترك في Meta", "WARN",
+                          f"فشل فحص الاشتراك: {str(_sub_exc)[:100]}")
+            else:
+                _step("webhook_sub", "Webhook مشترك في Meta", "WARN",
+                      "لا يمكن الفحص — token أو page_id فارغ")
 
             # ── 11. Auto-fix: re-apply valid page_token from any completed OAuth state ─
             _auto_fixed = False
