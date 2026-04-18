@@ -682,6 +682,58 @@
       <div id="sysCheckResult" class="hidden mb-5"></div>
       <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
+
+      <!-- ── Internal Message Simulator ─────────────────────────────────── -->
+      <div class="mt-8 rounded-xl border border-slate-700/60 bg-slate-800/40 p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-white font-semibold text-base flex items-center gap-2">
+              <span class="text-violet-400">🧪</span> محاكي الرسائل الداخلي
+            </h3>
+            <p class="text-slate-400 text-xs mt-0.5">اختبر كامل مسار الرسالة دون الحاجة لـ Meta — محاكاة إنشاء عميل، محادثة، تخزين رسالة، وردّ البوت</p>
+          </div>
+          <button onclick="simLoadStatus()" class="text-xs text-slate-400 hover:text-white bg-slate-700/60 border border-slate-600 px-3 py-1.5 rounded-lg transition">
+            <i class="fa-solid fa-rotate-right text-xs ml-1"></i>تحديث الحالة
+          </button>
+        </div>
+
+        <!-- Simulator form -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label class="text-slate-400 text-xs mb-1 block">المنصة</label>
+            <select id="simPlatform" class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2">
+              <option value="instagram">Instagram</option>
+              <option value="facebook">Facebook Messenger</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-slate-400 text-xs mb-1 block">Sender ID <span class="text-slate-500">(اتركه فارغاً لعميل جديد عشوائي)</span></label>
+            <input id="simSenderId" type="text" placeholder="مثال: sim_abc123" class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 placeholder-slate-500" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-slate-400 text-xs mb-1 block">نص الرسالة</label>
+            <input id="simText" type="text" value="مرحبا، ما هي الوجبات المتاحة؟" class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2" />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2 mb-4">
+          <button onclick="simFire(false)" class="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
+            <i class="fa-solid fa-paper-plane text-xs"></i> إرسال رسالة
+          </button>
+          <button onclick="simFire(true)" class="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white text-sm px-4 py-2 rounded-lg transition" title="يحذف سجلات المُرسل أولاً ثم يُرسل — يضمن أن المحادثة تظهر كـ first_contact">
+            <i class="fa-solid fa-broom text-xs"></i> إعادة تعيين + إرسال <span class="text-xs text-amber-400">(first_contact)</span>
+          </button>
+          <button onclick="simClearAll()" class="flex items-center gap-2 text-red-400 hover:text-red-300 bg-slate-700/60 border border-red-900/40 text-sm px-3 py-2 rounded-lg transition">
+            <i class="fa-solid fa-trash-can text-xs"></i> مسح كل بيانات المحاكاة
+          </button>
+        </div>
+
+        <!-- Trace output -->
+        <div id="simTrace" class="hidden rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-xs font-mono overflow-x-auto max-h-80 overflow-y-auto"></div>
+
+        <!-- Status panel -->
+        <div id="simStatus" class="hidden mt-4 grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+      </div>
     </section>
 
     <!-- ═══ SETTINGS ═══ -->
@@ -2696,6 +2748,117 @@ async function runInstagramDiagnostic() {
   } catch(e) {
     document.getElementById('igDiagBody').innerHTML =
       `<div class="text-red-300 text-sm">❌ فشل جلب نتيجة الفحص: ${e.message}</div>`;
+  }
+}
+
+// ── Internal Meta Simulator ───────────────────────────────────
+const SIM_KEY = window._metaAppIdPrefix || '';  // filled at login if we have it
+
+async function _simKey() {
+  // We need the first-8 of META_APP_ID. Try fetching a lightweight status endpoint.
+  // If it fails or key is empty, show a prompt.
+  if (window._simKeyCache) return window._simKeyCache;
+  const stored = localStorage.getItem('sim_key') || '';
+  if (stored) { window._simKeyCache = stored; return stored; }
+  const k = prompt('أدخل أول 8 أحرف من META_APP_ID (مفتاح الوصول للمحاكي):');
+  if (k) { localStorage.setItem('sim_key', k); window._simKeyCache = k; }
+  return k || '';
+}
+
+async function simFire(reset = false) {
+  const key  = await _simKey();
+  if (!key) return;
+  const platform  = document.getElementById('simPlatform').value;
+  const senderRaw = document.getElementById('simSenderId').value.trim();
+  const text      = document.getElementById('simText').value.trim() || 'مرحبا';
+  const body      = { platform, text, reset_sender: reset };
+  if (senderRaw) body.sender_id = senderRaw;
+
+  const traceEl = document.getElementById('simTrace');
+  traceEl.classList.remove('hidden');
+  traceEl.textContent = '⏳ جاري الإرسال...';
+
+  try {
+    const r = await apiFetch(`/api/debug/meta-simulate?key=${encodeURIComponent(key)}`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    const pipe = r.pipeline || {};
+    const custStatus = pipe.customer?.status === 'created' ? '🆕 عميل جديد' : '🔄 عميل موجود';
+    const convStatus = pipe.conversation?.status === 'created' ? '🆕 محادثة جديدة' : '🔄 محادثة موجودة';
+    const fc         = pipe.conversation?.first_contact ? ' — <span class="text-amber-400">⭐ first_contact</span>' : '';
+    const msgStatus  = pipe.message?.status === 'stored' ? '✅ رسالة خُزّنت' : '⚠️ لم تُخزّن الرسالة';
+    const dedupSt    = pipe.dedup?.status === 'inserted' ? '✅ dedup سُجّل' : '♻️ dedup مكرر (طبيعي)';
+
+    const msgs = (pipe.message?.records || []).map(m =>
+      `  [${m.sender}] ${(m.content || '').slice(0, 80)}`
+    ).join('\n');
+
+    traceEl.innerHTML = [
+      `<span class="text-violet-400">✈ platform=${r.platform}  sender=${r.sender_id}  mid=${r.mid}</span>`,
+      `<span class="text-green-400">${custStatus}</span>  ID: ${(pipe.customer?.records?.[0]?.id || '?').slice(0,8)}…`,
+      `<span class="text-blue-400">${convStatus}${fc}</span>`,
+      `<span class="text-green-400">${msgStatus}</span>`,
+      `<span class="text-slate-400">${dedupSt}</span>`,
+      msgs ? `\nرسائل:\n${msgs}` : '',
+      `\n<span class="text-slate-500">── الاستجابة الكاملة ──</span>`,
+      `<span class="text-slate-400">${JSON.stringify(r, null, 2)}</span>`,
+    ].filter(Boolean).join('\n');
+
+    simLoadStatus();
+  } catch(e) {
+    traceEl.innerHTML = `<span class="text-red-400">❌ خطأ: ${e.message}</span>`;
+  }
+}
+
+async function simLoadStatus() {
+  const key = await _simKey();
+  if (!key) return;
+  const statusEl = document.getElementById('simStatus');
+  statusEl.classList.remove('hidden');
+  statusEl.innerHTML = '<div class="col-span-4 text-slate-400 text-xs">⏳ جاري التحميل...</div>';
+  try {
+    const r = await apiFetch(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
+    statusEl.innerHTML = [
+      _simStat('👥 عملاء المحاكاة', r.sim_customers),
+      _simStat('💬 محادثات', r.sim_conversations),
+      _simStat('✉️ رسائل', r.sim_messages),
+      _simStat('⭐ طلبات أولى', r.first_contact_conversations, 'text-amber-400'),
+    ].join('');
+  } catch(e) {
+    statusEl.innerHTML = `<div class="col-span-4 text-red-400 text-xs">❌ ${e.message}</div>`;
+  }
+}
+
+function _simStat(label, val, cls = 'text-white') {
+  return `<div class="bg-slate-800/60 border border-slate-700 rounded-lg p-3 text-center">
+    <div class="text-xs text-slate-400 mb-1">${label}</div>
+    <div class="text-lg font-bold ${cls}">${val ?? 0}</div>
+  </div>`;
+}
+
+async function simClearAll() {
+  if (!confirm('سيتم حذف جميع بيانات المحاكاة (عملاء، محادثات، رسائل). هل أنت متأكد؟')) return;
+  const key = await _simKey();
+  if (!key) return;
+  // Get all sim senders and reset each
+  try {
+    const status = await apiFetch(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
+    const senders = [...new Set((status.customers || []).map(c => c.sim_sender_id).filter(Boolean))];
+    let cleared = 0;
+    for (const sid of senders) {
+      const platform = (status.customers.find(c => c.sim_sender_id === sid)?.platform) || 'instagram';
+      await apiFetch(`/api/debug/meta-simulate?key=${encodeURIComponent(key)}`, {
+        method: 'POST',
+        body: JSON.stringify({ platform, sender_id: sid, text: '_clear', reset_sender: true }),
+      });
+      cleared++;
+    }
+    const traceEl = document.getElementById('simTrace');
+    traceEl.classList.remove('hidden');
+    traceEl.textContent = `✅ تم مسح ${cleared} مُرسل(ين) من بيانات المحاكاة.`;
+    simLoadStatus();
+  } catch(e) {
+    toast('فشل المسح: ' + e.message, 'error');
   }
 }
 

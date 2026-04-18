@@ -4156,6 +4156,269 @@ async def debug_meta_force_r2(key: str = ""):
     return {"callback_url": callback_url, "verify_token_hint": verify_token[:8] + "…", "results": results}
 
 
+# ── Internal Meta simulator / test-harness ────────────────────────────────────
+
+@app.post("/api/debug/meta-simulate")
+async def debug_meta_simulate(req: Request, key: str = ""):
+    """
+    Full internal Meta message simulator — no real Meta dependency.
+
+    POST body (all fields optional):
+      {
+        "platform":      "instagram" | "facebook"   (default "instagram"),
+        "sender_id":     "123456789"                (default random — forces new customer),
+        "text":          "hello, what's available?" (default arabic greeting),
+        "reset_sender":  true                       (delete this sender's records first, clean slate)
+      }
+
+    Returns full pipeline trace:
+      customer: created/found, conversation: created/found, first_contact flag,
+      message stored, dedup entry.
+    """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+
+    import time as _time
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        pass
+
+    platform  = body.get("platform", "instagram")
+    text      = body.get("text", "مرحبا، ما هي الوجبات المتاحة؟")
+    reset     = body.get("reset_sender", False)
+    sender_id = str(body.get("sender_id") or f"sim_{uuid.uuid4().hex[:12]}")
+
+    # ── Phase 1: look up channel + optional reset ──────────────────────────
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT restaurant_id, page_id, business_account_id FROM channels "
+            "WHERE type=? AND enabled=1 LIMIT 1",
+            (platform,)
+        ).fetchone()
+        if not row:
+            return {"error": f"no enabled {platform} channel — connect one first"}
+
+        restaurant_id = row["restaurant_id"]
+        page_id       = row["page_id"]
+        entry_id      = (row["business_account_id"] or page_id) if platform == "instagram" else page_id
+
+        if reset:
+            mem_rows = conn.execute(
+                "SELECT customer_id FROM conversation_memory "
+                "WHERE memory_key='external_id' AND memory_value=?", (sender_id,)
+            ).fetchall()
+            for mr in mem_rows:
+                cid = mr["customer_id"]
+                convs = conn.execute(
+                    "SELECT id FROM conversations WHERE customer_id=?", (cid,)
+                ).fetchall()
+                for conv in convs:
+                    conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv["id"],))
+                conn.execute("DELETE FROM conversations WHERE customer_id=?", (cid,))
+                conn.execute("DELETE FROM conversation_memory WHERE customer_id=?", (cid,))
+                conn.execute("DELETE FROM customers WHERE id=?", (cid,))
+            conn.execute(
+                "DELETE FROM processed_events WHERE restaurant_id=? AND provider=? AND event_id=?",
+                (restaurant_id, platform, f"sim_mid_{sender_id}")
+            )
+            conn.commit()
+            logger.info(f"[meta-simulate] reset sender={sender_id} — cleared {len(mem_rows)} customer(s)")
+    finally:
+        conn.close()
+
+    # ── Helper: snapshot state for this sender (opens its own conn) ────────
+    def _snap():
+        c2 = database.get_db()
+        try:
+            mem = c2.execute(
+                "SELECT customer_id FROM conversation_memory "
+                "WHERE memory_key='external_id' AND memory_value=?", (sender_id,)
+            ).fetchall()
+            cids  = [r["customer_id"] for r in mem]
+            custs = []
+            for cid in cids:
+                r2 = c2.execute(
+                    "SELECT id, name, platform FROM customers WHERE id=?", (cid,)
+                ).fetchone()
+                if r2:
+                    custs.append(dict(r2))
+            convs = []
+            msgs  = []
+            for cid in cids:
+                cs = c2.execute(
+                    "SELECT id, first_contact, channel, status FROM conversations WHERE customer_id=?",
+                    (cid,)
+                ).fetchall()
+                for cv in cs:
+                    convs.append(dict(cv))
+                    ms = c2.execute(
+                        "SELECT id, sender, content FROM messages "
+                        "WHERE conversation_id=? ORDER BY created_at DESC LIMIT 5",
+                        (cv["id"],)
+                    ).fetchall()
+                    msgs.extend([dict(m) for m in ms])
+            ded = c2.execute(
+                "SELECT provider, event_id FROM processed_events "
+                "WHERE restaurant_id=? AND provider=? AND event_id=?",
+                (restaurant_id, platform, f"sim_mid_{sender_id}")
+            ).fetchall()
+            return {"customers": custs, "conversations": convs, "messages": msgs, "dedup": [dict(d) for d in ded]}
+        finally:
+            c2.close()
+
+    # ── Phase 2: snapshot before, fire, snapshot after ─────────────────────
+    before   = _snap()
+    fake_ts  = int(_time.time() * 1000)
+    mid      = f"sim_mid_{sender_id}"
+
+    if platform == "instagram":
+        payload = {
+            "object": "instagram",
+            "entry": [{
+                "id": entry_id,
+                "time": fake_ts,
+                "messaging": [{
+                    "sender":    {"id": sender_id},
+                    "recipient": {"id": entry_id},
+                    "timestamp": fake_ts,
+                    "message":   {"mid": mid, "text": text},
+                }]
+            }]
+        }
+    else:
+        payload = {
+            "object": "page",
+            "entry": [{
+                "id": entry_id,
+                "time": fake_ts,
+                "messaging": [{
+                    "sender":    {"id": sender_id},
+                    "recipient": {"id": entry_id},
+                    "timestamp": fake_ts,
+                    "message":   {"mid": mid, "text": text},
+                }]
+            }]
+        }
+
+    logger.info(f"[meta-simulate] firing platform={platform} sender={sender_id} text={text[:60]!r}")
+    _route_meta_event(payload)
+
+    import time as _t
+    _t.sleep(0.3)
+
+    after = _snap()
+
+    new_customers     = [c for c in after["customers"]     if c not in before["customers"]]
+    new_conversations = [c for c in after["conversations"] if c not in before["conversations"]]
+    new_messages      = [m for m in after["messages"]      if m not in before["messages"]]
+    new_dedup         = [d for d in after["dedup"]         if d not in before["dedup"]]
+
+    return {
+        "ok": True,
+        "platform":   platform,
+        "sender_id":  sender_id,
+        "text":       text,
+        "reset_done": reset,
+        "entry_id":   entry_id,
+        "mid":        mid,
+        "pipeline": {
+            "customer": {
+                "status":  "created" if new_customers else "found",
+                "records": after["customers"],
+            },
+            "conversation": {
+                "status":        "created" if new_conversations else "found",
+                "records":       after["conversations"],
+                "first_contact": any(c.get("first_contact") for c in after["conversations"]),
+            },
+            "message": {
+                "status":  "stored" if new_messages else "not_stored",
+                "records": new_messages,
+            },
+            "dedup": {
+                "status":  "inserted" if new_dedup else "already_exists",
+                "records": after["dedup"],
+            },
+        },
+    }
+
+
+@app.get("/api/debug/meta-simulate-status")
+async def debug_meta_simulate_status(key: str = ""):
+    """
+    Returns full test harness state: all simulated customers, conversations, messages, dedup entries.
+    Protected by ?key=<first-8-of-META_APP_ID>.
+    """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+
+    conn = database.get_db()
+    try:
+        sim_mem = conn.execute(
+            "SELECT customer_id, memory_value as sender_id FROM conversation_memory "
+            "WHERE memory_key='external_id' AND memory_value LIKE 'sim_%'"
+        ).fetchall()
+        cids = [r["customer_id"] for r in sim_mem]
+        sender_map = {r["customer_id"]: r["sender_id"] for r in sim_mem}
+
+        customers = []
+        for cid in cids:
+            cust = conn.execute(
+                "SELECT id, restaurant_id, platform, name FROM customers WHERE id=?", (cid,)
+            ).fetchone()
+            if cust:
+                d = dict(cust)
+                d["sim_sender_id"] = sender_map.get(cid, "?")
+                customers.append(d)
+
+        conversations = []
+        for cid in cids:
+            cs = conn.execute(
+                "SELECT id, restaurant_id, customer_id, mode, status, first_contact, channel, created_at "
+                "FROM conversations WHERE customer_id=?", (cid,)
+            ).fetchall()
+            for c in cs:
+                d = dict(c)
+                d["sim_sender_id"] = sender_map.get(cid, "?")
+                conversations.append(d)
+
+        messages = []
+        for conv in conversations:
+            ms = conn.execute(
+                "SELECT id, sender, content, created_at FROM messages "
+                "WHERE conversation_id=? ORDER BY created_at DESC LIMIT 10",
+                (conv["id"],)
+            ).fetchall()
+            for m in ms:
+                d = dict(m)
+                d["conversation_id"] = conv["id"]
+                messages.append(d)
+
+        dedup = conn.execute(
+            "SELECT restaurant_id, provider, event_id, created_at FROM processed_events "
+            "WHERE event_id LIKE 'sim_mid_%' ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+
+        first_contact_convs = [c for c in conversations if c.get("first_contact")]
+
+        return {
+            "sim_customers":          len(customers),
+            "sim_conversations":      len(conversations),
+            "sim_messages":           len(messages),
+            "sim_dedup_entries":      len(dedup),
+            "first_contact_conversations": len(first_contact_convs),
+            "customers":     customers,
+            "conversations": conversations,
+            "messages":      messages,
+            "dedup":         [dict(d) for d in dedup],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/debug/instagram-diagnostic")
 async def instagram_diagnostic(user=Depends(current_user)):
     """
