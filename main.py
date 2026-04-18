@@ -348,6 +348,23 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def log_all_requests(request: Request, call_next):
+    method = request.method
+    path   = request.url.path
+    # Log every inbound POST — this catches Meta webhooks hitting any path
+    if method == "POST":
+        logger.info(
+            f"[request-log] POST {path} "
+            f"from={request.client.host if request.client else '?'} "
+            f"ua={request.headers.get('user-agent','')[:60]}"
+        )
+    elif path.startswith("/webhook"):
+        logger.info(f"[request-log] {method} {path}")
+    response = await call_next(request)
+    return response
+
+
+@app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -3928,24 +3945,26 @@ async def debug_meta_page_r1(key: str = ""):
 
 
 @app.post("/api/debug/meta-fire-test")
-async def debug_meta_fire_test(req: Request, user=Depends(current_user)):
+async def debug_meta_fire_test(req: Request, key: str = ""):
     """
     Simulate a real Meta webhook event and run it through the full pipeline.
-    POST with {"platform": "instagram"|"facebook"} to fire a fake DM event.
-    This confirms routing + handler code works without waiting for Meta.
+    POST {"platform": "instagram"|"facebook"} with ?key=<first-8-of-META_APP_ID>
+    Fires a fake DM event through _route_meta_event to test routing + handler.
     """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
     body = await req.json()
     platform = body.get("platform", "instagram")
     conn = database.get_db()
     try:
         row = conn.execute(
             "SELECT page_id, business_account_id FROM channels "
-            "WHERE restaurant_id=? AND type=? AND enabled=1",
-            (user["restaurant_id"], platform)
+            "WHERE type=? AND enabled=1 LIMIT 1",
+            (platform,)
         ).fetchone()
         if not row:
             return {"error": f"no {platform} channel connected"}
-        entry_id = row["business_account_id"] or row["page_id"] if platform == "instagram" else row["page_id"]
+        entry_id = (row["business_account_id"] or row["page_id"]) if platform == "instagram" else row["page_id"]
         if not entry_id:
             return {"error": "no page_id/business_account_id stored"}
     finally:
@@ -3987,6 +4006,38 @@ async def debug_meta_fire_test(req: Request, user=Depends(current_user)):
     logger.info(f"[debug-fire-test] firing fake {platform} event entry_id={entry_id}")
     _route_meta_event(fake_payload)
     return {"fired": True, "platform": platform, "entry_id": entry_id, "payload": fake_payload}
+
+
+@app.post("/api/debug/meta-force-r2")
+async def debug_meta_force_r2(key: str = ""):
+    """
+    Force-register both 'page' and 'instagram' app-level subscriptions (r2).
+    Use when Meta's subscription list is incomplete.
+    Protected by ?key=<first-8-of-META_APP_ID>.
+    """
+    if not META_APP_ID or key != META_APP_ID[:8]:
+        raise HTTPException(403, "bad key")
+    import httpx as _httpx
+    app_token     = f"{META_APP_ID}|{META_APP_SECRET}"
+    callback_url  = f"{BASE_URL}/webhooks/meta"
+    verify_token  = META_VERIFY_TOKEN or f"meta_verify_{META_APP_ID}"
+    results = {}
+    for obj in ("page", "instagram"):
+        r = _httpx.post(
+            f"https://graph.facebook.com/v20.0/{META_APP_ID}/subscriptions",
+            params={
+                "object":       obj,
+                "callback_url": callback_url,
+                "verify_token": verify_token,
+                "fields":       "messages,messaging_postbacks",
+                "access_token": app_token,
+            },
+            timeout=15,
+        )
+        body = r.json()
+        logger.info(f"[meta-force-r2] object={obj} status={r.status_code} body={body}")
+        results[obj] = {"http_status": r.status_code, "body": body}
+    return {"callback_url": callback_url, "results": results}
 
 
 @app.get("/api/debug/instagram-diagnostic")
