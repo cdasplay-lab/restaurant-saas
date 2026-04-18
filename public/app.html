@@ -2779,9 +2779,7 @@ async function simFire(reset = false) {
   traceEl.textContent = '⏳ جاري الإرسال...';
 
   try {
-    const r = await apiFetch(`/api/debug/meta-simulate?key=${encodeURIComponent(key)}`, {
-      method: 'POST', body: JSON.stringify(body),
-    });
+    const r = await api.req('POST', `/api/debug/meta-simulate?key=${encodeURIComponent(key)}`, body);
     const pipe = r.pipeline || {};
     const custStatus = pipe.customer?.status === 'created' ? '🆕 عميل جديد' : '🔄 عميل موجود';
     const convStatus = pipe.conversation?.status === 'created' ? '🆕 محادثة جديدة' : '🔄 محادثة موجودة';
@@ -2817,7 +2815,7 @@ async function simLoadStatus() {
   statusEl.classList.remove('hidden');
   statusEl.innerHTML = '<div class="col-span-4 text-slate-400 text-xs">⏳ جاري التحميل...</div>';
   try {
-    const r = await apiFetch(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
+    const r = await api.get(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
     statusEl.innerHTML = [
       _simStat('👥 عملاء المحاكاة', r.sim_customers),
       _simStat('💬 محادثات', r.sim_conversations),
@@ -2842,15 +2840,13 @@ async function simClearAll() {
   if (!key) return;
   // Get all sim senders and reset each
   try {
-    const status = await apiFetch(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
+    const status = await api.get(`/api/debug/meta-simulate-status?key=${encodeURIComponent(key)}`);
     const senders = [...new Set((status.customers || []).map(c => c.sim_sender_id).filter(Boolean))];
     let cleared = 0;
     for (const sid of senders) {
       const platform = (status.customers.find(c => c.sim_sender_id === sid)?.platform) || 'instagram';
-      await apiFetch(`/api/debug/meta-simulate?key=${encodeURIComponent(key)}`, {
-        method: 'POST',
-        body: JSON.stringify({ platform, sender_id: sid, text: '_clear', reset_sender: true }),
-      });
+      await api.req('POST', `/api/debug/meta-simulate?key=${encodeURIComponent(key)}`,
+        { platform, sender_id: sid, text: '_clear', reset_sender: true });
       cleared++;
     }
     const traceEl = document.getElementById('simTrace');
@@ -2888,7 +2884,7 @@ async function loadChannels() {
 
 async function loadWAWebhookInfo() {
   try {
-    const r = await apiFetch('/api/channels/whatsapp/webhook-info');
+    const r = await api.get('/api/channels/whatsapp/webhook-info');
     const cbEl = document.getElementById('waCallbackUrl');
     const vtEl = document.getElementById('waVerifyToken');
     if (cbEl) cbEl.textContent = r.callback_url;
