@@ -262,9 +262,60 @@ class InstagramAdapter(_MetaBase):
                     "pages_show_list,pages_read_engagement,"
                     "pages_manage_metadata,pages_messaging")
 
+    def build_auth_url(self, state: str, redirect_uri: str) -> str:
+        from urllib.parse import urlencode
+        params = {
+            "client_id":     META_APP_ID,
+            "redirect_uri":  redirect_uri,
+            "scope":         self._scopes,
+            "state":         state,
+            "response_type": "code",
+            "auth_type":     "rerequest",   # force Meta to re-show permission dialog
+        }
+        logger.info(f"[instagram] build_auth_url — scopes={self._scopes}")
+        return "https://www.facebook.com/dialog/oauth?" + urlencode(params)
+
     def exchange_code(self, code: str, redirect_uri: str) -> dict:
         short     = self._exchange_short_token(code, redirect_uri)
         long, exp = self._extend_token(short)
+
+        # ── Identify token owner and confirm granted permissions ──────────────
+        _me_id = _me_name = ""
+        _granted: list = []
+        _declined: list = []
+        try:
+            _mr = httpx.get(f"{GRAPH}/me", params={"access_token": long,
+                                                    "fields": "id,name"}, timeout=10)
+            _md = _mr.json()
+            _me_id   = _md.get("id", "?")
+            _me_name = _md.get("name", "?")
+            logger.info(f"[instagram] token_owner — fb_user_id={_me_id} name={_me_name}")
+        except Exception as _e:
+            logger.warning(f"[instagram] /me identity check failed: {_e}")
+
+        try:
+            _pr  = httpx.get(f"{GRAPH}/me/permissions",
+                              params={"access_token": long}, timeout=10)
+            _pd  = _pr.json()
+            _granted  = [p["permission"] for p in _pd.get("data", [])
+                         if p.get("status") == "granted"]
+            _declined = [p["permission"] for p in _pd.get("data", [])
+                         if p.get("status") == "declined"]
+            logger.info(f"[instagram] granted_permissions={_granted}")
+            if _declined:
+                logger.warning(f"[instagram] DECLINED_permissions={_declined}")
+            _needed = ["pages_show_list", "pages_manage_metadata",
+                       "pages_messaging", "instagram_basic",
+                       "instagram_manage_messages"]
+            _missing = [s for s in _needed if s not in _granted]
+            if _missing:
+                logger.error(
+                    f"[instagram] CRITICAL — missing permissions: {_missing} — "
+                    f"/me/accounts will return 0 pages"
+                )
+        except Exception as _e:
+            logger.warning(f"[instagram] /me/permissions check failed: {_e}")
+
         pages     = self._get_user_pages(long)
 
         # For each page, find its linked Instagram Business Account
@@ -321,13 +372,17 @@ class InstagramAdapter(_MetaBase):
             )
 
         return {
-            "access_token":     long,
-            "token_expires_at": exp,
-            "accounts":         ig_accounts,   # UI shows account picker
-            "raw_pages":        pages,          # all FB pages (with page_token), for diagnostic storage
-            "scopes_granted":   self._scopes,
-            "no_ig_accounts":   len(ig_accounts) == 0,
-            "fb_pages_found":   len(pages),
+            "access_token":       long,
+            "token_expires_at":   exp,
+            "accounts":           ig_accounts,
+            "raw_pages":          pages,
+            "scopes_granted":     self._scopes,
+            "no_ig_accounts":     len(ig_accounts) == 0,
+            "fb_pages_found":     len(pages),
+            "token_owner_id":     _me_id,
+            "token_owner_name":   _me_name,
+            "granted_perms":      _granted,
+            "declined_perms":     _declined,
         }
 
     def subscribe_webhook(self, channel: dict, base_url: str) -> dict:

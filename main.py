@@ -2589,14 +2589,25 @@ async def integrations_oauth_callback(
                 fb_pages  = result.get("fb_pages_found", 0)
                 raw_pages = result.get("raw_pages", [])
                 # Persist user token + raw FB pages so the diagnostic can call Meta live
+                logger.info(
+                    f"[ig-oauth] token_owner={result.get('token_owner_name','?')} "
+                    f"(fb_id={result.get('token_owner_id','?')})"
+                )
+                logger.info(f"[ig-oauth] granted_perms={result.get('granted_perms', [])}")
+                if result.get("declined_perms"):
+                    logger.warning(f"[ig-oauth] DECLINED_perms={result.get('declined_perms')}")
                 debug_json = json.dumps({
-                    "access_token":     result.get("access_token", ""),
-                    "token_expires_at": result.get("token_expires_at", ""),
-                    "scopes_granted":   result.get("scopes_granted", ""),
-                    "pages":            [],          # no IG accounts to pick
-                    "raw_fb_pages":     raw_pages,   # raw FB pages list for diagnostic
-                    "no_ig_accounts":   True,
-                    "fb_pages_found":   fb_pages,
+                    "access_token":       result.get("access_token", ""),
+                    "token_expires_at":   result.get("token_expires_at", ""),
+                    "scopes_granted":     result.get("scopes_granted", ""),
+                    "pages":              [],
+                    "raw_fb_pages":       raw_pages,
+                    "no_ig_accounts":     True,
+                    "fb_pages_found":     fb_pages,
+                    "token_owner_id":     result.get("token_owner_id", ""),
+                    "token_owner_name":   result.get("token_owner_name", ""),
+                    "granted_perms":      result.get("granted_perms", []),
+                    "declined_perms":     result.get("declined_perms", []),
                 })
                 conn.execute("UPDATE oauth_states SET pages_json=? WHERE state=?",
                              (debug_json, state))
@@ -3897,9 +3908,16 @@ async def instagram_diagnostic(user=Depends(current_user)):
                 except Exception:
                     last_pd    = {}
                     last_accts = []
+                _stored_owner   = last_pd.get("token_owner_name", "")
+                _stored_granted = last_pd.get("granted_perms", [])
+                _stored_declined= last_pd.get("declined_perms", [])
                 _step("oauth_state", "آخر OAuth state", "OK",
                       f"completed (used=1) — accounts={len(last_accts)} "
-                      f"has_user_token={bool(last_pd.get('access_token'))}")
+                      f"has_user_token={bool(last_pd.get('access_token'))} "
+                      f"fb_pages_found={last_pd.get('fb_pages_found', '?')} "
+                      f"token_owner={_stored_owner or '?'} "
+                      f"granted={_stored_granted or '?'} "
+                      f"declined={_stored_declined or 'none'}")
 
             if best_state:
                 _step("oauth_states_scan", f"فحص {len(all_ig_states)} OAuth state",
@@ -3928,6 +3946,56 @@ async def instagram_diagnostic(user=Depends(current_user)):
         if _live_user_token:
             try:
                 import httpx as _httpx2
+
+                # ── 3c. Token identity — who authorized? ─────────────────────
+                try:
+                    _id_r    = _httpx2.get("https://graph.facebook.com/v20.0/me",
+                                           params={"access_token": _live_user_token,
+                                                   "fields": "id,name"}, timeout=10)
+                    _id_body = _id_r.json()
+                    if "error" not in _id_body:
+                        _step("token_identity", "هوية صاحب الـ token (Facebook User)",
+                              "OK",
+                              f"الاسم: {_id_body.get('name','?')} | "
+                              f"FB ID: {_id_body.get('id','?')} | "
+                              f"هذا الشخص يجب أن يكون مدير صفحة 'Saas' على Facebook")
+                    else:
+                        _step("token_identity", "هوية صاحب الـ token",
+                              "FAIL", f"Meta error: {_id_body['error'].get('message','?')[:100]}")
+                except Exception as _ide:
+                    _step("token_identity", "هوية صاحب الـ token", "WARN", str(_ide)[:100])
+
+                # ── 3d. Granted permissions check ────────────────────────────
+                try:
+                    _perm_r    = _httpx2.get("https://graph.facebook.com/v20.0/me/permissions",
+                                             params={"access_token": _live_user_token}, timeout=10)
+                    _perm_body = _perm_r.json()
+                    _pg = [p["permission"] for p in _perm_body.get("data", [])
+                           if p.get("status") == "granted"]
+                    _pd = [p["permission"] for p in _perm_body.get("data", [])
+                           if p.get("status") == "declined"]
+                    _required = ["pages_show_list", "pages_manage_metadata",
+                                 "pages_messaging", "instagram_basic",
+                                 "instagram_manage_messages", "pages_read_engagement"]
+                    _missing_perms = [s for s in _required if s not in _pg]
+                    if _missing_perms:
+                        _step("token_perms", "الصلاحيات الممنوحة من Meta",
+                              "FAIL",
+                              f"ناقصة: {_missing_perms} | "
+                              f"ممنوحة: {_pg} | "
+                              f"مرفوضة: {_pd} | "
+                              f"الحل: انتظر deploy ثم أعد الربط — auth_type=rerequest سيطلبها مجدداً")
+                    elif _pd:
+                        _step("token_perms", "الصلاحيات الممنوحة من Meta",
+                              "WARN",
+                              f"مرفوضة: {_pd} | ممنوحة: {_pg}")
+                    else:
+                        _step("token_perms", "الصلاحيات الممنوحة من Meta",
+                              "OK", f"جميع الصلاحيات ممنوحة: {_pg}")
+                except Exception as _pe:
+                    _step("token_perms", "الصلاحيات الممنوحة من Meta", "WARN", str(_pe)[:100])
+
+                # ── 3e. /me/accounts live call ───────────────────────────────
                 _accts_r = _httpx2.get(
                     "https://graph.facebook.com/v20.0/me/accounts",
                     params={"access_token": _live_user_token,
