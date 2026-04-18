@@ -2549,9 +2549,11 @@ async function runInstagramDiagnostic() {
       no_channel:           { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ لم يتم ربط Instagram بعد' },
       oauth_incomplete:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ OAuth بدأ لكن لم يكتمل — حاول مرة أخرى' },
       env_missing:          { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ متغيرات البيئة مفقودة في Render' },
-      meta_unreachable:     { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
-      unknown:              { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ غير محدد' },
-      internal_error:       { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ خطأ داخلي في الفحص — راجع تفاصيل الخطأ أدناه' },
+      meta_unreachable:        { cls: 'bg-yellow-900/40 border-yellow-700 text-yellow-300', text: '⚠️ تعذّر الوصول إلى Meta API' },
+      business_portfolio:      { cls: 'bg-amber-900/40 border-amber-600 text-amber-300',   text: '⚠️ الصفحة في Business Portfolio — أعد الربط وسيعمل النظام تلقائياً' },
+      no_page_direct_access:   { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ الحساب المستخدم لا يملك صلاحية مباشرة على الصفحة — راجع التفاصيل أدناه' },
+      unknown:                 { cls: 'bg-slate-700 border-slate-600 text-slate-300',      text: 'ℹ️ غير محدد' },
+      internal_error:          { cls: 'bg-red-900/40 border-red-700 text-red-300',         text: '❌ خطأ داخلي في الفحص — راجع تفاصيل الخطأ أدناه' },
     };
 
     const vm = VERDICT_MSG[verdict] || VERDICT_MSG.unknown;
@@ -2631,6 +2633,29 @@ async function runInstagramDiagnostic() {
         <button onclick="closeModal();loadChannels().then(()=>startConnect('instagram'))"
           class="mt-1 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
           <i class="fa-brands fa-instagram mr-2"></i>ربط Instagram من الصفر
+        </button>`;
+    } else if (verdict === 'business_portfolio') {
+      html += `
+        <div class="mt-3 bg-amber-900/20 border border-amber-600/50 rounded-xl px-3 py-2 text-amber-200 text-xs mb-2">
+          ✅ الصفحة موجودة في Business Portfolio. النظام الآن يدعم هذا النوع تلقائياً عبر Business API.
+          أعد الربط بالزر أدناه وستظهر الصفحة بشكل صحيح.
+        </div>
+        <button onclick="closeModal();startConnect('instagram')"
+          class="mt-1 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
+          <i class="fa-brands fa-instagram mr-2"></i>ربط Instagram من الصفر
+        </button>`;
+    } else if (verdict === 'no_page_direct_access') {
+      html += `
+        <div class="mt-3 bg-red-900/20 border border-red-600/50 rounded-xl px-3 py-2 text-red-200 text-xs mb-2 space-y-1">
+          <div class="font-semibold">لماذا يحدث هذا؟</div>
+          <div>• /me/accounts لا يُرجع الصفحات التي تُدار فقط عبر Business Portfolio بدون صلاحية مدير مباشرة</div>
+          <div class="font-semibold mt-1">الحل المطلوب — خيار واحد:</div>
+          <div>• افتح Meta Business Suite → الصفحة → الأشخاص والأصول → الأشخاص → أضف حسابك بـ "Full Control"</div>
+          <div>• ثم أعد الربط هنا</div>
+        </div>
+        <button onclick="closeModal();startConnect('instagram')"
+          class="mt-1 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-sm py-2.5 rounded-xl transition font-semibold">
+          <i class="fa-brands fa-instagram mr-2"></i>أعد الربط بعد إضافة الصلاحية
         </button>`;
     } else if (['token_cannot_decrypt','token_expired','token_invalid','token_wrong_type','no_token','no_channel'].includes(verdict)) {
       html += `<button onclick="closeModal();startConnect('instagram')"

@@ -4011,10 +4011,64 @@ async def instagram_diagnostic(user=Depends(current_user)):
                 else:
                     _fb_live = _accts_body.get("data", [])
                     if not _fb_live:
-                        _step("live_api", "فحص مباشر /me/accounts",
-                              "WARN",
-                              "Meta أرجع 0 صفحات — "
-                              "تأكد أن المستخدم الذي أجرى OAuth هو مدير صفحة Facebook")
+                        # /me/accounts = 0. Try Business API to detect Business Portfolio case.
+                        try:
+                            _biz_r    = _httpx2.get(
+                                "https://graph.facebook.com/v20.0/me/businesses",
+                                params={"access_token": _live_user_token, "fields": "id,name"},
+                                timeout=12)
+                            _biz_body = _biz_r.json()
+                        except Exception:
+                            _biz_body = {}
+
+                        if "error" in _biz_body:
+                            _step("live_api", "فحص مباشر /me/accounts",
+                                  "FAIL",
+                                  f"0 صفحات من /me/accounts — "
+                                  f"Business Portfolio فشل أيضاً (code={_biz_body['error'].get('code','?')}): "
+                                  f"{_biz_body['error'].get('message','?')[:80]}")
+                            verdict = "no_page_direct_access"
+                        elif _biz_body.get("data"):
+                            # Businesses found — page is in Business Portfolio
+                            _biz_names = ", ".join(b["name"] for b in _biz_body["data"][:3])
+                            # Try to fetch pages via each business
+                            _biz_pages = []
+                            for _biz in _biz_body.get("data", [])[:5]:
+                                try:
+                                    _bpg = _httpx2.get(
+                                        f"https://graph.facebook.com/v20.0/{_biz['id']}/owned_pages",
+                                        params={"access_token": _live_user_token,
+                                                "fields": "id,name,access_token"},
+                                        timeout=12)
+                                    for _p in _bpg.json().get("data", []):
+                                        _biz_pages.append({**_p,
+                                            "_biz_name": _biz["name"],
+                                            "_biz_id": _biz["id"]})
+                                except Exception:
+                                    pass
+                            if _biz_pages:
+                                _bp_names = ", ".join(p["name"] for p in _biz_pages[:3])
+                                _step("live_api", "فحص مباشر /me/accounts",
+                                      "WARN",
+                                      f"0 من /me/accounts — Business Portfolio: {_biz_names} — "
+                                      f"صفحات متاحة عبر Business API: {_bp_names}. "
+                                      f"أعد الربط — النظام سيستخدم Business API تلقائياً الآن")
+                                verdict = "business_portfolio"
+                                # Promote for IG check
+                                _fb_live = _biz_pages
+                            else:
+                                _step("live_api", "فحص مباشر /me/accounts",
+                                      "FAIL",
+                                      f"Business Portfolio موجود ({_biz_names}) لكن لا صفحات قابلة للوصول. "
+                                      f"تأكد أن الصفحة مضافة للـ Business Portfolio وأن لديك Full Control عليها")
+                                verdict = "no_page_direct_access"
+                        else:
+                            _step("live_api", "فحص مباشر /me/accounts",
+                                  "FAIL",
+                                  "0 صفحات من /me/accounts و0 businesses — "
+                                  "الحساب المستخدم في OAuth ليس مدير لأي صفحة Facebook ولا Business Portfolio. "
+                                  "تأكد أنك تسجل دخول بالحساب الصحيح الذي يملك صفحة 'Saas'")
+                            verdict = "no_page_direct_access"
                     else:
                         # Check each page for instagram_business_account
                         _ig_live = []

@@ -116,7 +116,7 @@ class _MetaBase(BaseChannelAdapter):
         return token, expires_at
 
     def _get_user_pages(self, long_token: str) -> list:
-        """Fetch pages the user admins: [{id, name, access_token, picture_url}]."""
+        """Fetch pages the user is a direct admin of via /me/accounts."""
         r = httpx.get(f"{GRAPH}/me/accounts", params={
             "access_token": long_token,
             "fields": "id,name,access_token,picture{url}",
@@ -138,6 +138,56 @@ class _MetaBase(BaseChannelAdapter):
                 "access_token": p.get("access_token", ""),
                 "picture_url":  (p.get("picture") or {}).get("data", {}).get("url", ""),
             })
+        return pages
+
+    def _get_business_pages(self, long_token: str) -> list:
+        """
+        Business Portfolio fallback: fetch pages via /me/businesses → owned_pages.
+        Used when the page is only in a Meta Business Portfolio and /me/accounts
+        returns empty.  Requires the business_management scope to be granted.
+        """
+        pages = []
+        try:
+            biz_r    = httpx.get(f"{GRAPH}/me/businesses",
+                                  params={"access_token": long_token,
+                                          "fields": "id,name"}, timeout=15)
+            biz_body = biz_r.json()
+            if "error" in biz_body:
+                err = biz_body["error"]
+                logger.warning(
+                    f"[meta] /me/businesses error {err.get('code','?')}: "
+                    f"{err.get('message','?')[:100]}"
+                )
+                return []
+            businesses = biz_body.get("data", [])
+            logger.info(f"[meta] /me/businesses — {len(businesses)} business(es)")
+            for biz in businesses:
+                try:
+                    pg_r    = httpx.get(f"{GRAPH}/{biz['id']}/owned_pages", params={
+                        "access_token": long_token,
+                        "fields": "id,name,access_token,picture{url}",
+                        "limit": 50,
+                    }, timeout=15)
+                    pg_body = pg_r.json()
+                    if "error" in pg_body:
+                        logger.warning(
+                            f"[meta] biz '{biz['name']}' owned_pages error: "
+                            f"{pg_body['error'].get('message','?')[:80]}"
+                        )
+                        continue
+                    biz_pg = pg_body.get("data", [])
+                    logger.info(f"[meta] biz '{biz['name']}' — {len(biz_pg)} page(s)")
+                    for p in biz_pg:
+                        pages.append({
+                            "id":           p["id"],
+                            "name":         p["name"],
+                            "access_token": p.get("access_token", ""),
+                            "picture_url":  (p.get("picture") or {}).get("data", {}).get("url", ""),
+                        })
+                except Exception as exc:
+                    logger.warning(f"[meta] biz {biz.get('id','?')} pages: {exc}")
+        except Exception as exc:
+            logger.warning(f"[meta] _get_business_pages: {exc}")
         return pages
 
     def refresh_token(self, channel: dict) -> dict:
@@ -260,7 +310,8 @@ class InstagramAdapter(_MetaBase):
     icon_svg     = _IG_ICON
     _scopes      = ("instagram_basic,instagram_manage_messages,"
                     "pages_show_list,pages_read_engagement,"
-                    "pages_manage_metadata,pages_messaging")
+                    "pages_manage_metadata,pages_messaging,"
+                    "business_management")
 
     def build_auth_url(self, state: str, redirect_uri: str) -> str:
         from urllib.parse import urlencode
@@ -316,7 +367,29 @@ class InstagramAdapter(_MetaBase):
         except Exception as _e:
             logger.warning(f"[instagram] /me/permissions check failed: {_e}")
 
-        pages     = self._get_user_pages(long)
+        pages         = self._get_user_pages(long)
+        _via_biz_api  = False
+
+        # Business Portfolio fallback: /me/accounts only returns pages where the user
+        # has a DIRECT page admin role.  Pages managed via Business Portfolio are
+        # invisible to /me/accounts — use Business Management API instead.
+        if not pages:
+            if "business_management" in _granted:
+                logger.info("[instagram] /me/accounts=0 with business_management granted "
+                            "— trying Business Portfolio API fallback")
+                pages = self._get_business_pages(long)
+                if pages:
+                    _via_biz_api = True
+                    logger.info(f"[instagram] Business Portfolio API found {len(pages)} pages")
+                else:
+                    logger.warning("[instagram] Business Portfolio API also returned 0 pages")
+            else:
+                logger.warning(
+                    "[instagram] /me/accounts=0 and business_management NOT in granted scopes. "
+                    "Page is likely in Business Portfolio but we cannot reach it. "
+                    "The user must either: (1) add direct Page Admin access to the page, "
+                    "or (2) re-auth after business_management scope is approved."
+                )
 
         # For each page, find its linked Instagram Business Account
         ig_accounts = []
@@ -379,6 +452,7 @@ class InstagramAdapter(_MetaBase):
             "scopes_granted":     self._scopes,
             "no_ig_accounts":     len(ig_accounts) == 0,
             "fb_pages_found":     len(pages),
+            "via_business_api":   _via_biz_api,
             "token_owner_id":     _me_id,
             "token_owner_name":   _me_name,
             "granted_perms":      _granted,
