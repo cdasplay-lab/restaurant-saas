@@ -24,7 +24,7 @@ import os
 import mimetypes
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 logger = logging.getLogger("storage")
 
@@ -192,7 +192,7 @@ def delete_file(bucket: str, storage_path: str) -> bool:
         return False
 
 
-def delete_files(bucket: str, paths: list[str]) -> int:
+def delete_files(bucket: str, paths: List[str]) -> int:
     """Delete multiple files. Returns count of successful deletions."""
     if not _is_configured() or not paths:
         return 0

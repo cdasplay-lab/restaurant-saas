@@ -102,6 +102,14 @@ class _PgConnection:
 
     def execute(self, sql: str, params=None):
         import psycopg2.extras
+        # INSERT OR IGNORE INTO t → INSERT INTO t ... ON CONFLICT DO NOTHING
+        if "INSERT OR IGNORE INTO" in sql:
+            sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+            sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        # INSERT OR REPLACE INTO t → INSERT INTO t ... ON CONFLICT DO NOTHING (safe approximation)
+        if "INSERT OR REPLACE INTO" in sql:
+            sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+            sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
         # Replace ? with %s for psycopg2
         sql = sql.replace("?", "%s")
         # Store timestamps as text in the same format as SQLite

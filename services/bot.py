@@ -594,7 +594,7 @@ def _build_system_prompt(
     from datetime import date as _date_today
     _today_str = _date_today.today().isoformat()
 
-    menu_by_cat: dict[str, list] = {}
+    menu_by_cat = {}  # type: dict
     for p in products:
         cat = p.get("category", "عام")
         if cat not in menu_by_cat:
