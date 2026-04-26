@@ -155,7 +155,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
       {
         "reply": str,
         "action": "reply" | "escalate",
-        "extracted_order": dict | None,
+        "extracted_order": Optional[dict],
       }
     """
     conn = database.get_db()

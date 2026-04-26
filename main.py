@@ -91,7 +91,7 @@ BLOCKED_STATUSES = {"expired", "suspended", "cancelled"}
 
 # ── DB-backed plan helpers (fall back to hardcoded when row missing) ──────────
 
-def _get_plan_record(conn, plan_id: str = "", plan_code: str = "") -> dict | None:
+def _get_plan_record(conn, plan_id: str = "", plan_code: str = "") -> Optional[dict]:
     """Load a subscription_plans row by id or code. Returns dict or None."""
     row = None
     if plan_id:
@@ -6238,20 +6238,11 @@ async def debug_meta_force_r2(key: str = ""):
 @app.post("/api/debug/meta-simulate")
 async def debug_meta_simulate(req: Request, key: str = ""):
     """
-    Full internal Meta message simulator — no real Meta dependency.
-
-    POST body (all fields optional):
-      {
-        "platform":      "instagram" | "facebook"   (default "instagram"),
-        "sender_id":     "123456789"                (default random — forces new customer),
-        "text":          "hello, what's available?" (default arabic greeting),
-        "reset_sender":  true                       (delete this sender's records first, clean slate)
-      }
-
-    Returns full pipeline trace:
-      customer: created/found, conversation: created/found, first_contact flag,
-      message stored, dedup entry.
+    Full internal Meta message simulator — dev/staging only.
+    Disabled in production (ENVIRONMENT=production or RENDER env detected).
     """
+    if os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER"):
+        raise HTTPException(404, "Not found")
     if not META_APP_ID or key != META_APP_ID[:8]:
         raise HTTPException(403, "bad key")
 
@@ -6426,9 +6417,11 @@ async def debug_meta_simulate(req: Request, key: str = ""):
 @app.get("/api/debug/meta-simulate-status")
 async def debug_meta_simulate_status(key: str = ""):
     """
-    Returns full test harness state: all simulated customers, conversations, messages, dedup entries.
-    Protected by ?key=<first-8-of-META_APP_ID>.
+    Returns simulator state — dev/staging only.
+    Disabled in production (ENVIRONMENT=production or RENDER env detected).
     """
+    if os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER"):
+        raise HTTPException(404, "Not found")
     if not META_APP_ID or key != META_APP_ID[:8]:
         raise HTTPException(403, "bad key")
 
@@ -7850,8 +7843,8 @@ async def super_alerts(admin=Depends(current_super_admin)):
 @app.get("/api/production-readiness")
 async def production_readiness(admin=Depends(current_super_admin)):
     """SA-only: full platform production-readiness audit — blockers and warnings."""
-    blockers: list[str] = []
-    warnings: list[str] = []
+    blockers: List[str] = []
+    warnings: List[str] = []
     checks: dict = {}
 
     is_production = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
@@ -7908,7 +7901,7 @@ async def production_readiness(admin=Depends(current_super_admin)):
         "conversations", "messages", "subscriptions", "super_admins",
         "payment_requests", "channels", "bot_config",
     ]
-    _missing_tables: list[str] = []
+    _missing_tables: List[str] = []
     try:
         _c = database.get_db()
         if database.IS_POSTGRES:
