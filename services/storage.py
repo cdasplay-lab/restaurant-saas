@@ -54,8 +54,9 @@ class _BucketProxy:
     def __hash__(self):      return hash(str(self))
 
 
-BUCKET_MENUS    = _BucketProxy("SUPABASE_STORAGE_BUCKET_MENUS",    "menus")
-BUCKET_PRODUCTS = _BucketProxy("SUPABASE_STORAGE_BUCKET_PRODUCTS", "products")
+BUCKET_MENUS          = _BucketProxy("SUPABASE_STORAGE_BUCKET_MENUS",           "menus")
+BUCKET_PRODUCTS       = _BucketProxy("SUPABASE_STORAGE_BUCKET_PRODUCTS",        "products")
+BUCKET_PAYMENT_PROOFS = _BucketProxy("SUPABASE_STORAGE_BUCKET_PAYMENT_PROOFS",  "payment-proofs")
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -243,6 +244,15 @@ def menu_file_path(restaurant_id: str, session_id: str, filename: str) -> str:
     """
     safe = Path(filename).name
     return f"restaurants/{restaurant_id}/menus/{session_id}/{safe}"
+
+
+def payment_proof_path(restaurant_id: str, request_id: str, filename: str) -> str:
+    """
+    Standard storage path for payment proofs.
+    Result: payment-proofs/{restaurant_id}/{request_id}/{uuid}.ext
+    """
+    safe = Path(filename).name
+    return f"payment-proofs/{restaurant_id}/{request_id}/{safe}"
 
 
 # ── Backward-compat aliases (used in existing main.py code) ──────────────────

@@ -46,6 +46,12 @@ services:
         value: menus
       - key: SUPABASE_STORAGE_BUCKET_PRODUCTS
         value: products
+      - key: SUPABASE_STORAGE_BUCKET_PAYMENTS
+        value: payments
+
+      # ── Environment ─────────────────────────────────────────────────
+      - key: ENVIRONMENT
+        value: production
 
 databases:
   - name: restaurant-db

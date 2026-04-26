@@ -458,6 +458,8 @@ def _create_indexes(conn):
         "CREATE INDEX IF NOT EXISTS idx_activity_restaurant ON activity_log(restaurant_id)",
         "CREATE INDEX IF NOT EXISTS idx_notifications_restaurant ON notifications(restaurant_id, is_read)",
         "CREATE INDEX IF NOT EXISTS idx_processed_events ON processed_events(restaurant_id, provider, event_id)",
+        # Partial unique index: one order per conversation (WHERE guards against empty conv_id)
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_conv_dedup ON orders(conversation_id, restaurant_id) WHERE conversation_id != ''",
         "CREATE INDEX IF NOT EXISTS idx_outbound_messages_restaurant ON outbound_messages(restaurant_id, created_at)",
     ]
     for idx in indexes:
@@ -564,7 +566,150 @@ def _migrate_db(conn):
         ("conversations", "channel",           "TEXT DEFAULT ''"),
         # conversations — 1 if this is the customer's first-ever message (request/cold-start)
         ("conversations", "first_contact",     "INTEGER DEFAULT 0"),
+        # payment_requests — extended fields for Supabase storage + plan reference
+        ("payment_requests", "proof_url",    "TEXT DEFAULT ''"),
+        ("payment_requests", "storage_mode", "TEXT DEFAULT 'local'"),
+        ("payment_requests", "plan_id",      "TEXT DEFAULT ''"),
+        # subscription_plans — badge + excluded features for UI plan cards
+        ("subscription_plans", "badge",                  "TEXT DEFAULT ''"),
+        ("subscription_plans", "excluded_features_json", "TEXT DEFAULT '[]'"),
+        # subscription_plans — Arabic display fields
+        ("subscription_plans", "name_ar",                          "TEXT DEFAULT ''"),
+        ("subscription_plans", "description_ar",                   "TEXT DEFAULT ''"),
+        ("subscription_plans", "billing_period_ar",                "TEXT DEFAULT ''"),
+        ("subscription_plans", "badge_text_ar",                    "TEXT DEFAULT ''"),
+        ("subscription_plans", "is_recommended",                   "INTEGER DEFAULT 0"),
+        # subscription_plans — extended limits
+        ("subscription_plans", "max_customers",                    "INTEGER DEFAULT 0"),
+        ("subscription_plans", "max_ai_replies_per_month",         "INTEGER DEFAULT 0"),
+        ("subscription_plans", "max_team_members",                 "INTEGER DEFAULT 2"),
+        ("subscription_plans", "max_branches",                     "INTEGER DEFAULT 1"),
+        # subscription_plans — per-platform & feature flags
+        ("subscription_plans", "telegram_enabled",                 "INTEGER DEFAULT 1"),
+        ("subscription_plans", "whatsapp_enabled",                 "INTEGER DEFAULT 1"),
+        ("subscription_plans", "instagram_enabled",                "INTEGER DEFAULT 1"),
+        ("subscription_plans", "facebook_enabled",                 "INTEGER DEFAULT 1"),
+        ("subscription_plans", "multi_channel_enabled",            "INTEGER DEFAULT 0"),
+        ("subscription_plans", "memory_enabled",                   "INTEGER DEFAULT 0"),
+        ("subscription_plans", "upsell_enabled",                   "INTEGER DEFAULT 0"),
+        ("subscription_plans", "smart_recommendations_enabled",    "INTEGER DEFAULT 0"),
+        ("subscription_plans", "advanced_analytics_enabled",       "INTEGER DEFAULT 0"),
+        ("subscription_plans", "image_enabled",                    "INTEGER DEFAULT 0"),
+        ("subscription_plans", "video_enabled",                    "INTEGER DEFAULT 0"),
+        ("subscription_plans", "story_reply_enabled",              "INTEGER DEFAULT 0"),
+        ("subscription_plans", "menu_image_understanding_enabled", "INTEGER DEFAULT 0"),
+        ("subscription_plans", "live_readiness_status_enabled",    "INTEGER DEFAULT 0"),
+        ("subscription_plans", "priority_support_enabled",         "INTEGER DEFAULT 0"),
+        ("subscription_plans", "setup_assistance_enabled",         "INTEGER DEFAULT 0"),
+        ("subscription_plans", "limits_json",                      "TEXT DEFAULT '{}'"),
+        # subscriptions — billing & payment state fields
+        ("subscriptions", "cancelled_at",           "TEXT DEFAULT ''"),
+        ("subscriptions", "suspended_reason",       "TEXT DEFAULT ''"),
+        ("subscriptions", "billing_email",          "TEXT DEFAULT ''"),
+        ("subscriptions", "payment_provider",       "TEXT DEFAULT ''"),
+        ("subscriptions", "payment_customer_id",    "TEXT DEFAULT ''"),
+        ("subscriptions", "payment_subscription_id","TEXT DEFAULT ''"),
+        # restaurants — onboarding profile fields
+        ("restaurants", "delivery_area",            "TEXT DEFAULT ''"),
+        ("restaurants", "payment_methods_info",     "TEXT DEFAULT ''"),
+        # restaurants — onboarding bot test state
+        ("restaurants", "onboarding_bot_test_status",  "TEXT DEFAULT 'not_tested'"),
+        ("restaurants", "onboarding_bot_tested_at",    "TEXT DEFAULT ''"),
     ]
+
+    # ── billing_audit_logs ───────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS billing_audit_logs (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            actor_id TEXT DEFAULT '',
+            actor_role TEXT DEFAULT '',
+            restaurant_id TEXT DEFAULT '',
+            payment_request_id TEXT DEFAULT '',
+            payment_method_id TEXT DEFAULT '',
+            old_status TEXT DEFAULT '',
+            new_status TEXT DEFAULT '',
+            amount REAL DEFAULT 0,
+            currency TEXT DEFAULT '',
+            plan TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            storage_mode TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_audit_rid ON billing_audit_logs(restaurant_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_audit_req ON billing_audit_logs(payment_request_id)")
+    except Exception:
+        pass
+
+    # ── payment_methods ───────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment_methods (
+            id TEXT PRIMARY KEY,
+            method_name TEXT NOT NULL,
+            account_holder_name TEXT DEFAULT '',
+            bank_name TEXT DEFAULT '',
+            account_number TEXT DEFAULT '',
+            iban TEXT DEFAULT '',
+            phone_number TEXT DEFAULT '',
+            currency TEXT DEFAULT 'IQD',
+            payment_instructions TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            display_order INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ── payment_requests ─────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment_requests (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT DEFAULT 'IQD',
+            payment_method_id TEXT DEFAULT '',
+            payer_name TEXT DEFAULT '',
+            reference_number TEXT DEFAULT '',
+            proof_path TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            reject_reason TEXT DEFAULT '',
+            internal_note TEXT DEFAULT '',
+            reviewed_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TEXT DEFAULT '',
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pay_req_restaurant ON payment_requests(restaurant_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pay_req_status ON payment_requests(status, created_at)")
+    except Exception:
+        pass
+
+    # ── payment_records ──────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment_records (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            payment_request_id TEXT DEFAULT '',
+            amount REAL NOT NULL,
+            currency TEXT DEFAULT 'IQD',
+            method TEXT DEFAULT '',
+            plan TEXT NOT NULL,
+            period_start TEXT DEFAULT '',
+            period_end TEXT DEFAULT '',
+            status TEXT DEFAULT 'completed',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pay_rec_restaurant ON payment_records(restaurant_id, created_at)")
+    except Exception:
+        pass
 
     # Create oauth_states table (CSRF + session for OAuth flows)
     conn.execute("""
@@ -647,6 +792,138 @@ def _migrate_db(conn):
     """)
     conn.commit()
 
+    # ── subscription_plans — editable plan catalogue ──────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscription_plans (
+            id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            price REAL DEFAULT 0,
+            currency TEXT DEFAULT 'IQD',
+            billing_period TEXT DEFAULT 'monthly',
+            duration_days INTEGER DEFAULT 30,
+            is_active INTEGER DEFAULT 1,
+            is_public INTEGER DEFAULT 1,
+            display_order INTEGER DEFAULT 0,
+            max_channels INTEGER DEFAULT 1,
+            max_products INTEGER DEFAULT 10,
+            max_staff INTEGER DEFAULT 2,
+            max_conversations_per_month INTEGER DEFAULT 200,
+            ai_enabled INTEGER DEFAULT 1,
+            analytics_enabled INTEGER DEFAULT 0,
+            media_enabled INTEGER DEFAULT 0,
+            voice_enabled INTEGER DEFAULT 0,
+            human_handoff_enabled INTEGER DEFAULT 1,
+            support_level TEXT DEFAULT 'community',
+            features_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            badge TEXT DEFAULT '',
+            excluded_features_json TEXT DEFAULT '[]',
+            name_ar TEXT DEFAULT '',
+            description_ar TEXT DEFAULT '',
+            billing_period_ar TEXT DEFAULT '',
+            badge_text_ar TEXT DEFAULT '',
+            is_recommended INTEGER DEFAULT 0,
+            max_customers INTEGER DEFAULT 0,
+            max_ai_replies_per_month INTEGER DEFAULT 0,
+            max_team_members INTEGER DEFAULT 2,
+            max_branches INTEGER DEFAULT 1,
+            telegram_enabled INTEGER DEFAULT 1,
+            whatsapp_enabled INTEGER DEFAULT 1,
+            instagram_enabled INTEGER DEFAULT 1,
+            facebook_enabled INTEGER DEFAULT 1,
+            multi_channel_enabled INTEGER DEFAULT 0,
+            memory_enabled INTEGER DEFAULT 0,
+            upsell_enabled INTEGER DEFAULT 0,
+            smart_recommendations_enabled INTEGER DEFAULT 0,
+            advanced_analytics_enabled INTEGER DEFAULT 0,
+            image_enabled INTEGER DEFAULT 0,
+            video_enabled INTEGER DEFAULT 0,
+            story_reply_enabled INTEGER DEFAULT 0,
+            menu_image_understanding_enabled INTEGER DEFAULT 0,
+            live_readiness_status_enabled INTEGER DEFAULT 0,
+            priority_support_enabled INTEGER DEFAULT 0,
+            setup_assistance_enabled INTEGER DEFAULT 0,
+            limits_json TEXT DEFAULT '{}'
+        )
+    """)
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_plans_code ON subscription_plans(code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_plans_active ON subscription_plans(is_active, is_public, display_order)")
+    except Exception:
+        pass
+
+    # Seed default plans if table is empty
+    existing_plans = conn.execute("SELECT COUNT(*) FROM subscription_plans").fetchone()[0]
+    if existing_plans == 0:
+        _seed_plans = [
+            # (id, code, name, price, currency, billing_period, duration_days,
+            #  is_active, is_public, display_order, max_channels, max_products, max_staff,
+            #  max_conversations_per_month, ai_enabled, analytics_enabled, voice_enabled,
+            #  human_handoff_enabled, support_level)
+            ("plan_free",         "free",         "المجانية",    0,      "USD", "custom",  0,  1, 1, 1, 0,   20,   1,  0,      0, 0, 0, 0, "community"),
+            ("plan_starter",      "starter",      "الأساسية",    0,      "USD", "monthly", 30, 1, 1, 2, 1,   100,  5,  1000,   1, 1, 0, 1, "email"),
+            ("plan_professional", "professional", "الاحترافية",  0,      "USD", "monthly", 30, 1, 1, 3, 4,   1000, 15, 10000,  1, 1, 1, 1, "priority"),
+            ("plan_enterprise",   "enterprise",   "المؤسسات",    0,      "USD", "monthly", 30, 1, 1, 4, 9999,9999, 9999,999999,1, 1, 1, 1, "dedicated"),
+        ]
+        for p in _seed_plans:
+            conn.execute("""
+                INSERT OR IGNORE INTO subscription_plans
+                    (id, code, name, price, currency, billing_period, duration_days,
+                     is_active, is_public, display_order, max_channels, max_products, max_staff,
+                     max_conversations_per_month, ai_enabled, analytics_enabled, voice_enabled,
+                     human_handoff_enabled, support_level)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, p)
+        conn.commit()
+
+    # NOTE: Arabic backfill for default plans runs AFTER migrations loop below,
+    # because new columns (name_ar etc.) must exist first.
+
+    # ── announcements — platform-wide in-app announcements/ads ───────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS announcements (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            message TEXT DEFAULT '',
+            type TEXT DEFAULT 'info',
+            priority INTEGER DEFAULT 0,
+            cta_text TEXT DEFAULT '',
+            cta_url TEXT DEFAULT '',
+            placement TEXT DEFAULT 'dashboard_top_banner',
+            target_all INTEGER DEFAULT 1,
+            target_restaurant_ids_json TEXT DEFAULT '[]',
+            target_plans_json TEXT DEFAULT '[]',
+            target_statuses_json TEXT DEFAULT '[]',
+            target_channel_problem_only INTEGER DEFAULT 0,
+            target_expired_only INTEGER DEFAULT 0,
+            starts_at TEXT DEFAULT '',
+            ends_at TEXT DEFAULT '',
+            is_dismissible INTEGER DEFAULT 1,
+            is_active INTEGER DEFAULT 1,
+            created_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS announcement_dismissals (
+            id TEXT PRIMARY KEY,
+            announcement_id TEXT NOT NULL,
+            restaurant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            dismissed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_active ON announcements(is_active, placement, priority)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ann_dismissal ON announcement_dismissals(announcement_id, restaurant_id, user_id)")
+    except Exception:
+        pass
+    conn.commit()
+
     # ── Data fix: every WhatsApp channel must have a verify_token ─────────────
     # The column exists but may be empty for channels connected before this was added.
     import uuid as _uuid
@@ -677,6 +954,111 @@ def _migrate_db(conn):
             except Exception:
                 pass
         conn.commit()
+
+    # ── Data fix: full Arabic backfill for default plans (after migrations) ───
+    # name_ar and other new columns are guaranteed to exist by this point.
+    _arabic_plans_full = {
+        "free": {
+            "name": "المجانية",
+            "name_ar": "الخطة المجانية",
+            "description_ar": "للتجربة فقط، بدون تشغيل فعلي للقنوات",
+            "billing_period_ar": "مجانية",
+            "badge": "", "badge_text_ar": "", "is_recommended": 0,
+            "is_public": 1, "display_order": 1,
+            "max_channels": 0, "max_products": 20, "max_staff": 1,
+            "max_conversations_per_month": 0, "max_team_members": 1, "max_branches": 1,
+            "ai_enabled": 0, "analytics_enabled": 0, "advanced_analytics_enabled": 0,
+            "voice_enabled": 0, "image_enabled": 0, "video_enabled": 0,
+            "story_reply_enabled": 0, "human_handoff_enabled": 0,
+            "multi_channel_enabled": 0, "memory_enabled": 0, "upsell_enabled": 0,
+            "smart_recommendations_enabled": 0, "menu_image_understanding_enabled": 0,
+            "live_readiness_status_enabled": 0, "priority_support_enabled": 0,
+            "setup_assistance_enabled": 0, "support_level": "community",
+            "telegram_enabled": 0, "whatsapp_enabled": 0,
+            "instagram_enabled": 0, "facebook_enabled": 0,
+            "features_json": '["دخول إلى لوحة التحكم","إضافة عدد محدود من المنتجات","تجربة شكل المنصة","عرض إعدادات المطعم الأساسية"]',
+            "excluded_features_json": '["ربط قنوات التواصل","ردود الذكاء الاصطناعي","استقبال طلبات حقيقية","التحليلات المتقدمة","الفويس والصور والستوري","دعم فني مخصص"]',
+        },
+        "starter": {
+            "name": "الأساسية",
+            "name_ar": "الخطة الأساسية",
+            "description_ar": "للمطاعم الصغيرة التي تريد قناة واحدة وردود بسيطة",
+            "billing_period_ar": "شهري",
+            "badge": "", "badge_text_ar": "", "is_recommended": 0,
+            "is_public": 1, "display_order": 2,
+            "max_channels": 1, "max_products": 100, "max_staff": 5,
+            "max_conversations_per_month": 1000, "max_team_members": 5, "max_branches": 1,
+            "ai_enabled": 1, "analytics_enabled": 1, "advanced_analytics_enabled": 0,
+            "voice_enabled": 0, "image_enabled": 0, "video_enabled": 0,
+            "story_reply_enabled": 0, "human_handoff_enabled": 1,
+            "multi_channel_enabled": 0, "memory_enabled": 0, "upsell_enabled": 0,
+            "smart_recommendations_enabled": 0, "menu_image_understanding_enabled": 0,
+            "live_readiness_status_enabled": 0, "priority_support_enabled": 0,
+            "setup_assistance_enabled": 0, "support_level": "email",
+            "telegram_enabled": 1, "whatsapp_enabled": 1,
+            "instagram_enabled": 1, "facebook_enabled": 1,
+            "features_json": '["قناة واحدة فقط","ردود ذكاء اصطناعي أساسية","إدارة الطلبات","حفظ محادثات الزبائن","100 منتج","تحليلات بسيطة","تحويل يدوي للموظف"]',
+            "excluded_features_json": '["تعدد القنوات","الفويس","فهم الصور والفيديو","الرد على الستوري","تحليلات متقدمة","دعم أولوية","فروع متعددة"]',
+        },
+        "professional": {
+            "name": "الاحترافية",
+            "name_ar": "الخطة الاحترافية",
+            "description_ar": "الخطة المناسبة لمعظم المطاعم التي تريد تشغيل حقيقي على أكثر من قناة",
+            "billing_period_ar": "شهري",
+            "badge": "الأكثر طلبًا", "badge_text_ar": "الأكثر طلبًا", "is_recommended": 1,
+            "is_public": 1, "display_order": 3,
+            "max_channels": 4, "max_products": 1000, "max_staff": 15,
+            "max_conversations_per_month": 10000, "max_team_members": 15, "max_branches": 3,
+            "ai_enabled": 1, "analytics_enabled": 1, "advanced_analytics_enabled": 1,
+            "voice_enabled": 1, "image_enabled": 1, "video_enabled": 1,
+            "story_reply_enabled": 1, "human_handoff_enabled": 1,
+            "multi_channel_enabled": 1, "memory_enabled": 1, "upsell_enabled": 1,
+            "smart_recommendations_enabled": 1, "menu_image_understanding_enabled": 1,
+            "live_readiness_status_enabled": 1, "priority_support_enabled": 0,
+            "setup_assistance_enabled": 0, "support_level": "priority",
+            "telegram_enabled": 1, "whatsapp_enabled": 1,
+            "instagram_enabled": 1, "facebook_enabled": 1,
+            "features_json": '["ربط عدة قنوات (Telegram/WhatsApp/Instagram/Facebook)","ردود ذكاء اصطناعي متقدمة","ذاكرة للزبائن والطلبات السابقة","اقتراحات بيع ورفع قيمة الطلب","إدارة الطلبات كاملة","الفويس","فهم الصور والمنيو","الرد على الستوري","تحليلات كاملة","متابعة أداء القنوات","تحويل للموظف","تنبيهات ومتابعة حالة القنوات"]',
+            "excluded_features_json": '["دعم مخصص 24/7","تطويرات خاصة حسب الطلب","فروع غير محدودة","SLA خاص"]',
+        },
+        "enterprise": {
+            "name": "المؤسسات",
+            "name_ar": "خطة المؤسسات",
+            "description_ar": "للمطاعم الكبيرة أو السلاسل أو من يحتاج تخصيص ودعم أعلى",
+            "billing_period_ar": "مخصص",
+            "badge": "للشركات والسلاسل", "badge_text_ar": "للشركات والسلاسل", "is_recommended": 0,
+            "is_public": 1, "display_order": 4,
+            "max_channels": 9999, "max_products": 9999, "max_staff": 9999,
+            "max_conversations_per_month": 999999, "max_team_members": 9999, "max_branches": 9999,
+            "ai_enabled": 1, "analytics_enabled": 1, "advanced_analytics_enabled": 1,
+            "voice_enabled": 1, "image_enabled": 1, "video_enabled": 1,
+            "story_reply_enabled": 1, "human_handoff_enabled": 1,
+            "multi_channel_enabled": 1, "memory_enabled": 1, "upsell_enabled": 1,
+            "smart_recommendations_enabled": 1, "menu_image_understanding_enabled": 1,
+            "live_readiness_status_enabled": 1, "priority_support_enabled": 1,
+            "setup_assistance_enabled": 1, "support_level": "dedicated",
+            "telegram_enabled": 1, "whatsapp_enabled": 1,
+            "instagram_enabled": 1, "facebook_enabled": 1,
+            "features_json": '["كل مزايا الخطة الاحترافية","حدود أعلى للمحادثات والمنتجات","دعم أولوية","مساعدة في الإعداد والربط","أكثر من فرع إذا مدعوم","إعدادات خاصة حسب المطعم","تقارير متقدمة","صلاحيات فريق أوسع","متابعة تشغيل أقوى","إمكانية تخصيص بعض الردود والقواعد"]',
+            "excluded_features_json": '["أي ميزة خارج الاتفاق المكتوب","تكاليف بوابات الدفع الخارجية إن وجدت"]',
+        },
+    }
+    _bf_cols = list(next(iter(_arabic_plans_full.values())).keys())
+    for _code, _vals in _arabic_plans_full.items():
+        try:
+            _existing = conn.execute("SELECT name_ar FROM subscription_plans WHERE code=?", (_code,)).fetchone()
+            if _existing is not None and not (_existing[0] or ""):
+                _set_clause = ", ".join(f"{c}=?" for c in _bf_cols)
+                conn.execute(
+                    f"UPDATE subscription_plans SET {_set_clause} WHERE code=?",
+                    [_vals[c] for c in _bf_cols] + [_code]
+                )
+        except Exception:
+            pass
+    try:
+        conn.commit()
+    except Exception:
+        pass
 
     if _pg:
         conn._conn.autocommit = False

@@ -7,6 +7,7 @@ import os
 import io
 import base64
 import logging
+import threading
 from typing import Optional
 
 import httpx
@@ -15,6 +16,17 @@ import database
 from services import bot
 
 logger = logging.getLogger("restaurant-saas")
+
+# ── Per-conversation mutex — prevents double bot reply on concurrent events ──
+_conv_locks: dict = {}          # conv_id → threading.Lock
+_conv_locks_mu = threading.Lock()
+
+def _get_conv_lock(conv_id: str) -> threading.Lock:
+    """Return (and lazily create) a per-conversation lock."""
+    with _conv_locks_mu:
+        if conv_id not in _conv_locks:
+            _conv_locks[conv_id] = threading.Lock()
+        return _conv_locks[conv_id]
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -152,7 +164,15 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
         customer = _find_or_create_customer(
             conn, restaurant_id, "telegram", external_id, display_name, ""
         )
-        conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
+        prior_convs = conn.execute(
+            "SELECT COUNT(*) as n FROM conversations WHERE restaurant_id=? AND customer_id=?",
+            (restaurant_id, customer["id"])
+        ).fetchone()
+        is_first_contact = (prior_convs["n"] == 0)
+        conversation = _find_or_create_conversation(
+            conn, restaurant_id, customer["id"],
+            channel="telegram", first_contact=is_first_contact
+        )
         conn.commit()
 
         channel_data = {
@@ -637,7 +657,15 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
         customer = _find_or_create_customer(
             conn, restaurant_id, "whatsapp", external_id, name, external_id
         )
-        conversation = _find_or_create_conversation(conn, restaurant_id, customer["id"])
+        prior_convs_wa = conn.execute(
+            "SELECT COUNT(*) as n FROM conversations WHERE restaurant_id=? AND customer_id=?",
+            (restaurant_id, customer["id"])
+        ).fetchone()
+        is_first_contact_wa = (prior_convs_wa["n"] == 0)
+        conversation = _find_or_create_conversation(
+            conn, restaurant_id, customer["id"],
+            channel="whatsapp", first_contact=is_first_contact_wa
+        )
         conn.commit()
 
         channel_data = {
@@ -975,11 +1003,13 @@ def _process_incoming(
         customer_id = customer["id"]
         platform = channel_data.get("platform", "unknown")
 
+        import time as _t
         req_id = str(uuid.uuid4())[:8]
+        _t_start = _t.monotonic()
         logger.info(
             f"[incoming] req={req_id} restaurant={restaurant_id} "
             f"conv={conv_id} channel={platform} customer={customer_id} "
-            f"msg_len={len(content)}"
+            f"msg_len={len(content)} preview={content[:60]!r}"
         )
 
         # 1. Save customer message with optional media/story metadata
@@ -1005,133 +1035,196 @@ def _process_incoming(
         )
         conn.commit()
 
-        # 2. Reload conversation to get latest mode
-        conv_row = conn.execute(
-            "SELECT * FROM conversations WHERE id=?", (conv_id,)
-        ).fetchone()
-        mode = conv_row["mode"] if conv_row else "bot"
+        # 2. Subscription guard: check if AI/outbound is allowed for this restaurant
+        _BLOCKED_STATUSES = {"expired", "suspended", "cancelled"}
+        _PLAN_AI = {"free": False, "trial": True, "starter": True, "professional": True, "enterprise": True}
+        try:
+            _sub  = conn.execute("SELECT status, plan FROM subscriptions WHERE restaurant_id=?", (restaurant_id,)).fetchone()
+            _rest = conn.execute("SELECT plan, status FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+            _sub_status  = (_sub  and _sub["status"])  or "active"
+            _rest_status = (_rest and _rest["status"]) or "active"
+            _plan        = (_sub  and _sub["plan"])    or (_rest and _rest["plan"]) or "trial"
+            _ai_blocked  = (_sub_status in _BLOCKED_STATUSES or _rest_status in _BLOCKED_STATUSES
+                            or not _PLAN_AI.get(_plan, True))
+        except Exception as _sub_err:
+            logger.warning(f"[subscription-guard] check failed for {restaurant_id}: {_sub_err}")
+            _ai_blocked = False  # fail-open: don't block on DB error
 
-        if mode == "bot":
-            # Build context for bot — use rich story_context if available
-            bot_input = content
-            if extra.get("replied_story_id"):
-                story_ctx = extra.get("story_context") or "[العميل يرد على ستوري للمطعم]"
-                bot_input = f"{story_ctx}\nرد العميل: {content}"
-
-            # Run AI bot
-            result = bot.process_message(restaurant_id, conv_id, bot_input)
-            reply_text = result.get("reply", "")
-            action = result.get("action", "reply")
-            extracted_order = result.get("extracted_order")
-
-            # Save bot reply
-            bot_msg_id = str(uuid.uuid4())
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
-                (bot_msg_id, conv_id, reply_text)
+        if _ai_blocked:
+            _block_reason = (
+                "الاشتراك موقوف" if (_sub_status == "suspended" or _rest_status == "suspended")
+                else "الاشتراك منتهي" if (_sub_status == "expired" or _rest_status == "expired")
+                else "الاشتراك ملغى" if (_sub_status == "cancelled")
+                else f"خطة {_plan} لا تتضمن الردود الآلية"
             )
-
-            # Increment bot turn count
-            conn.execute(
-                "UPDATE conversations SET bot_turn_count=COALESCE(bot_turn_count,0)+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (conv_id,)
-            )
-
-            if action == "escalate":
-                # Dedup: only escalate if not already in human mode
-                if conv_row and conv_row["mode"] != "human":
-                    conn.execute(
-                        "UPDATE conversations SET mode='human', handoff_reason=?, escalated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        ("escalation_requested", conv_id)
-                    )
-                    _create_notification(
-                        conn, restaurant_id,
-                        "escalation",
-                        "طلب تحويل للموظف",
-                        f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
-                        "conversation", conv_id
-                    )
-
-            conn.commit()
-
-            # Send reply via platform + log result
-            send_ok, send_err = _send_reply(channel_data, reply_text)
-            recipient_id = (
-                channel_data.get("chat_id") or
-                channel_data.get("to") or
-                channel_data.get("recipient_id") or ""
-            )
-            _tag = f"[{platform[:2]}-reply-{'sent' if send_ok else 'error'}]"
             logger.info(
-                f"{_tag} req={req_id} restaurant={restaurant_id} "
-                f"conv={conv_id} recipient={recipient_id[:12] if recipient_id else '?'} "
-                f"reply_len={len(reply_text)}"
-                + (f" error={send_err}" if not send_ok else "")
+                f"[subscription-guard] BLOCKED restaurant={restaurant_id} "
+                f"sub_status={_sub_status} rest_status={_rest_status} plan={_plan} "
+                f"reason={_block_reason!r}"
             )
-            conn.execute(
-                """INSERT INTO outbound_messages
-                   (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid.uuid4()), restaurant_id, conv_id,
-                    platform, recipient_id,
-                    reply_text[:500],
-                    "sent" if send_ok else "failed",
-                    send_err,
+            # Log the blocked attempt in outbound_messages for visibility
+            try:
+                conn.execute(
+                    """INSERT INTO outbound_messages
+                       (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                       VALUES (?, ?, ?, ?, '', '', 'blocked_subscription', ?)""",
+                    (str(uuid.uuid4()), restaurant_id, conv_id, platform, _block_reason)
                 )
-            )
-            conn.commit()
+                conn.commit()
+            except Exception:
+                pass
+            return  # inbound saved; AI reply blocked
 
-            # Auto-create order in DB when bot confirmed a complete order (✅ summary)
-            confirmed_order = result.get("confirmed_order")
-            if confirmed_order and confirmed_order.get("items"):
-                _auto_create_order(
-                    conn, restaurant_id, customer, platform, confirmed_order, conv_id
+        # 3. Acquire per-conversation lock before bot processing to prevent double replies
+        _conv_lock = _get_conv_lock(conv_id)
+        with _conv_lock:
+            # Re-read conversation inside the lock so we see the freshest state
+            conv_row = conn.execute(
+                "SELECT * FROM conversations WHERE id=?", (conv_id,)
+            ).fetchone()
+            mode = conv_row["mode"] if conv_row else "bot"
+
+            if mode == "bot":
+                # Build context for bot — use rich story_context if available
+                bot_input = content
+                if extra.get("replied_story_id"):
+                    story_ctx = extra.get("story_context") or "[العميل يرد على ستوري للمطعم]"
+                    bot_input = f"{story_ctx}\nرد العميل: {content}"
+                elif extra.get("media_type") == "voice":
+                    if content == "[رسالة صوتية]":
+                        bot_input = "[فويس غير واضح]"
+                    else:
+                        bot_input = f"[فويس] {content}"
+
+                logger.info(f"[bot-call] req={req_id} conv={conv_id} restaurant={restaurant_id}")
+                # Run AI bot
+                result = bot.process_message(restaurant_id, conv_id, bot_input)
+                reply_text = result.get("reply", "")
+                action = result.get("action", "reply")
+                extracted_order = result.get("extracted_order")
+
+                logger.info(
+                    f"[bot-reply] req={req_id} conv={conv_id} action={action} "
+                    f"reply_len={len(reply_text)} preview={reply_text[:60]!r}"
                 )
 
-            # Fallback keyword-based notification (no DB order record, just alert)
-            elif extracted_order:
-                _create_notification(
-                    conn, restaurant_id,
-                    "new_order",
-                    "طلب جديد من البوت",
-                    f"العميل {customer.get('name', '')} طلب {len(extracted_order.get('items', []))} منتجات",
-                    "customer", customer_id
+                # Save bot reply
+                bot_msg_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
+                    (bot_msg_id, conv_id, reply_text)
+                )
+
+                # Increment bot turn count
+                conn.execute(
+                    "UPDATE conversations SET bot_turn_count=COALESCE(bot_turn_count,0)+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (conv_id,)
+                )
+
+                if action == "escalate":
+                    # Atomic escalation guard — re-read mode from DB (not the stale snapshot)
+                    # to prevent double notification from concurrent threads
+                    fresh_conv = conn.execute(
+                        "SELECT mode FROM conversations WHERE id=?", (conv_id,)
+                    ).fetchone()
+                    if fresh_conv and fresh_conv["mode"] != "human":
+                        conn.execute(
+                            "UPDATE conversations SET mode='human', handoff_reason=?, escalated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            ("escalation_requested", conv_id)
+                        )
+                        conn.commit()  # commit before notification so second thread sees 'human'
+                        _create_notification(
+                            conn, restaurant_id,
+                            "escalation",
+                            "طلب تحويل للموظف",
+                            f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
+                            "conversation", conv_id
+                        )
+
+                conn.commit()
+
+                # Send reply via platform + log result
+                send_ok, send_err = _send_reply(channel_data, reply_text)
+                recipient_id = (
+                    channel_data.get("chat_id") or
+                    channel_data.get("to") or
+                    channel_data.get("recipient_id") or ""
+                )
+                _tag = f"[{platform[:2]}-reply-{'sent' if send_ok else 'error'}]"
+                logger.info(
+                    f"{_tag} req={req_id} restaurant={restaurant_id} "
+                    f"conv={conv_id} recipient={recipient_id[:12] if recipient_id else '?'} "
+                    f"reply_len={len(reply_text)}"
+                    + (f" error={send_err}" if not send_ok else "")
+                )
+                conn.execute(
+                    """INSERT INTO outbound_messages
+                       (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(uuid.uuid4()), restaurant_id, conv_id,
+                        platform, recipient_id,
+                        reply_text[:500],
+                        "sent" if send_ok else "failed",
+                        send_err,
+                    )
                 )
                 conn.commit()
 
-            _log_activity(
-                conn, restaurant_id,
-                "bot_replied",
-                "conversation", conv_id,
-                f"البوت رد على {customer.get('name', '')} عبر {platform}"
-            )
+                # Auto-create order in DB when bot confirmed a complete order (✅ summary)
+                confirmed_order = result.get("confirmed_order")
+                if confirmed_order and confirmed_order.get("items"):
+                    _auto_create_order(
+                        conn, restaurant_id, customer, platform, confirmed_order, conv_id
+                    )
 
-        else:
-            # Human mode — increment unread
-            conn.execute(
-                "UPDATE conversations SET unread_count=COALESCE(unread_count,0)+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (conv_id,)
-            )
-            conn.commit()
+                # Fallback keyword-based notification (no DB order record, just alert)
+                elif extracted_order:
+                    _create_notification(
+                        conn, restaurant_id,
+                        "new_order",
+                        "طلب جديد من البوت",
+                        f"العميل {customer.get('name', '')} طلب {len(extracted_order.get('items', []))} منتجات",
+                        "customer", customer_id
+                    )
+                    conn.commit()
 
-            _create_notification(
-                conn, restaurant_id,
-                "new_message",
-                "رسالة جديدة",
-                f"رسالة جديدة من {customer.get('name', '')} عبر {platform}",
-                "conversation", conv_id
-            )
-            conn.commit()
+                _log_activity(
+                    conn, restaurant_id,
+                    "bot_replied",
+                    "conversation", conv_id,
+                    f"البوت رد على {customer.get('name', '')} عبر {platform}"
+                )
 
-            _log_activity(
-                conn, restaurant_id,
-                "new_message",
-                "conversation", conv_id,
-                f"رسالة من {customer.get('name', '')} عبر {platform}"
-            )
+            else:
+                # Human mode — increment unread
+                conn.execute(
+                    "UPDATE conversations SET unread_count=COALESCE(unread_count,0)+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (conv_id,)
+                )
+                conn.commit()
+
+                _create_notification(
+                    conn, restaurant_id,
+                    "new_message",
+                    "رسالة جديدة",
+                    f"رسالة جديدة من {customer.get('name', '')} عبر {platform}",
+                    "conversation", conv_id
+                )
+                conn.commit()
+
+                _log_activity(
+                    conn, restaurant_id,
+                    "new_message",
+                    "conversation", conv_id,
+                    f"رسالة من {customer.get('name', '')} عبر {platform}"
+                )
 
         conn.commit()
+        logger.info(
+            f"[incoming-done] req={req_id} conv={conv_id} "
+            f"elapsed={(_t.monotonic()-_t_start)*1000:.0f}ms"
+        )
     finally:
         conn.close()
 
@@ -1145,23 +1238,52 @@ def _send_reply(channel_data: dict, text: str) -> tuple:
         if platform == "telegram":
             bot_token = channel_data.get("bot_token")
             chat_id = channel_data.get("chat_id")
-            if bot_token and chat_id:
-                _send_telegram(bot_token, chat_id, text)
+            if not bot_token:
+                return False, "Bot Token غير مضبوط في قاعدة البيانات"
+            if not chat_id:
+                return False, "chat_id مفقود في بيانات القناة"
+            _send_telegram(bot_token, chat_id, text)
         elif platform == "whatsapp":
             access_token = channel_data.get("access_token")
             phone_number_id = channel_data.get("phone_number_id")
             to = channel_data.get("to")
-            if access_token and phone_number_id and to:
-                _send_whatsapp(access_token, phone_number_id, to, text)
+            if not access_token:
+                return False, "WhatsApp access_token مفقود — أعد الربط عبر OAuth"
+            if not phone_number_id:
+                return False, "WHATSAPP_PHONE_NUMBER_ID غير مضبوط"
+            if not to:
+                return False, "رقم المستلم (to) مفقود"
+            _send_whatsapp(access_token, phone_number_id, to, text)
         elif platform in ("instagram", "facebook"):
             page_token = channel_data.get("access_token") or channel_data.get("page_token")
             recipient_id = channel_data.get("recipient_id")
-            if page_token and recipient_id:
-                _send_facebook_messenger(page_token, recipient_id, text)
+            if not page_token:
+                return False, f"{platform} page_token مفقود — أعد الربط عبر OAuth"
+            if not recipient_id:
+                return False, "recipient_id مفقود"
+            _send_facebook_messenger(page_token, recipient_id, text)
         return True, ""
     except Exception as e:
         logger.error(f"[webhooks] send error on {platform}: {e}")
         return False, str(e)
+
+
+def _classify_telegram_error(status_code: int, description: str) -> str:
+    """Map a Telegram API failure to a human-readable diagnostic string."""
+    desc = (description or "").lower()
+    if status_code == 401 or "unauthorized" in desc or "invalid token" in desc:
+        return "توكن غير صالح (401 Unauthorized) — تحقق من Bot Token"
+    if "bot was blocked" in desc or "user is deactivated" in desc:
+        return "المستخدم حجب البوت أو حذف حسابه"
+    if "chat not found" in desc or status_code == 400:
+        return f"chat_id غير صحيح أو البوت لم يبدأ محادثة مع المستخدم بعد: {description}"
+    if status_code == 403 or "forbidden" in desc:
+        return f"مرفوض (403 Forbidden) — ربما حجب المستخدم البوت: {description}"
+    if "too many requests" in desc or status_code == 429:
+        return "تجاوز حد المعدل (429 Too Many Requests) — أبطئ الإرسال"
+    if status_code and status_code >= 500:
+        return f"خطأ في خوادم Telegram ({status_code}) — أعد المحاولة لاحقاً"
+    return f"Telegram API error ({status_code}): {description}"
 
 
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
@@ -1180,11 +1302,32 @@ def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
         if result.get("ok"):
             logger.info(f"[telegram] sendMessage OK → chat_id={chat_id}")
         else:
-            err = result.get("description", str(result))
-            logger.error(f"[telegram] sendMessage FAILED → chat_id={chat_id} | {err}")
-            raise Exception(f"Telegram API error: {err}")
+            description = result.get("description", str(result))
+            friendly = _classify_telegram_error(r.status_code, description)
+            logger.error(f"[telegram] sendMessage FAILED → chat_id={chat_id} | {friendly}")
+            raise Exception(friendly)
     except Exception:
         raise
+
+
+def _classify_meta_error(status_code: int, result: dict) -> str:
+    """Map a Meta Graph API error to a human-readable diagnostic string."""
+    err = result.get("error", {})
+    code = err.get("code", 0)
+    msg  = err.get("message", str(result))
+    if status_code == 401 or code in (190, 102):
+        return f"رمز الوصول منتهي أو غير صالح (code={code}) — أعد الربط عبر OAuth"
+    if code == 131030 or "phone number" in msg.lower():
+        return f"رقم الهاتف غير موجود في WhatsApp أو الحساب غير مفعّل: {msg}"
+    if code == 131049:
+        return "المستخدم لم يبدأ محادثة مع البوت (نافذة 24 ساعة منتهية)"
+    if code == 131047:
+        return "رسالة مكررة — تم إرسالها مسبقاً"
+    if status_code == 403 or code == 200:
+        return f"مرفوض (403) — تحقق من صلاحيات التطبيق وموافقة Meta: {msg}"
+    if status_code and status_code >= 500:
+        return f"خطأ في خوادم Meta ({status_code}) — أعد المحاولة"
+    return f"Meta API error (HTTP {status_code}, code={code}): {msg}"
 
 
 def _send_whatsapp(access_token: str, phone_number_id: str, to: str, text: str) -> None:
@@ -1208,9 +1351,11 @@ def _send_whatsapp(access_token: str, phone_number_id: str, to: str, text: str) 
         if r.status_code == 200:
             logger.info(f"[whatsapp] sendMessage OK → to={to}")
         else:
-            logger.error(f"[whatsapp] sendMessage FAILED → to={to} | {result}")
-    except Exception as e:
-        logger.error(f"[whatsapp] sendMessage exception → to={to} | {e}")
+            friendly = _classify_meta_error(r.status_code, result)
+            logger.error(f"[whatsapp] sendMessage FAILED → to={to} | {friendly}")
+            raise Exception(friendly)
+    except Exception:
+        raise
 
 
 def _send_facebook_messenger(page_token: str, recipient_id: str, text: str) -> None:
@@ -1228,9 +1373,11 @@ def _send_facebook_messenger(page_token: str, recipient_id: str, text: str) -> N
         if r.status_code == 200:
             logger.info(f"[messenger] sendMessage OK → recipient={recipient_id}")
         else:
-            logger.error(f"[messenger] sendMessage FAILED → recipient={recipient_id} | {result}")
-    except Exception as e:
-        logger.error(f"[messenger] sendMessage exception → recipient={recipient_id} | {e}")
+            friendly = _classify_meta_error(r.status_code, result)
+            logger.error(f"[messenger] sendMessage FAILED → recipient={recipient_id} | {friendly}")
+            raise Exception(friendly)
+    except Exception:
+        raise
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────

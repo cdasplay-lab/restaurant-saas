@@ -205,6 +205,10 @@
       <a href="#team" id="navTeam" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-user-tie w-4 text-center"></i> الفريق
       </a>
+      <a href="#onboarding" id="navOnboarding" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-rocket w-4 text-center"></i> تفعيل الحساب
+        <span id="badgeOnboarding" class="mr-auto badge bg-amber-500/20 text-amber-400 hidden">!</span>
+      </a>
       <a href="#analytics"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-chart-line w-4 text-center"></i> التحليلات
       </a>
@@ -283,6 +287,7 @@
 
     <!-- ═══ DASHBOARD ═══ -->
     <section id="sec-dashboard" class="section">
+      <div id="ann-top-banner" class="mb-4 space-y-2"></div>
       <div id="dashLoading" class="flex justify-center py-16"><div class="spinner"></div></div>
       <div id="dashContent" class="hidden">
         <!-- KPI cards -->
@@ -638,6 +643,7 @@
 
     <!-- ═══ CHANNELS ═══ -->
     <section id="sec-channels" class="section">
+      <div id="ann-channels-notice" class="mb-4 space-y-2"></div>
       <div class="mb-6 flex items-start justify-between gap-4">
         <div>
           <h2 class="text-white font-bold text-xl">📡 القنوات والتكاملات</h2>
@@ -652,6 +658,18 @@
           </button>
         </div>
       </div>
+      <!-- Live Readiness Status Bar -->
+      <div id="liveReadinessBar" class="mb-5 hidden">
+        <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-white font-semibold text-sm">حالة الجاهزية الحية</h3>
+            <button onclick="loadLiveReadiness()" class="text-slate-400 hover:text-white text-xs">تحديث</button>
+          </div>
+          <div id="liveReadinessContent" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-xs"></div>
+          <div id="liveReadinessFix" class="hidden bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 text-yellow-300 text-xs"></div>
+        </div>
+      </div>
+
       <!-- Meta Advanced Access notice — shown for Instagram/Facebook channels -->
       <div id="metaAccessNotice" class="hidden mb-5 rounded-xl border border-amber-500/40 bg-amber-900/20 p-4">
         <div class="flex gap-3">
@@ -923,14 +941,128 @@
 
         <!-- Billing tab -->
         <div id="stab-content-billing" class="settings-tab-content hidden">
-          <div class="bg-slate-800 rounded-2xl p-8 border border-slate-700 text-center">
-            <div class="w-16 h-16 bg-yellow-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <i class="fa-solid fa-credit-card text-yellow-400 text-2xl"></i>
+          <div id="ann-billing-notice" class="mb-3 space-y-2"></div>
+          <div id="billingLoading" class="text-center py-8 text-slate-500 text-sm">جارٍ التحميل…</div>
+          <div id="billingContent" class="hidden space-y-4">
+            <!-- Status card -->
+            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-white font-semibold">💳 الاشتراك الحالي</h3>
+                <button onclick="loadBilling()" class="text-slate-400 hover:text-white text-xs">تحديث</button>
+              </div>
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <div class="text-slate-400 text-xs mb-1">الخطة</div>
+                  <div id="bilPlan" class="text-white font-semibold">—</div>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <div class="text-slate-400 text-xs mb-1">الحالة</div>
+                  <div id="bilStatus" class="font-semibold">—</div>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <div class="text-slate-400 text-xs mb-1">أيام التجربة المتبقية</div>
+                  <div id="bilTrial" class="text-white font-semibold">—</div>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <div class="text-slate-400 text-xs mb-1">نهاية الفترة</div>
+                  <div id="bilEnd" class="text-white text-xs">—</div>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <div class="text-slate-400 text-xs mb-1">البريد للفاتورة</div>
+                  <div id="bilProvider" class="text-slate-300 text-xs">—</div>
+                </div>
+              </div>
             </div>
-            <h3 class="text-white font-semibold text-lg mb-2">💳 الفاتورة والاشتراك</h3>
-            <p class="text-slate-500 text-sm">قريباً — إدارة الاشتراك والفواتير</p>
-            <div class="mt-4 inline-block bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs px-4 py-2 rounded-xl">
-              الخطة الحالية: Professional
+            <!-- Blocked notice -->
+            <div id="bilBlockedNotice" class="hidden bg-red-500/10 border border-red-500/30 rounded-2xl p-5">
+              <div class="flex items-start gap-3">
+                <span class="text-2xl">🚫</span>
+                <div>
+                  <h4 class="text-red-300 font-semibold mb-1">الحساب موقوف</h4>
+                  <p id="bilBlockedReason" class="text-red-200/80 text-sm"></p>
+                  <p class="text-red-200/60 text-xs mt-2">تواصل مع الدعم لإعادة تفعيل حسابك.</p>
+                </div>
+              </div>
+            </div>
+            <!-- Features -->
+            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-3">
+              <h3 class="text-white font-semibold text-sm">مزايا الخطة الحالية</h3>
+              <div id="bilFeatures" class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs"></div>
+            </div>
+            <!-- Plan Cards -->
+            <div class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-white font-semibold text-sm">خطط الاشتراك</h3>
+                <span class="text-slate-500 text-xs">اختر خطة لتفعيل الاشتراك</span>
+              </div>
+              <div id="bilPlans" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="text-slate-500 text-xs py-4">جارٍ التحميل…</div>
+              </div>
+            </div>
+            <!-- Payment Methods -->
+            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-3">
+              <h3 class="text-white font-semibold text-sm">طرق الدفع المتاحة</h3>
+              <div id="bilPayMethods" class="space-y-3">جارٍ التحميل…</div>
+            </div>
+            <!-- Submit Proof -->
+            <div id="proofForm" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+              <h3 class="text-white font-semibold text-sm">إرسال إيصال الدفع</h3>
+              <p class="text-slate-400 text-xs">بعد إتمام الدفع عبر أي طريقة أعلاه، ارفع صورة/PDF الإيصال هنا.</p>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">الخطة المطلوبة *</label>
+                  <select id="proofPlan" onchange="onProofPlanChange()" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                    <option value="">اختر خطة…</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">المبلغ المدفوع (يُملأ تلقائياً)</label>
+                  <input id="proofAmount" type="number" min="0" placeholder="تلقائي من الخطة"
+                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500" dir="ltr">
+                </div>
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">العملة</label>
+                  <select id="proofCurrency" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                    <option value="IQD">IQD — دينار عراقي</option>
+                    <option value="USD">USD — دولار أمريكي</option>
+                    <option value="SAR">SAR — ريال سعودي</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">طريقة الدفع</label>
+                  <select id="proofMethod" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                    <option value="">اختر…</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">اسم المُحوِّل *</label>
+                  <input id="proofPayer" type="text" placeholder="الاسم كما في الإيصال"
+                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                  <label class="block text-slate-400 text-xs mb-1">رقم العملية / المرجع</label>
+                  <input id="proofRef" type="text" dir="ltr" placeholder="TXN12345"
+                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-slate-400 text-xs mb-1">صورة / PDF الإيصال (اختياري — jpg, png, pdf — حد 5MB)</label>
+                  <input id="proofFile" type="file" accept=".jpg,.jpeg,.png,.pdf"
+                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                </div>
+              </div>
+              <div id="proofMsg" class="hidden text-xs rounded-lg px-3 py-2"></div>
+              <button onclick="submitPaymentProof()"
+                class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-xl text-sm font-medium transition">
+                إرسال طلب الدفع
+              </button>
+            </div>
+            <!-- My Requests -->
+            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-white font-semibold text-sm">طلباتي السابقة</h3>
+                <button onclick="loadMyPayRequests()" class="text-slate-400 hover:text-white text-xs">تحديث</button>
+              </div>
+              <div id="myPayReqs" class="text-slate-400 text-xs">جارٍ التحميل…</div>
             </div>
           </div>
         </div>
@@ -996,8 +1128,55 @@
       </div>
     </section>
 
+    <!-- ===== ONBOARDING ===== -->
+    <section id="sec-onboarding" class="section p-6">
+      <div class="max-w-2xl mx-auto space-y-6">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-white font-bold text-xl">🚀 خطوات تفعيل الحساب</h2>
+            <p class="text-slate-400 text-sm mt-1">أكمل الخطوات التالية لتشغيل حسابك بالكامل</p>
+          </div>
+          <button onclick="loadOnboarding()" class="text-slate-400 hover:text-white text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
+            <i class="fa-solid fa-rotate-right text-xs"></i> تحديث
+          </button>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="bg-slate-800 rounded-2xl border border-slate-700 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-slate-300 text-sm font-medium">تقدم الإعداد</span>
+            <span id="ob-progress-pct" class="text-indigo-400 font-bold text-sm">0%</span>
+          </div>
+          <div class="w-full bg-slate-700 rounded-full h-2.5">
+            <div id="ob-progress-bar" class="bg-gradient-to-l from-indigo-500 to-purple-500 h-2.5 rounded-full transition-all duration-500" style="width:0%"></div>
+          </div>
+          <p id="ob-overall-msg" class="text-slate-400 text-xs mt-3"></p>
+        </div>
+
+        <!-- Steps checklist -->
+        <div id="ob-steps" class="space-y-3"></div>
+
+        <!-- Loading spinner -->
+        <div id="ob-loading" class="flex justify-center py-10"><div class="spinner"></div></div>
+      </div>
+    </section>
+
   </div><!-- /content -->
 </main>
+
+<!-- ── ANNOUNCEMENT MODAL (modal_once placement) ─────────────── -->
+<div id="ann-modal-once" class="hidden fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+  <div class="bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl p-6 w-full max-w-md">
+    <div class="flex items-start justify-between mb-3">
+      <h3 id="ann-modal-title" class="text-white font-bold text-base leading-snug flex-1 ml-4"></h3>
+      <button id="ann-modal-close" class="text-slate-400 hover:text-white flex-shrink-0 mt-0.5">✕</button>
+    </div>
+    <p id="ann-modal-message" class="text-slate-300 text-sm leading-relaxed mb-4"></p>
+    <div id="ann-modal-cta" class="hidden">
+      <a id="ann-modal-cta-link" href="#" class="inline-block bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg transition"></a>
+    </div>
+  </div>
+</div>
 
 <!-- ── TOAST CONTAINER ───────────────────────────────────────── -->
 <div id="toastContainer"></div>
@@ -1249,6 +1428,7 @@ const PAGES = {
   channels:      { title: 'القنوات',        load: loadChannels },
   activity:      { title: 'سجل النشاط',    load: loadActivity },
   settings:      { title: 'الإعدادات',      load: loadSettings },
+  onboarding:    { title: 'تفعيل الحساب',  load: loadOnboarding },
 };
 
 function navigate(page) {
@@ -1327,7 +1507,30 @@ async function loadDashboard() {
 
     document.getElementById('dashLoading').classList.add('hidden');
     document.getElementById('dashContent').classList.remove('hidden');
+    _loadDashboardOnboardingBanner();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+async function _loadDashboardOnboardingBanner() {
+  try {
+    const d = await api.get('/api/onboarding/status');
+    const badge = document.getElementById('badgeOnboarding');
+    if (badge) badge.classList.toggle('hidden', d.launch_ready);
+    const banner = document.getElementById('ann-top-banner');
+    if (!banner || d.launch_ready) return;
+    const incomplete = (d.steps || []).filter(s => !['complete','approved','pass','ready','trial','not_required'].includes(s.status));
+    if (!incomplete.length) return;
+    const first = incomplete[0];
+    const existing = document.getElementById('ob-dash-banner');
+    if (existing) return;
+    const el = document.createElement('div');
+    el.id = 'ob-dash-banner';
+    el.className = 'flex items-center gap-3 px-4 py-3 rounded-xl border bg-indigo-500/10 border-indigo-500/30 text-indigo-200 text-sm mb-2';
+    el.innerHTML = `<span class="text-lg flex-shrink-0">🚀</span>
+      <span class="flex-1">أكمل إعداد حسابك — <strong>${first.title_ar}</strong> لم تكتمل بعد</span>
+      <a href="#onboarding" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded-lg transition">عرض الخطوات</a>`;
+    banner.prepend(el);
+  } catch(e) { /* non-critical */ }
 }
 
 function _chartTheme() {
@@ -2579,6 +2782,18 @@ async function runSystemCheck() {
     if (fbCh?.last_error) err('آخر خطأ Facebook', fbCh.last_error.slice(0,80));
   } catch(e) { warn('oauth-log غير متاح', e.message); }
 
+  // 6. Telegram token test
+  try {
+    const tg = await fetch(`${window.API_BASE||''}/api/channels/telegram/test-connection`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    }).then(r => r.json()).catch(() => null);
+    if (tg) {
+      if (tg.ok) ok('Telegram Bot Token صالح', tg.message);
+      else        err('Telegram Bot Token خطأ', tg.message);
+    }
+  } catch(e) { warn('Telegram — تعذّر الاختبار', e.message); }
+
   box.innerHTML = `<div class="font-semibold text-white mb-3">نتيجة فحص النظام</div>` + checks.join('');
 }
 
@@ -2879,7 +3094,56 @@ async function loadChannels() {
     // Populate WhatsApp webhook info if connected
     const waExists = _chanPlatforms.find(p => p.platform === 'whatsapp');
     if (waExists) loadWAWebhookInfo();
+    // Load live readiness bar
+    loadLiveReadiness();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+async function loadLiveReadiness() {
+  try {
+    const data = await api.get('/api/live-readiness');
+    const bar  = document.getElementById('liveReadinessBar');
+    if (!bar) return;
+    bar.classList.remove('hidden');
+
+    const STATUS_LABEL = {
+      ok: 'متصل', not_enabled: 'غير مُفعّل', missing_token: 'لا توكن',
+      missing_credentials: 'بيانات ناقصة', pending_meta: 'انتظار Meta',
+      outbound_failed: 'فشل إرسال', unknown: 'غير معروف',
+      configured: 'مُهيَّأ', missing: 'ناقص'
+    };
+    const STATUS_COLOR = {
+      ok: '#22c55e', configured: '#22c55e',
+      not_enabled: '#475569', missing: '#f59e0b',
+      missing_token: '#ef4444', missing_credentials: '#f59e0b',
+      pending_meta: '#f59e0b', outbound_failed: '#ef4444', unknown: '#94a3b8'
+    };
+
+    const chips = [
+      ['AI', data.ai.status],
+      ['Telegram',  data.channels.telegram?.status  || 'not_enabled'],
+      ['WhatsApp',  data.channels.whatsapp?.status  || 'not_enabled'],
+      ['Instagram', data.channels.instagram?.status || 'not_enabled'],
+      ['Facebook',  data.channels.facebook?.status  || 'not_enabled'],
+    ];
+
+    document.getElementById('liveReadinessContent').innerHTML = chips.map(([label, status]) => {
+      const color = STATUS_COLOR[status] || '#94a3b8';
+      const text  = STATUS_LABEL[status] || status;
+      return `<div class="bg-slate-700/50 rounded-lg px-3 py-2 text-center">
+        <div class="text-slate-400 text-xs mb-0.5">${label}</div>
+        <div class="font-semibold text-xs" style="color:${color}">${text}</div>
+      </div>`;
+    }).join('');
+
+    const fixEl = document.getElementById('liveReadinessFix');
+    if (data.needs_attention && data.recommended_fix !== 'لا توجد مشاكل') {
+      fixEl.textContent = '⚠️ ' + data.recommended_fix;
+      fixEl.classList.remove('hidden');
+    } else {
+      fixEl.classList.add('hidden');
+    }
+  } catch(e) { /* readiness bar is optional */ }
 }
 
 async function loadWAWebhookInfo() {
@@ -3557,6 +3821,254 @@ function showSettingsTab(tab) {
   });
   document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.add('hidden'));
   document.getElementById(`stab-content-${tab}`).classList.remove('hidden');
+  if (tab === 'billing') loadBilling();
+}
+
+async function loadBilling() {
+  document.getElementById('billingLoading').classList.remove('hidden');
+  document.getElementById('billingContent').classList.add('hidden');
+  try {
+    const [d, plansData, methodsData] = await Promise.all([
+      api.get('/api/subscription/status'),
+      api.get('/api/billing/plans').catch(() => ({ plans: [] })),
+      api.get('/api/billing/payment-methods').catch(() => ({ payment_methods: [] })),
+    ]);
+    document.getElementById('billingLoading').classList.add('hidden');
+    document.getElementById('billingContent').classList.remove('hidden');
+
+    const STATUS_COLOR = { active:'text-green-400', trial:'text-blue-400', expired:'text-red-400',
+                           suspended:'text-red-400', cancelled:'text-red-400', past_due:'text-yellow-400' };
+    const STATUS_LABEL = { active:'نشط', trial:'تجريبي', expired:'منتهي',
+                           suspended:'موقوف', cancelled:'ملغى', past_due:'متأخر' };
+    document.getElementById('bilPlan').textContent = d.plan_label || d.plan;
+    const statusEl = document.getElementById('bilStatus');
+    statusEl.textContent = STATUS_LABEL[d.status] || d.status;
+    statusEl.className = `font-semibold ${STATUS_COLOR[d.status] || 'text-slate-300'}`;
+    document.getElementById('bilTrial').textContent = d.trial_days_left != null ? d.trial_days_left + ' يوم' : '—';
+    document.getElementById('bilEnd').textContent = d.current_period_end ? d.current_period_end.slice(0,10) : '—';
+    document.getElementById('bilProvider').textContent = d.billing_email || 'غير محدد';
+
+    if (d.blocked) {
+      document.getElementById('bilBlockedNotice').classList.remove('hidden');
+      document.getElementById('bilBlockedReason').textContent = d.blocked_reason || 'الحساب موقوف';
+    } else {
+      document.getElementById('bilBlockedNotice').classList.add('hidden');
+    }
+
+    const feat = d.features || {};
+    const featList = [
+      ['الذكاء الاصطناعي', feat.ai_enabled],
+      ['التحليلات', feat.analytics_enabled],
+      ['الوسائط/الصوت', feat.media_enabled],
+      ['التحويل للموظف', feat.handoff_enabled],
+      [`القنوات (${feat.channels_allowed})`, feat.channels_allowed > 0],
+      [`المنتجات (${feat.max_products})`, feat.max_products > 0],
+    ];
+    document.getElementById('bilFeatures').innerHTML = featList.map(([label, ok]) =>
+      `<div class="flex items-center gap-1.5 ${ok ? 'text-green-400' : 'text-slate-500'}">
+        <span>${ok ? '✅' : '❌'}</span><span>${label}</span>
+      </div>`
+    ).join('');
+
+    // Plans catalogue
+    const plans = plansData.plans || [];
+    window._billingPlans = plans;  // cache for selectPlan()
+    const proofPlanSel = document.getElementById('proofPlan');
+    proofPlanSel.innerHTML = '<option value="">اختر خطة…</option>' +
+      plans.map(p => `<option value="${p.id || p.code}" data-price="${p.price||0}" data-currency="${p.currency||'IQD'}">${p.name || p.label} — ${p.price > 0 ? (p.price).toLocaleString() + ' ' + (p.currency||'IQD') : 'مجاني'}</option>`).join('');
+
+    const supportLabel = {'community':'مجتمع','email':'دعم بريد','priority':'دعم أولوية','dedicated':'دعم مخصص'};
+    document.getElementById('bilPlans').innerHTML = plans.length
+      ? plans.map(p => {
+          const isCurrent = (d.plan === (p.code||p.plan));
+          const included  = p.features || [];
+          const excluded  = p.excluded_features || [];
+          const dispName  = p.display_name || p.name_ar || p.name || p.code;
+          const dispDesc  = p.display_description || p.description_ar || p.description || '';
+          const dispBadge = p.display_badge || p.badge_text_ar || p.badge || '';
+          const dispPeriod = p.display_period || p.billing_period_ar || (p.billing_period === 'monthly' ? 'شهري' : p.billing_period === 'yearly' ? 'سنوي' : 'مخصص');
+          const limitItems = [
+            (p.max_channels||0) < 9999 ? `${p.max_channels||0} ${(p.max_channels||0)===1?'قناة':'قنوات'}` : 'قنوات غير محدودة',
+            (p.max_products||0) < 9999 ? `${p.max_products||0} منتج` : 'منتجات غير محدودة',
+            (p.max_staff||0)    < 9999 ? `${p.max_staff||0} موظف`    : 'موظفون غير محدودون',
+            (p.max_conversations_per_month||0) < 999999
+              ? `${(p.max_conversations_per_month||0).toLocaleString()} محادثة/شهر`
+              : 'محادثات غير محدودة',
+          ];
+          return `
+          <div id="planCard_${p.id}" data-plan-id="${p.id||p.code}" class="bil-plan-card relative rounded-2xl border-2 transition-all cursor-pointer
+               ${isCurrent ? 'border-indigo-500 bg-indigo-500/10' : p.is_recommended ? 'border-amber-500/60 bg-slate-800 hover:border-amber-400' : 'border-slate-700 bg-slate-800 hover:border-slate-500'}">
+            ${dispBadge ? `<div class="absolute -top-3 right-4">
+              <span class="bg-amber-500 text-slate-900 text-xs font-bold px-3 py-1 rounded-full shadow">${dispBadge}</span>
+            </div>` : ''}
+            <div class="p-5 space-y-4">
+              <!-- Header -->
+              <div>
+                <div class="flex items-center justify-between">
+                  <h4 class="text-white font-bold text-lg">${dispName}</h4>
+                  ${isCurrent ? '<span class="text-xs bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">خطتك الحالية</span>' : ''}
+                </div>
+                ${dispDesc ? `<p class="text-slate-400 text-xs mt-1">${dispDesc}</p>` : ''}
+              </div>
+              <!-- Price -->
+              <div class="border-t border-slate-700 pt-3">
+                ${p.price > 0
+                  ? `<div class="text-white font-extrabold text-2xl">${p.price.toLocaleString()} <span class="text-slate-400 text-sm font-normal">${p.currency||'USD'}</span></div>
+                     <div class="text-slate-400 text-xs mt-0.5">${dispPeriod}${p.duration_days ? ' · ' + p.duration_days + ' يوم' : ''}</div>`
+                  : `<div class="text-slate-300 font-bold text-xl">مجاني</div>`}
+              </div>
+              <!-- Key limits -->
+              <div class="grid grid-cols-2 gap-1.5">
+                ${limitItems.map(t => `<div class="bg-slate-700/50 rounded-lg px-2 py-1 text-slate-300 text-xs text-center">${t}</div>`).join('')}
+              </div>
+              <!-- Included features -->
+              ${included.length ? `<div class="space-y-1">
+                <div class="text-slate-400 text-xs font-medium mb-1">✅ تشمل</div>
+                ${included.map(f => `<div class="flex items-start gap-1.5 text-xs text-emerald-400"><span class="mt-0.5 shrink-0">✓</span><span>${f}</span></div>`).join('')}
+              </div>` : ''}
+              <!-- Excluded features -->
+              ${excluded.length ? `<div class="space-y-1">
+                <div class="text-slate-400 text-xs font-medium mb-1">❌ لا تشمل</div>
+                ${excluded.map(f => `<div class="flex items-start gap-1.5 text-xs text-slate-500"><span class="mt-0.5 shrink-0">✗</span><span>${f}</span></div>`).join('')}
+              </div>` : ''}
+              <!-- Support level -->
+              <div class="text-slate-500 text-xs border-t border-slate-700 pt-2">
+                ${supportLabel[p.support_level]||p.support_level||''}
+              </div>
+              <!-- Action -->
+              ${p.price > 0 ? `
+              <button onclick="selectPlanForProof('${p.id||p.code}',${p.price},'${p.currency||'USD'}')"
+                class="w-full py-2 rounded-xl text-sm font-semibold transition
+                  ${isCurrent
+                    ? 'bg-indigo-600/50 text-indigo-300 border border-indigo-500/50'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white'}">
+                ${isCurrent ? 'تجديد الاشتراك' : 'اختر هذه الخطة'}
+              </button>` : `<div class="text-slate-500 text-xs text-center py-1">الخطة الافتراضية — لا تتطلب دفعاً</div>`}
+            </div>
+          </div>`;
+        }).join('')
+      : '<p class="col-span-3 text-slate-500 text-xs py-4">لا توجد خطط متاحة حالياً</p>';
+
+    // Payment methods
+    const methods = methodsData.payment_methods || [];
+    const proofMethodSel = document.getElementById('proofMethod');
+    proofMethodSel.innerHTML = '<option value="">اختر…</option>' +
+      methods.map(m => `<option value="${m.id}">${m.method_name}</option>`).join('');
+
+    document.getElementById('bilPayMethods').innerHTML = methods.length
+      ? methods.map(m => `
+        <div class="bg-slate-700/40 rounded-xl p-3 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-white font-medium text-sm">${m.method_name}</span>
+            <span class="text-slate-400 text-xs">${m.currency}</span>
+          </div>
+          ${m.account_holder_name ? `<div class="text-slate-300 text-xs">الاسم: ${m.account_holder_name}</div>` : ''}
+          ${m.bank_name ? `<div class="text-slate-300 text-xs">البنك/الشبكة: ${m.bank_name}</div>` : ''}
+          ${m.account_number ? `<div class="text-slate-400 text-xs font-mono" dir="ltr">رقم: ${m.account_number}</div>` : ''}
+          ${m.iban ? `<div class="text-slate-400 text-xs font-mono" dir="ltr">IBAN: ${m.iban}</div>` : ''}
+          ${m.phone_number ? `<div class="text-slate-400 text-xs" dir="ltr">هاتف: ${m.phone_number}</div>` : ''}
+          ${m.payment_instructions ? `<div class="text-slate-400 text-xs mt-1 border-t border-slate-600/50 pt-1">${m.payment_instructions}</div>` : ''}
+        </div>`).join('')
+      : '<p class="text-slate-500 text-xs">لا توجد طرق دفع مفعّلة حالياً — تواصل مع الدعم</p>';
+
+    loadMyPayRequests();
+  } catch(e) {
+    document.getElementById('billingLoading').textContent = 'تعذّر تحميل بيانات الاشتراك';
+  }
+}
+
+function selectPlanForProof(planId, price, currency) {
+  const sel = document.getElementById('proofPlan');
+  if (sel) {
+    sel.value = planId;
+    document.getElementById('proofAmount').value = price || '';
+    document.getElementById('proofCurrency').value = currency || 'IQD';
+  }
+  document.querySelectorAll('.bil-plan-card').forEach(c => c.classList.remove('ring-2','ring-indigo-500'));
+  const card = document.querySelector(`.bil-plan-card[data-plan-id="${planId}"]`);
+  if (card) card.classList.add('ring-2','ring-indigo-500');
+  const form = document.getElementById('proofForm');
+  if (form) form.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function onProofPlanChange() {
+  const sel = document.getElementById('proofPlan');
+  const opt = sel.options[sel.selectedIndex];
+  if (opt && opt.dataset.price) {
+    document.getElementById('proofAmount').value = opt.dataset.price;
+    document.getElementById('proofCurrency').value = opt.dataset.currency || 'IQD';
+  }
+}
+
+async function submitPaymentProof() {
+  const planId = document.getElementById('proofPlan').value;
+  const amount = document.getElementById('proofAmount').value;
+  const currency = document.getElementById('proofCurrency').value;
+  const method = document.getElementById('proofMethod').value;
+  const payer = document.getElementById('proofPayer').value;
+  const ref = document.getElementById('proofRef').value;
+  const fileInput = document.getElementById('proofFile');
+  const msgEl = document.getElementById('proofMsg');
+
+  if (!planId) { msgEl.className='text-xs rounded-lg px-3 py-2 bg-red-500/20 text-red-400'; msgEl.textContent='الرجاء اختيار الخطة'; msgEl.classList.remove('hidden'); return; }
+  if (!payer.trim()) { msgEl.className='text-xs rounded-lg px-3 py-2 bg-red-500/20 text-red-400'; msgEl.textContent='الرجاء إدخال اسم المُحوِّل'; msgEl.classList.remove('hidden'); return; }
+
+  const fd = new FormData();
+  fd.append('plan_id', planId);
+  if (amount && parseFloat(amount) > 0) fd.append('amount', amount);
+  fd.append('currency', currency);
+  fd.append('payment_method_id', method);
+  fd.append('payer_name', payer);
+  fd.append('reference_number', ref);
+  if (fileInput.files[0]) fd.append('proof', fileInput.files[0]);
+
+  msgEl.className='text-xs rounded-lg px-3 py-2 bg-slate-700/50 text-slate-400';
+  msgEl.textContent='جارٍ الإرسال…';
+  msgEl.classList.remove('hidden');
+
+  try {
+    const tok = localStorage.getItem('auth_token');
+    const r = await fetch(`${window.API_BASE || ''}/api/billing/payment-proof`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tok}` },
+      body: fd,
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'خطأ');
+    msgEl.className='text-xs rounded-lg px-3 py-2 bg-emerald-500/20 text-emerald-400';
+    msgEl.textContent='تم إرسال الطلب — سيراجعه المشرف قريباً ✓';
+    document.getElementById('proofPlan').value='';
+    document.getElementById('proofAmount').value='';
+    document.getElementById('proofCurrency').value='IQD';
+    document.getElementById('proofPayer').value='';
+    document.getElementById('proofRef').value='';
+    fileInput.value='';
+    loadMyPayRequests();
+  } catch(e) {
+    msgEl.className='text-xs rounded-lg px-3 py-2 bg-red-500/20 text-red-400';
+    msgEl.textContent='خطأ: ' + e.message;
+  }
+}
+
+async function loadMyPayRequests() {
+  const el = document.getElementById('myPayReqs');
+  try {
+    const d = await api.get('/api/billing/my-payment-requests');
+    const rows = d.payment_requests || [];
+    if (!rows.length) { el.innerHTML = '<p class="text-slate-500 text-xs">لا توجد طلبات سابقة</p>'; return; }
+    const statusLabel = s => s==='pending'?'<span class="text-yellow-400">معلق</span>':s==='approved'?'<span class="text-emerald-400">موافق عليه</span>':'<span class="text-red-400">مرفوض</span>';
+    el.innerHTML = rows.map(r => `
+      <div class="bg-slate-700/40 rounded-xl p-3 text-xs space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-white font-medium">${r.plan_name||r.plan} — ${(r.amount||0).toLocaleString()} ${r.currency}</span>
+          ${statusLabel(r.status)}
+        </div>
+        <div class="text-slate-400">${r.payer_name || ''} ${r.reference_number ? '• مرجع: '+r.reference_number : ''}</div>
+        <div class="text-slate-500">${(r.created_at||'').slice(0,10)}</div>
+        ${r.status==='rejected'&&r.reject_reason ? `<div class="text-red-400 mt-1">سبب الرفض: ${r.reject_reason}</div>` : ''}
+        ${r.proof_url ? `<a href="${r.proof_url}" target="_blank" class="text-purple-400 hover:underline">عرض الإيصال ↗</a>` : ''}
+      </div>`).join('');
+  } catch(e) { el.innerHTML = '<p class="text-red-400 text-xs">تعذر التحميل</p>'; }
 }
 
 async function saveSettings() {
@@ -3874,6 +4386,9 @@ async function init() {
   // Poll notifications every 30s
   loadUnreadCount();
   setInterval(loadUnreadCount, 30000);
+
+  // Load announcements once on init
+  loadAnnouncements();
 
   // Auto-refresh active conversation messages every 8s
   setInterval(async () => {
@@ -4727,5 +5242,182 @@ function _biShowResults(data) {
 .badge-warn { display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:.7rem;font-weight:600;background:rgba(234,179,8,.15);color:#facc15; }
 .badge-review { display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:.7rem;font-weight:600;background:rgba(239,68,68,.15);color:#f87171; }
 </style>
+
+<script>
+// ── Announcements (restaurant side) ───────────────────────────
+const ANN_COLORS = {
+  info:        { bg: 'bg-sky-500/15 border-sky-500/30',     icon: 'ℹ️', text: 'text-sky-200' },
+  success:     { bg: 'bg-emerald-500/15 border-emerald-500/30', icon: '✅', text: 'text-emerald-200' },
+  warning:     { bg: 'bg-amber-500/15 border-amber-500/30',  icon: '⚠️', text: 'text-amber-200' },
+  promotion:   { bg: 'bg-pink-500/15 border-pink-500/30',    icon: '🎉', text: 'text-pink-200' },
+  maintenance: { bg: 'bg-slate-600/30 border-slate-500/30',  icon: '🔧', text: 'text-slate-300' },
+  upgrade:     { bg: 'bg-purple-500/15 border-purple-500/30',icon: '⭐', text: 'text-purple-200' },
+  payment:     { bg: 'bg-yellow-500/15 border-yellow-500/30',icon: '💳', text: 'text-yellow-200' },
+};
+
+async function loadAnnouncements() {
+  try {
+    const list = await api.get('/api/announcements');
+    renderAnnouncementBanner('dashboard_top_banner', list.filter(a => a.placement === 'dashboard_top_banner'));
+    renderAnnouncementBanner('billing_page',          list.filter(a => a.placement === 'billing_page'));
+    renderAnnouncementBanner('integrations_page',     list.filter(a => a.placement === 'integrations_page'));
+    list.filter(a => a.placement === 'modal_once').forEach(a => showAnnouncementModal(a));
+  } catch(e) { /* non-critical */ }
+}
+
+function renderAnnouncementBanner(placement, announcements) {
+  const containerId = placement === 'dashboard_top_banner' ? 'ann-top-banner'
+    : placement === 'billing_page' ? 'ann-billing-notice'
+    : placement === 'integrations_page' ? 'ann-channels-notice'
+    : null;
+  if (!containerId) return;
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = announcements.map(a => {
+    const c = ANN_COLORS[a.type] || ANN_COLORS.info;
+    const cta = a.cta_text && a.cta_url
+      ? `<a href="${_safeCta(a.cta_url)}" class="mr-3 text-xs underline opacity-80 hover:opacity-100 whitespace-nowrap">${_esc(a.cta_text)}</a>`
+      : '';
+    const dismiss = a.is_dismissible
+      ? `<button onclick="dismissAnnouncement('${a.id}','${containerId}')" class="mr-2 flex-shrink-0 text-lg leading-none opacity-50 hover:opacity-100">✕</button>`
+      : '';
+    return `<div id="ann-banner-${a.id}" class="flex items-start gap-3 px-4 py-3 rounded-xl border ${c.bg} ${c.text} text-sm">
+      <span class="flex-shrink-0 mt-0.5">${c.icon}</span>
+      <div class="flex-1 min-w-0">
+        <span class="font-semibold">${_esc(a.title)}</span>
+        ${a.message ? `<span class="mr-2 opacity-80">${_esc(a.message)}</span>` : ''}
+        ${cta}
+      </div>
+      ${dismiss}
+    </div>`;
+  }).join('');
+}
+
+function showAnnouncementModal(a) {
+  const key = `ann_modal_${a.id}`;
+  if (localStorage.getItem(key)) return;
+  const el = document.getElementById('ann-modal-once');
+  if (!el) return;
+  document.getElementById('ann-modal-title').textContent = a.title;
+  document.getElementById('ann-modal-message').textContent = a.message || '';
+  const ctaDiv = document.getElementById('ann-modal-cta');
+  const ctaLink = document.getElementById('ann-modal-cta-link');
+  if (a.cta_text && a.cta_url) {
+    ctaLink.href = _safeCta(a.cta_url);
+    ctaLink.textContent = a.cta_text;
+    ctaDiv.classList.remove('hidden');
+  } else {
+    ctaDiv.classList.add('hidden');
+  }
+  document.getElementById('ann-modal-close').onclick = () => {
+    el.classList.add('hidden');
+    if (a.is_dismissible) { dismissAnnouncement(a.id, null); localStorage.setItem(key, '1'); }
+    else localStorage.setItem(key, '1');
+  };
+  el.classList.remove('hidden');
+}
+
+async function dismissAnnouncement(annId, containerId) {
+  if (containerId) {
+    const banner = document.getElementById(`ann-banner-${annId}`);
+    if (banner) banner.remove();
+  }
+  try { await api.post(`/api/announcements/${annId}/dismiss`, {}); } catch(e) { /* ignore */ }
+}
+
+function _esc(s) { const d = document.createElement('div'); d.textContent = String(s || ''); return d.innerHTML; }
+function _safeCta(url) {
+  if (!url) return '#';
+  const u = url.trim().toLowerCase();
+  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/')) return url.trim();
+  return '#';
+}
+</script>
+
+<script>
+// ── Onboarding (restaurant side) ─────────────────────────────
+const OB_STATUS_CONFIG = {
+  complete:       { icon: '✅', cls: 'text-emerald-400', label: 'مكتمل' },
+  approved:       { icon: '✅', cls: 'text-emerald-400', label: 'موافق عليه' },
+  pass:           { icon: '✅', cls: 'text-emerald-400', label: 'اجتاز الاختبار' },
+  ready:          { icon: '🚀', cls: 'text-emerald-400', label: 'جاهز للإطلاق' },
+  pending:        { icon: '⏳', cls: 'text-amber-400',   label: 'قيد المراجعة' },
+  pending_review: { icon: '⏳', cls: 'text-amber-400',   label: 'قيد مراجعة الإدارة' },
+  awaiting_proof: { icon: '⏳', cls: 'text-amber-400',   label: 'بانتظار وصل الدفع' },
+  trial:          { icon: '🔓', cls: 'text-sky-400',     label: 'تجريبي' },
+  not_required:   { icon: '🔓', cls: 'text-sky-400',     label: 'غير مطلوب حالياً' },
+  rejected:       { icon: '❌', cls: 'text-red-400',     label: 'مرفوض' },
+  incomplete:     { icon: '⭕', cls: 'text-slate-400',   label: 'غير مكتمل' },
+  not_submitted:  { icon: '⭕', cls: 'text-slate-400',   label: 'لم يُرسل' },
+  not_tested:     { icon: '⭕', cls: 'text-slate-400',   label: 'لم يُختبر' },
+  fail:           { icon: '❌', cls: 'text-red-400',     label: 'فشل الاختبار' },
+  not_ready:      { icon: '⭕', cls: 'text-slate-400',   label: 'غير جاهز' },
+};
+
+async function loadOnboarding() {
+  const loading = document.getElementById('ob-loading');
+  const steps   = document.getElementById('ob-steps');
+  if (loading) loading.classList.remove('hidden');
+  if (steps) steps.innerHTML = '';
+  try {
+    const d = await api.get('/api/onboarding/status');
+    renderOnboarding(d);
+    // Show badge if not ready
+    const badge = document.getElementById('badgeOnboarding');
+    if (badge) badge.classList.toggle('hidden', d.launch_ready);
+  } catch(e) {
+    if (steps) steps.innerHTML = `<p class="text-red-400 text-sm">خطأ في تحميل حالة الإعداد: ${e.message}</p>`;
+  } finally {
+    if (loading) loading.classList.add('hidden');
+  }
+}
+
+function renderOnboarding(d) {
+  const pct = d.progress_percent || 0;
+  const bar = document.getElementById('ob-progress-bar');
+  const pctEl = document.getElementById('ob-progress-pct');
+  const msg = document.getElementById('ob-overall-msg');
+  if (bar) bar.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (msg) {
+    const msgs = { ready: '🎉 مبروك! حسابك جاهز للإطلاق', almost_ready: '📋 تبقى خطوات قليلة', not_ready: '⚠️ أكمل الخطوات أدناه لتفعيل حسابك' };
+    msg.textContent = msgs[d.overall_status] || '';
+  }
+
+  const container = document.getElementById('ob-steps');
+  if (!container) return;
+  container.innerHTML = d.steps.map(s => {
+    const cfg = OB_STATUS_CONFIG[s.status] || { icon: '⭕', cls: 'text-slate-400', label: s.status };
+    const action = (s.action_label && s.action_url)
+      ? `<a href="${s.action_url}" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded-lg transition">${s.action_label}</a>`
+      : (s.key === 'bot_test' && s.status !== 'pass')
+        ? `<button onclick="runOnboardingBotTest()" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded-lg transition">اختبر الآن</button>`
+        : '';
+    return `<div class="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3.5 flex items-center gap-4">
+      <span class="text-xl flex-shrink-0">${cfg.icon}</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <p class="text-slate-200 text-sm font-medium">${s.title_ar}</p>
+          <span class="text-xs ${cfg.cls}">${cfg.label}</span>
+        </div>
+        ${s.reason ? `<p class="text-slate-500 text-xs mt-0.5 leading-relaxed">${s.reason}</p>` : ''}
+      </div>
+      ${action ? `<div class="flex-shrink-0">${action}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function runOnboardingBotTest() {
+  try {
+    const d = await api.post('/api/onboarding/test-bot', {});
+    if (d.status === 'pass') {
+      toast('البوت يعمل بشكل صحيح ✅', 'success');
+    } else {
+      toast('فشل اختبار البوت: ' + (d.issues || []).join(' | '), 'error');
+    }
+    loadOnboarding();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+</script>
 </body>
 </html>

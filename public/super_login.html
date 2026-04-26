@@ -38,7 +38,12 @@
     </div>
     <div>
       <label class="block text-slate-300 text-sm mb-2">كلمة المرور</label>
-      <input id="password" type="password"
+      <input id="super_admin_password_new"
+        name="super_admin_password_new"
+        type="password"
+        autocomplete="new-password"
+        data-lpignore="true"
+        data-1p-ignore="true"
         class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
                focus:border-purple-500 focus:bg-white/15 transition placeholder-slate-500"
         placeholder="••••••••" required>
@@ -69,6 +74,15 @@
     window.location.href = '/super';
   }
 
+  (function clearAutofill() {
+    const pwId = 'super_admin_password_new';
+    let userTyped = false;
+    document.getElementById(pwId).addEventListener('input', function() { userTyped = true; }, { once: true });
+    [100, 500].forEach(ms => setTimeout(() => {
+      if (!userTyped) document.getElementById(pwId).value = '';
+    }, ms));
+  })();
+
   document.getElementById('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = document.getElementById('submitBtn');
@@ -84,7 +98,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: document.getElementById('email').value,
-          password: document.getElementById('password').value,
+          password: document.getElementById('super_admin_password_new').value,
         }),
       });
       const data = await res.json();

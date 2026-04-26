@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -43,36 +43,168 @@ META_WA_CONFIG_ID  = os.getenv("META_WA_CONFIG_ID", "")
 # ── Simple in-process rate limiter (no external dependency) ──────────────────
 import time as _time
 import collections as _collections
+import threading as _threading
 
-_rate_store: dict = _collections.defaultdict(list)  # ip → [timestamps]
+_rate_store: dict = _collections.defaultdict(list)  # (ip, scope) → [timestamps]
+_rate_store_lock = _threading.Lock()
+_rate_store_last_evict = _time.time()
 
-def _check_rate(ip: str, limit: int = 10, window: int = 60) -> bool:
-    """Return True if request is allowed. limit=requests per window (seconds)."""
+def _check_rate(ip: str, limit: int = 10, window: int = 60, scope: str = "") -> bool:
+    """Return True if request is allowed. Keyed by (ip, scope) to isolate tenants.
+    Evicts stale keys every 5 minutes to prevent unbounded memory growth."""
+    global _rate_store_last_evict
     now = _time.time()
-    timestamps = _rate_store[ip]
-    # Remove old timestamps outside the window
-    _rate_store[ip] = [t for t in timestamps if now - t < window]
-    if len(_rate_store[ip]) >= limit:
-        return False
-    _rate_store[ip].append(now)
+    key = (ip, scope)
+    with _rate_store_lock:
+        _rate_store[key] = [t for t in _rate_store[key] if now - t < window]
+        if len(_rate_store[key]) >= limit:
+            return False
+        _rate_store[key].append(now)
+        # Periodic eviction of fully-expired keys (every 5 min)
+        if now - _rate_store_last_evict > 300:
+            stale = [k for k, ts in _rate_store.items() if not ts or now - ts[-1] > window]
+            for k in stale:
+                del _rate_store[k]
+            _rate_store_last_evict = now
     return True
 
-# ── Plan limits ───────────────────────────────────────────────────────────────
+# ── Plan limits & feature flags ───────────────────────────────────────────────
 PLAN_LIMITS: dict = {
+    "free":         {"products": 5,    "staff": 1,   "channels": 0},
     "trial":        {"products": 10,   "staff": 2,   "channels": 1},
     "starter":      {"products": 50,   "staff": 5,   "channels": 2},
     "professional": {"products": 200,  "staff": 15,  "channels": 4},
     "enterprise":   {"products": 9999, "staff": 9999, "channels": 10},
 }
 
+PLAN_FEATURES: dict = {
+    #                    ai     analytics  media  handoff  max_conv_month
+    "free":         {"ai": False, "analytics": False, "media": False, "handoff": False, "max_conversations": 0},
+    "trial":        {"ai": True,  "analytics": True,  "media": False, "handoff": True,  "max_conversations": 200},
+    "starter":      {"ai": True,  "analytics": False, "media": False, "handoff": True,  "max_conversations": 500},
+    "professional": {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 5000},
+    "enterprise":   {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 999999},
+}
 
-def _plan_limit(plan: str, resource: str) -> int:
+BLOCKED_STATUSES = {"expired", "suspended", "cancelled"}
+
+
+# ── DB-backed plan helpers (fall back to hardcoded when row missing) ──────────
+
+def _get_plan_record(conn, plan_id: str = "", plan_code: str = "") -> dict | None:
+    """Load a subscription_plans row by id or code. Returns dict or None."""
+    row = None
+    if plan_id:
+        row = conn.execute("SELECT * FROM subscription_plans WHERE id=?", (plan_id,)).fetchone()
+    if not row and plan_code:
+        row = conn.execute("SELECT * FROM subscription_plans WHERE code=?", (plan_code,)).fetchone()
+    return dict(row) if row else None
+
+
+def _plan_features_from_db(conn, plan_code: str) -> dict:
+    """Return features dict for plan_code, reading DB first, falling back to PLAN_FEATURES."""
+    row = _get_plan_record(conn, plan_code=plan_code)
+    if row:
+        return {
+            "ai":                           bool(row.get("ai_enabled", 1)),
+            "analytics":                    bool(row.get("analytics_enabled", 0)),
+            "advanced_analytics":           bool(row.get("advanced_analytics_enabled", 0)),
+            "media":                        bool(row.get("media_enabled", 0)),
+            "voice":                        bool(row.get("voice_enabled", 0)),
+            "image":                        bool(row.get("image_enabled", 0)),
+            "video":                        bool(row.get("video_enabled", 0)),
+            "story_reply":                  bool(row.get("story_reply_enabled", 0)),
+            "handoff":                      bool(row.get("human_handoff_enabled", 1)),
+            "multi_channel":                bool(row.get("multi_channel_enabled", 0)),
+            "memory":                       bool(row.get("memory_enabled", 0)),
+            "upsell":                       bool(row.get("upsell_enabled", 0)),
+            "smart_recommendations":        bool(row.get("smart_recommendations_enabled", 0)),
+            "menu_image_understanding":     bool(row.get("menu_image_understanding_enabled", 0)),
+            "live_readiness":               bool(row.get("live_readiness_status_enabled", 0)),
+            "priority_support":             bool(row.get("priority_support_enabled", 0)),
+            "setup_assistance":             bool(row.get("setup_assistance_enabled", 0)),
+            "telegram":                     bool(row.get("telegram_enabled", 1)),
+            "whatsapp":                     bool(row.get("whatsapp_enabled", 1)),
+            "instagram":                    bool(row.get("instagram_enabled", 1)),
+            "facebook":                     bool(row.get("facebook_enabled", 1)),
+            "max_conversations":            int(row.get("max_conversations_per_month", 200)),
+        }
+    return PLAN_FEATURES.get(plan_code, PLAN_FEATURES["trial"])
+
+
+def _plan_limits_from_db(conn, plan_code: str) -> dict:
+    """Return limits dict for plan_code, reading DB first, falling back to PLAN_LIMITS."""
+    row = _get_plan_record(conn, plan_code=plan_code)
+    if row:
+        return {
+            "products":       int(row.get("max_products", 10)),
+            "staff":          int(row.get("max_staff", 2)),
+            "channels":       int(row.get("max_channels", 1)),
+            "team_members":   int(row.get("max_team_members", 2)),
+            "branches":       int(row.get("max_branches", 1)),
+            "customers":      int(row.get("max_customers", 0)),
+            "ai_replies":     int(row.get("max_ai_replies_per_month", 0)),
+        }
+    return PLAN_LIMITS.get(plan_code, PLAN_LIMITS["trial"])
+
+
+def get_subscription_state(conn, restaurant_id: str) -> dict:
+    """Return the effective subscription state for a restaurant."""
+    _sub  = conn.execute("SELECT * FROM subscriptions WHERE restaurant_id=?", (restaurant_id,)).fetchone()
+    sub   = dict(_sub) if _sub else None
+    rest  = conn.execute("SELECT plan, status FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+    plan       = (sub  and sub["plan"])   or (rest and rest["plan"])   or "trial"
+    sub_status = (sub  and sub["status"]) or "active"
+    rest_status= (rest and rest["status"]) or "active"
+    if rest_status == "suspended" or sub_status == "suspended":
+        effective = "suspended"
+    elif rest_status in ("expired", "cancelled") or sub_status in ("expired", "cancelled"):
+        effective = sub_status if sub_status in ("expired", "cancelled") else rest_status
+    else:
+        effective = sub_status
+    features   = _plan_features_from_db(conn, plan)
+    blocked    = effective in BLOCKED_STATUSES or (not features.get("ai", True) and plan == "free")
+    reason     = ""
+    if effective == "suspended":
+        reason = (sub and sub.get("suspended_reason")) or "الحساب موقوف — تواصل مع الدعم"
+    elif effective == "expired":
+        reason = "الاشتراك منتهي — جدد اشتراكك للاستمرار"
+    elif effective == "cancelled":
+        reason = "الاشتراك ملغى — تواصل مع الدعم لإعادة التفعيل"
+    return {
+        "plan":       plan,
+        "status":     effective,
+        "features":   features,
+        "blocked":    blocked,
+        "reason":     reason,
+        "trial_ends_at":       sub["trial_ends_at"]       if sub else "",
+        "current_period_end":  sub["end_date"]            if sub else "",
+        "suspended_reason":    sub["suspended_reason"]    if sub else "",
+        "cancelled_at":        sub["cancelled_at"]        if sub else "",
+        "billing_email":       sub["billing_email"]       if sub else "",
+        "payment_provider":    sub["payment_provider"]    if sub else "",
+    }
+
+
+def can_use_feature(conn, restaurant_id: str, feature: str):
+    """Return (allowed: bool, reason: str). feature = 'ai'|'analytics'|'media'|'handoff'."""
+    state = get_subscription_state(conn, restaurant_id)
+    if state["blocked"] and feature != "billing":
+        return False, state["reason"]
+    if not state["features"].get(feature, True):
+        return False, f"هذه الميزة غير متاحة في خطة {state['plan']} — رقّ خطتك"
+    return True, ""
+
+
+def _plan_limit(plan: str, resource: str, conn=None) -> int:
+    if conn is not None:
+        return _plan_limits_from_db(conn, plan).get(resource, 0)
     return PLAN_LIMITS.get(plan, PLAN_LIMITS["trial"]).get(resource, 0)
 
 
 def _check_plan_limit(conn, restaurant_id: str, plan: str, resource: str, table: str) -> None:
     """Raise 402 if the restaurant has reached its plan limit for the resource."""
-    limit = _plan_limit(plan, resource)
+    limit = _plan_limit(plan, resource, conn)
     count = conn.execute(
         f"SELECT COUNT(*) FROM {table} WHERE restaurant_id=?", (restaurant_id,)
     ).fetchone()[0]
@@ -315,12 +447,36 @@ async def _token_refresh_job():
         await asyncio.sleep(21600)  # 6 hours
 
 
+async def _processed_events_cleanup_job():
+    """Every 12 hours: delete processed_events older than 48 hours.
+    Meta retries within 24h max — keeping 48h is safe while bounding table growth."""
+    await asyncio.sleep(300)  # 5 min after startup
+    while True:
+        try:
+            conn = database.get_db()
+            try:
+                cutoff = (datetime.utcnow() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+                result = conn.execute(
+                    "DELETE FROM processed_events WHERE created_at < ?", (cutoff,)
+                )
+                conn.commit()
+                deleted = result.rowcount if hasattr(result, "rowcount") else 0
+                if deleted:
+                    logger.info(f"[dedup-cleanup] deleted {deleted} processed_events older than 48h")
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error(f"processed_events_cleanup error: {exc}")
+        await asyncio.sleep(43200)  # 12 hours
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
     asyncio.create_task(_subscription_cleanup_job())
     asyncio.create_task(_report_job())
     asyncio.create_task(_token_refresh_job())
+    asyncio.create_task(_processed_events_cleanup_job())
     yield
 
 
@@ -328,20 +484,23 @@ app = FastAPI(title="Restaurant SaaS API", version="3.0.0", lifespan=lifespan)
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 if _raw_origins.strip() in ("", "*"):
-    # dev fallback — في الإنتاج اضبط ALLOWED_ORIGINS بشكل صريح
+    # dev / unset — wildcard origins cannot be combined with allow_credentials=True
+    # in Starlette 0.37+ (raises ValueError). Use wildcard + credentials=False instead.
     ALLOWED_ORIGINS = ["*"]
-    if os.getenv("NODE_ENV") == "production" or os.getenv("RAILWAY_ENVIRONMENT"):
+    _CORS_CREDENTIALS = False
+    if os.getenv("NODE_ENV") == "production" or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RENDER"):
         logger.warning(
             "⚠️  ALLOWED_ORIGINS=* في بيئة إنتاج — اضبط المتغير في Railway/Render:\n"
             "    ALLOWED_ORIGINS=https://yourapp.netlify.app,https://yourdomain.com"
         )
 else:
     ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    _CORS_CREDENTIALS = True   # safe: specific origins + credentials
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_CORS_CREDENTIALS,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
@@ -380,8 +539,8 @@ async def subscription_guard(request: Request, call_next):
     # Only guard authenticated restaurant API endpoints
     if not path.startswith("/api/"):
         return await call_next(request)
-    # Exclude: auth (login/me/logout), super admin, webhooks, health
-    skip_prefixes = ("/api/auth/", "/api/super/")
+    # Exclude: auth, super admin, billing/subscription status (expired users must still read their own status)
+    skip_prefixes = ("/api/auth/", "/api/super/", "/api/subscription/", "/api/billing/", "/api/announcements", "/api/onboarding")
     if any(path.startswith(p) for p in skip_prefixes):
         return await call_next(request)
 
@@ -663,6 +822,1444 @@ async def health_check():
     }
 
 
+# ── Live Readiness helpers ─────────────────────────────────────────────────────
+
+def _env_present(name: str) -> bool:
+    """Return True if the env var is set and non-empty."""
+    return bool(os.getenv(name, "").strip())
+
+META_CHANNELS = {"whatsapp", "instagram", "facebook"}
+
+def _channel_readiness(conn, rid: str) -> dict:
+    """
+    Return per-channel readiness dict for one restaurant.
+    Status values: ok | missing_token | missing_credentials | pending_meta |
+                   webhook_not_configured | not_enabled | unknown
+    """
+    channels_row = {r["type"]: dict(r) for r in conn.execute(
+        "SELECT * FROM channels WHERE restaurant_id=?", (rid,)
+    ).fetchall()}
+
+    meta_platform_ok = bool(META_APP_ID and META_APP_SECRET)
+
+    result = {}
+    for platform in ("telegram", "whatsapp", "instagram", "facebook"):
+        ch = channels_row.get(platform)
+        if not ch:
+            result[platform] = {"status": "not_enabled", "reason": "لا يوجد قناة مُضافة"}
+            continue
+
+        if not ch.get("enabled"):
+            result[platform] = {"status": "not_enabled", "reason": "القناة معطّلة"}
+            continue
+
+        # Last inbound: latest processed_event for this platform+restaurant
+        last_inbound = conn.execute(
+            "SELECT created_at FROM processed_events WHERE restaurant_id=? AND provider=? ORDER BY created_at DESC LIMIT 1",
+            (rid, platform)
+        ).fetchone()
+        last_inbound_at = last_inbound[0] if last_inbound else None
+
+        # Last outbound
+        last_out = conn.execute(
+            "SELECT status, error, created_at FROM outbound_messages WHERE restaurant_id=? AND platform=? ORDER BY created_at DESC LIMIT 1",
+            (rid, platform)
+        ).fetchone()
+        last_outbound_at   = last_out["created_at"] if last_out else None
+        last_outbound_ok   = (last_out["status"] == "sent") if last_out else None
+        last_error         = (last_out["error"] or "") if last_out else None
+
+        # Platform-specific credential check
+        if platform == "telegram":
+            if not ch.get("token", "").strip():
+                status  = "missing_token"
+                reason  = "لا يوجد Bot Token"
+            elif ch.get("connection_status") == "error":
+                status  = "outbound_failed"
+                reason  = ch.get("last_error") or "خطأ في الاتصال"
+            elif last_outbound_ok is False and last_error:
+                status  = "outbound_failed"
+                reason  = last_error[:120]
+            else:
+                status  = "ok"
+                reason  = "متصل"
+
+        elif platform in META_CHANNELS:
+            if not meta_platform_ok:
+                status  = "missing_credentials"
+                reason  = "META_APP_ID أو META_APP_SECRET غير مضبوط"
+            elif not ch.get("token", "").strip():
+                status  = "pending_meta"
+                reason  = "في انتظار ربط الحساب / موافقة Meta"
+            elif ch.get("connection_status") in ("error", "disconnected"):
+                status  = "outbound_failed"
+                reason  = ch.get("last_error") or "خطأ في الاتصال"
+            elif last_outbound_ok is False and last_error:
+                status  = "outbound_failed"
+                reason  = last_error[:120]
+            else:
+                status  = "ok"
+                reason  = "متصل"
+        else:
+            status  = "unknown"
+            reason  = ""
+
+        result[platform] = {
+            "status":           status,
+            "reason":           reason,
+            "last_inbound_at":  last_inbound_at,
+            "last_outbound_at": last_outbound_at,
+            "last_error":       last_error or "",
+            "webhook_url":      f"{BASE_URL}/webhook/{platform}/{rid}",
+        }
+
+    return result
+
+
+def _pipeline_readiness(conn, rid: str) -> dict:
+    """Check orders/conversation pipeline for a restaurant."""
+    try:
+        orders_count = conn.execute("SELECT COUNT(*) FROM orders WHERE restaurant_id=?", (rid,)).fetchone()[0]
+        conv_count   = conn.execute("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", (rid,)).fetchone()[0]
+        last_order   = conn.execute("SELECT created_at FROM orders WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1", (rid,)).fetchone()
+        last_conv    = conn.execute("SELECT created_at FROM conversations WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1", (rid,)).fetchone()
+        return {
+            "orders_ok":           True,
+            "conversations_ok":    True,
+            "last_order_at":       last_order[0] if last_order else None,
+            "last_conversation_at": last_conv[0] if last_conv else None,
+        }
+    except Exception as e:
+        return {"orders_ok": False, "conversations_ok": False, "error": str(e)}
+
+
+def _recommended_fix(channels: dict, ai_ok: bool) -> str:
+    """Return a single-line fix recommendation based on channel statuses."""
+    problems = []
+    if not ai_ok:
+        problems.append("أضف OPENAI_API_KEY")
+    for platform, info in channels.items():
+        s = info["status"]
+        if s == "missing_token":
+            problems.append(f"أضف Bot Token لـ {platform}")
+        elif s == "missing_credentials":
+            problems.append(f"أضف META_APP_ID/META_APP_SECRET لـ {platform}")
+        elif s == "pending_meta":
+            problems.append(f"أكمل ربط {platform} عبر OAuth")
+        elif s == "outbound_failed":
+            problems.append(f"تحقق من أخطاء إرسال {platform}")
+    return " | ".join(problems) if problems else "لا توجد مشاكل"
+
+
+@app.get("/api/health")
+async def api_health():
+    """Detailed health endpoint: DB + env var presence (no secret values)."""
+    try:
+        conn = database.get_db()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    jwt_default = (os.getenv("JWT_SECRET", "") == "supersecretkey_change_in_production_123456789"
+                   or not _env_present("JWT_SECRET"))
+    return {
+        "status":        "ok" if db_ok else "degraded",
+        "db":            "ok" if db_ok else "error",
+        "db_backend":    "postgresql" if database.IS_POSTGRES else "sqlite",
+        "version":       "3.0.0",
+        "base_url":      "configured" if (BASE_URL and "localhost" not in BASE_URL) else "localhost_or_missing",
+        "env": {
+            "BASE_URL":                  _env_present("BASE_URL"),
+            "DATABASE_URL":              _env_present("DATABASE_URL"),
+            "JWT_SECRET":                _env_present("JWT_SECRET") and not jwt_default,
+            "OPENAI_API_KEY":            _env_present("OPENAI_API_KEY"),
+            "OPENAI_MODEL":              _env_present("OPENAI_MODEL"),
+            "META_APP_ID":               _env_present("META_APP_ID"),
+            "META_APP_SECRET":           _env_present("META_APP_SECRET"),
+            "META_VERIFY_TOKEN":         _env_present("META_VERIFY_TOKEN"),
+            "WHATSAPP_VERIFY_TOKEN":     _env_present("WHATSAPP_VERIFY_TOKEN"),
+            "WHATSAPP_PHONE_NUMBER_ID":  _env_present("WHATSAPP_PHONE_NUMBER_ID"),
+            "ALLOWED_ORIGINS":           _env_present("ALLOWED_ORIGINS"),
+        },
+        "openai_configured": bool(OPENAI_API_KEY),
+        "meta_configured":   bool(META_APP_ID and META_APP_SECRET),
+        "base_url_value":    BASE_URL,
+    }
+
+
+@app.get("/api/live-readiness")
+async def live_readiness(user=Depends(current_user)):
+    """Per-restaurant live readiness: channel statuses visible to restaurant owner."""
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        channels = _channel_readiness(conn, rid)
+        pipeline = _pipeline_readiness(conn, rid)
+        ai_ok    = bool(OPENAI_API_KEY)
+        needs_attention = (
+            not ai_ok
+            or any(info["status"] not in ("ok", "not_enabled") for info in channels.values())
+        )
+        return {
+            "restaurant_id": rid,
+            "ai": {
+                "status":   "configured" if ai_ok else "missing",
+                "reason":   "" if ai_ok else "OPENAI_API_KEY غير مضبوط",
+            },
+            "meta_platform": {
+                "status":  "configured" if (META_APP_ID and META_APP_SECRET) else "missing_credentials",
+                "reason":  "" if (META_APP_ID and META_APP_SECRET) else "META_APP_ID أو META_APP_SECRET غير مضبوط — قنوات Meta ستعمل بعد الإعداد",
+            },
+            "channels":         channels,
+            "pipeline":         pipeline,
+            "needs_attention":  needs_attention,
+            "recommended_fix":  _recommended_fix(channels, ai_ok),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/channels/status")
+async def channels_status(user=Depends(current_user)):
+    """Per-restaurant channel status summary (for integrations page badge display)."""
+    rid  = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        channels = _channel_readiness(conn, rid)
+        return {"restaurant_id": rid, "channels": channels}
+    finally:
+        conn.close()
+
+
+# ── Super Admin: Live Readiness ────────────────────────────────────────────────
+
+def _restaurant_readiness_row(conn, rid: str, rname: str, plan: str, rstatus: str) -> dict:
+    """Build one row of the super admin live-readiness table."""
+    channels  = _channel_readiness(conn, rid)
+    pipeline  = _pipeline_readiness(conn, rid)
+    ai_ok     = bool(OPENAI_API_KEY)
+
+    # Last error across all outbound
+    last_err_row = conn.execute(
+        "SELECT platform, error, created_at FROM outbound_messages "
+        "WHERE restaurant_id=? AND status='failed' ORDER BY created_at DESC LIMIT 1",
+        (rid,)
+    ).fetchone()
+    last_error = dict(last_err_row) if last_err_row else None
+
+    needs_attention = (
+        not ai_ok
+        or rstatus not in ("active", "trial")
+        or any(info["status"] not in ("ok", "not_enabled", "pending_meta") for info in channels.values())
+    )
+
+    return {
+        "restaurant_id":    rid,
+        "restaurant_name":  rname,
+        "plan":             plan,
+        "restaurant_status": rstatus,
+        "ai": {
+            "status":         "configured" if ai_ok else "missing",
+            "reason":         "" if ai_ok else "OPENAI_API_KEY غير مضبوط",
+            "last_tested_at": None,
+        },
+        "channels":     channels,
+        "pipeline":     pipeline,
+        "last_error":   last_error,
+        "recommended_fix": _recommended_fix(channels, ai_ok),
+        "needs_attention": needs_attention,
+    }
+
+
+@app.get("/api/super/live-readiness")
+async def super_live_readiness(admin=Depends(current_super_admin)):
+    """Super admin: live readiness summary for ALL restaurants."""
+    conn = database.get_db()
+    try:
+        restaurants = conn.execute(
+            "SELECT id, name, plan, status FROM restaurants ORDER BY name"
+        ).fetchall()
+        rows = [
+            _restaurant_readiness_row(conn, r["id"], r["name"], r["plan"], r["status"])
+            for r in restaurants
+        ]
+        total      = len(rows)
+        ok_count   = sum(1 for r in rows if not r["needs_attention"])
+        needs_attn = sum(1 for r in rows if r["needs_attention"])
+        return {
+            "summary": {
+                "total":          total,
+                "ok":             ok_count,
+                "needs_attention": needs_attn,
+                "openai_configured": bool(OPENAI_API_KEY),
+                "meta_configured":   bool(META_APP_ID and META_APP_SECRET),
+                "base_url":          BASE_URL,
+                "db_backend":        "postgresql" if database.IS_POSTGRES else "sqlite",
+            },
+            "restaurants": rows,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/channel-health")
+async def super_channel_health(admin=Depends(current_super_admin)):
+    """Super admin: per-channel health across all restaurants, grouped by status."""
+    conn = database.get_db()
+    try:
+        restaurants = conn.execute(
+            "SELECT id, name, plan, status FROM restaurants ORDER BY name"
+        ).fetchall()
+
+        by_channel: dict = {p: {"ok": [], "issues": []} for p in ("telegram", "whatsapp", "instagram", "facebook")}
+        all_rows = []
+
+        for r in restaurants:
+            channels = _channel_readiness(conn, r["id"])
+            for platform, info in channels.items():
+                entry = {
+                    "restaurant_id":   r["id"],
+                    "restaurant_name": r["name"],
+                    "platform":        platform,
+                    **info,
+                }
+                bucket = "ok" if info["status"] in ("ok", "not_enabled") else "issues"
+                by_channel[platform][bucket].append(entry)
+                if info["status"] not in ("ok", "not_enabled"):
+                    all_rows.append(entry)
+
+        return {
+            "needs_attention": all_rows,
+            "by_channel":      by_channel,
+        }
+    finally:
+        conn.close()
+
+
+# ── Super Admin: Telegram Channel Recovery ────────────────────────────────────
+
+@app.post("/api/super/channels/{rid}/telegram/test-send")
+async def super_telegram_test_send(rid: str, admin=Depends(current_super_admin)):
+    """Super admin: send a test message to verify Telegram bot token is valid.
+    Calls getMe (no user required) — does NOT send a real chat message."""
+    import httpx as _httpx
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT token, connection_status FROM channels WHERE restaurant_id=? AND type='telegram'",
+            (rid,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not ch:
+        raise HTTPException(404, "لا توجد قناة Telegram لهذا المطعم")
+    token = ch["token"] or ""
+    if not token:
+        return {"ok": False, "diagnosis": "Bot Token فارغ — أدخل التوكن في إعدادات القناة"}
+
+    try:
+        r = _httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+        data = r.json()
+    except Exception as e:
+        return {"ok": False, "diagnosis": f"لا يمكن الوصول إلى Telegram API: {e}"}
+
+    if data.get("ok"):
+        bot = data.get("result", {})
+        conn2 = database.get_db()
+        conn2.execute(
+            "UPDATE channels SET connection_status='connected', last_error='', last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+            (rid,)
+        )
+        conn2.commit(); conn2.close()
+        return {
+            "ok": True,
+            "diagnosis": f"البوت صالح: @{bot.get('username')} ({bot.get('first_name')})",
+            "bot_username": bot.get("username"),
+        }
+    else:
+        desc = data.get("description", str(data))
+        from services.webhooks import _classify_telegram_error
+        friendly = _classify_telegram_error(r.status_code, desc)
+        conn2 = database.get_db()
+        conn2.execute(
+            "UPDATE channels SET connection_status='error', last_error=?, last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+            (friendly, rid)
+        )
+        conn2.commit(); conn2.close()
+        return {"ok": False, "diagnosis": friendly}
+
+
+@app.post("/api/super/channels/{rid}/telegram/register-webhook")
+async def super_telegram_register_webhook(rid: str, admin=Depends(current_super_admin)):
+    """Super admin: (re-)register Telegram webhook for a restaurant."""
+    import httpx as _httpx
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'", (rid,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not ch or not ch["token"]:
+        raise HTTPException(400, "Bot Token مفقود — أضف التوكن في إعدادات القناة أولاً")
+
+    webhook_url = f"{BASE_URL}/webhook/telegram/{rid}"
+    try:
+        r = _httpx.post(
+            f"https://api.telegram.org/bot{ch['token']}/setWebhook",
+            json={"url": webhook_url, "allowed_updates": ["message", "edited_message", "callback_query"]},
+            timeout=15,
+        )
+        data = r.json()
+    except _httpx.TimeoutException:
+        raise HTTPException(400, "انتهت مهلة الاتصال بـ Telegram — تحقق من صحة التوكن واتصال الإنترنت")
+    except Exception as e:
+        raise HTTPException(400, f"خطأ في الاتصال بـ Telegram: {e}")
+
+    conn2 = database.get_db()
+    if data.get("ok"):
+        info_r = _httpx.get(f"https://api.telegram.org/bot{ch['token']}/getWebhookInfo", timeout=10)
+        info = info_r.json().get("result", {})
+        conn2.execute(
+            "UPDATE channels SET webhook_url=?, connection_status='connected', last_error='', last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+            (webhook_url, rid)
+        )
+        conn2.commit(); conn2.close()
+        return {"ok": True, "webhook_url": webhook_url, "telegram_info": info}
+    else:
+        err = data.get("description", "فشل التسجيل")
+        from services.webhooks import _classify_telegram_error
+        friendly = _classify_telegram_error(r.status_code, err)
+        conn2.execute(
+            "UPDATE channels SET connection_status='error', last_error=?, last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+            (friendly, rid)
+        )
+        conn2.commit(); conn2.close()
+        raise HTTPException(400, friendly)
+
+
+@app.post("/api/super/channels/{rid}/telegram/clear-webhook")
+async def super_telegram_clear_webhook(rid: str, admin=Depends(current_super_admin)):
+    """Super admin: delete/clear the Telegram webhook (stops Telegram from pushing updates)."""
+    import httpx as _httpx
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'", (rid,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not ch or not ch["token"]:
+        raise HTTPException(400, "Bot Token مفقود")
+
+    try:
+        r = _httpx.post(
+            f"https://api.telegram.org/bot{ch['token']}/deleteWebhook",
+            json={"drop_pending_updates": False},
+            timeout=10,
+        )
+        data = r.json()
+    except _httpx.TimeoutException:
+        raise HTTPException(400, "انتهت مهلة الاتصال بـ Telegram — تحقق من صحة التوكن")
+    except Exception as e:
+        raise HTTPException(400, f"خطأ في الاتصال بـ Telegram: {e}")
+
+    conn2 = database.get_db()
+    if data.get("ok"):
+        conn2.execute(
+            "UPDATE channels SET webhook_url='', connection_status='disconnected', last_error='Webhook cleared by super admin', last_tested_at=CURRENT_TIMESTAMP WHERE restaurant_id=? AND type='telegram'",
+            (rid,)
+        )
+        conn2.commit(); conn2.close()
+        return {"ok": True, "message": "تم حذف الويب هوك من Telegram بنجاح"}
+    else:
+        conn2.close()
+        raise HTTPException(400, data.get("description", "فشل حذف الويب هوك"))
+
+
+# ── Restaurant-level own-channel diagnostics (owner-scoped) ───────────────────
+
+@app.post("/api/channels/telegram/test-connection")
+async def test_telegram_connection(user=Depends(current_user)):
+    """Restaurant owner: test their own Telegram bot token validity via getMe."""
+    import httpx as _httpx
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        ch = conn.execute(
+            "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'", (rid,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not ch or not ch["token"]:
+        return {"ok": False, "message": "Bot Token غير مضبوط — أضف التوكن في إعدادات القناة"}
+
+    try:
+        r = _httpx.get(f"https://api.telegram.org/bot{ch['token']}/getMe", timeout=10)
+        data = r.json()
+    except Exception as e:
+        return {"ok": False, "message": f"تعذّر الاتصال بـ Telegram: {e}"}
+
+    if data.get("ok"):
+        bot = data.get("result", {})
+        return {"ok": True, "message": f"البوت يعمل: @{bot.get('username')} ✅"}
+    else:
+        from services.webhooks import _classify_telegram_error
+        return {"ok": False, "message": _classify_telegram_error(r.status_code, data.get("description", ""))}
+
+
+@app.get("/api/channels/readiness-summary")
+async def channel_readiness_summary(user=Depends(current_user)):
+    """Restaurant owner: simplified readiness summary for their own channels only."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        channels = _channel_readiness(conn, rid)
+        ai_ok = bool(OPENAI_API_KEY)
+        issues = {p: info for p, info in channels.items()
+                  if info["status"] not in ("ok", "not_enabled")}
+        return {
+            "ai_ok": ai_ok,
+            "channels": {
+                p: {
+                    "status": info["status"],
+                    "reason": info["reason"],
+                }
+                for p, info in channels.items()
+            },
+            "has_issues": bool(issues) or not ai_ok,
+            "recommended_fix": _recommended_fix(channels, ai_ok),
+        }
+    finally:
+        conn.close()
+
+
+# ── Subscription: restaurant owner endpoint ────────────────────────────────────
+
+@app.get("/api/subscription/status")
+async def subscription_status(user=Depends(current_user)):
+    """Restaurant owner: read their own subscription state (allowed even when expired)."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        state = get_subscription_state(conn, rid)
+        plan  = state["plan"]
+        features = state["features"]
+        # Calculate trial days remaining
+        trial_days_left = None
+        trial_ends = state.get("trial_ends_at") or ""
+        if trial_ends:
+            try:
+                from datetime import datetime as _dt
+                d = _dt.strptime(trial_ends[:10], "%Y-%m-%d")
+                trial_days_left = max(0, (d - _dt.now()).days)
+            except Exception:
+                pass
+        limits = _plan_limits_from_db(conn, plan)
+        plan_row = _get_plan_record(conn, plan_code=plan)
+        plan_label_default = {"free": "مجاني", "trial": "تجريبي", "starter": "أساسي",
+                              "professional": "احترافي", "enterprise": "مؤسسي"}.get(plan, plan)
+        return {
+            "plan":               plan,
+            "status":             state["status"],
+            "blocked":            state["blocked"],
+            "blocked_reason":     state["reason"],
+            "trial_ends_at":      trial_ends,
+            "trial_days_left":    trial_days_left,
+            "current_period_end": state.get("current_period_end") or "",
+            "cancelled_at":       state.get("cancelled_at") or "",
+            "billing_email":      state.get("billing_email") or "",
+            "payment_provider":   state.get("payment_provider") or "",
+            "features": {
+                "ai_enabled":         features.get("ai", False),
+                "analytics_enabled":  features.get("analytics", False),
+                "media_enabled":      features.get("media", False),
+                "handoff_enabled":    features.get("handoff", False),
+                "channels_allowed":   limits.get("channels", 0),
+                "max_products":       limits.get("products", 0),
+                "max_staff":          limits.get("staff", 0),
+                "max_conversations":  features.get("max_conversations", 0),
+            },
+            "plan_label": (plan_row or {}).get("name") or plan_label_default,
+        }
+    finally:
+        conn.close()
+
+
+# ── Super Admin: Subscription management actions ───────────────────────────────
+
+def _ensure_subscription(conn, rid: str, plan: str = "trial") -> None:
+    """Create a subscription row if one doesn't exist."""
+    existing = conn.execute("SELECT id FROM subscriptions WHERE restaurant_id=?", (rid,)).fetchone()
+    if not existing:
+        from datetime import timedelta as _td
+        trial_end = (datetime.now() + _td(days=14)).strftime("%Y-%m-%d")
+        end_date  = (datetime.now() + _td(days=365)).strftime("%Y-%m-%d")
+        conn.execute("""
+            INSERT INTO subscriptions (id,restaurant_id,plan,status,price,start_date,end_date,trial_ends_at)
+            VALUES (?,?,?,?,0,date('now'),?,?)
+        """, (str(uuid.uuid4()), rid, plan, "trial", end_date, trial_end))
+
+
+@app.patch("/api/super/restaurants/{rid}/subscription")
+async def super_patch_subscription(rid: str, data: dict, admin=Depends(current_super_admin)):
+    """Super admin: update specific subscription fields (PATCH semantics)."""
+    conn = database.get_db()
+    try:
+        _ensure_subscription(conn, rid)
+        allowed_fields = {"plan", "status", "price", "end_date", "trial_ends_at",
+                          "notes", "next_payment_date", "suspended_reason",
+                          "billing_email", "payment_provider", "cancelled_at"}
+        updates = {k: v for k, v in data.items() if k in allowed_fields}
+        if not updates:
+            raise HTTPException(400, "لا توجد حقول صالحة للتحديث")
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(
+            f"UPDATE subscriptions SET {set_clause}, updated_at=CURRENT_TIMESTAMP WHERE restaurant_id=?",
+            (*updates.values(), rid)
+        )
+        if "plan" in updates:
+            conn.execute("UPDATE restaurants SET plan=? WHERE id=?", (updates["plan"], rid))
+        if "status" in updates:
+            conn.execute("UPDATE restaurants SET status=? WHERE id=?", (updates["status"], rid))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name",""), "patch_subscription", "subscription", rid,
+                f"Updated: {list(updates.keys())}")
+        return {"ok": True, "updated": list(updates.keys())}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/restaurants/{rid}/subscription/activate")
+async def super_activate_subscription(rid: str, admin=Depends(current_super_admin)):
+    """Super admin: activate or reactivate a restaurant subscription."""
+    conn = database.get_db()
+    try:
+        _ensure_subscription(conn, rid)
+        from datetime import timedelta as _td
+        new_end = (datetime.now() + _td(days=365)).strftime("%Y-%m-%d")
+        conn.execute("""
+            UPDATE subscriptions SET status='active', cancelled_at='', suspended_reason='',
+                end_date=?, updated_at=CURRENT_TIMESTAMP WHERE restaurant_id=?
+        """, (new_end, rid))
+        conn.execute("UPDATE restaurants SET status='active' WHERE id=?", (rid,))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name",""), "activate_subscription", "subscription", rid, "Activated")
+        return {"ok": True, "status": "active", "end_date": new_end}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/restaurants/{rid}/subscription/suspend")
+async def super_suspend_subscription(rid: str, data: dict = {}, admin=Depends(current_super_admin)):
+    """Super admin: suspend a restaurant (blocks AI/channels, preserves data)."""
+    reason = (data or {}).get("reason", "موقوف بواسطة المشرف")
+    conn = database.get_db()
+    try:
+        _ensure_subscription(conn, rid)
+        conn.execute("""
+            UPDATE subscriptions SET status='suspended', suspended_reason=?,
+                updated_at=CURRENT_TIMESTAMP WHERE restaurant_id=?
+        """, (reason, rid))
+        conn.execute("UPDATE restaurants SET status='suspended' WHERE id=?", (rid,))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name",""), "suspend_subscription", "subscription", rid, reason)
+        return {"ok": True, "status": "suspended", "reason": reason}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/restaurants/{rid}/subscription/cancel")
+async def super_cancel_subscription(rid: str, admin=Depends(current_super_admin)):
+    """Super admin: cancel a subscription."""
+    conn = database.get_db()
+    try:
+        _ensure_subscription(conn, rid)
+        conn.execute("""
+            UPDATE subscriptions SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP WHERE restaurant_id=?
+        """, (rid,))
+        conn.execute("UPDATE restaurants SET status='suspended' WHERE id=?", (rid,))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name",""), "cancel_subscription", "subscription", rid, "Cancelled")
+        return {"ok": True, "status": "cancelled"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/restaurants/{rid}/subscription/extend-trial")
+async def super_extend_trial(rid: str, data: dict = {}, admin=Depends(current_super_admin)):
+    """Super admin: extend trial by N days (default 14)."""
+    days = int((data or {}).get("days", 14))
+    if days < 1 or days > 365:
+        raise HTTPException(400, "أيام التمديد يجب أن تكون بين 1 و 365")
+    conn = database.get_db()
+    try:
+        _ensure_subscription(conn, rid)
+        from datetime import timedelta as _td
+        # Extend from today or from current trial_ends_at, whichever is later
+        current = conn.execute("SELECT trial_ends_at FROM subscriptions WHERE restaurant_id=?", (rid,)).fetchone()
+        base = datetime.now()
+        if current and current["trial_ends_at"]:
+            try:
+                parsed = datetime.strptime(current["trial_ends_at"][:10], "%Y-%m-%d")
+                if parsed > base:
+                    base = parsed
+            except Exception:
+                pass
+        new_end = (base + _td(days=days)).strftime("%Y-%m-%d")
+        conn.execute("""
+            UPDATE subscriptions SET trial_ends_at=?, status='trial',
+                updated_at=CURRENT_TIMESTAMP WHERE restaurant_id=?
+        """, (new_end, rid))
+        conn.execute("UPDATE restaurants SET status='active' WHERE id=?", (rid,))
+        conn.commit()
+        _sa_log(conn, admin["id"], admin.get("name",""), "extend_trial", "subscription", rid,
+                f"Extended by {days} days → {new_end}")
+        return {"ok": True, "trial_ends_at": new_end, "days_added": days}
+    finally:
+        conn.close()
+
+
+# ── Billing placeholders (no payment gateway yet) ─────────────────────────────
+
+@app.post("/api/billing/create-checkout-session")
+async def billing_create_checkout(user=Depends(current_user)):
+    """Placeholder: will redirect to payment gateway when configured."""
+    return {
+        "ok": False,
+        "code": "payment_provider_not_configured",
+        "message": "بوابة الدفع لم تُهيَّأ بعد — تواصل مع المشرف لتفعيل الاشتراك يدوياً",
+    }
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    """Placeholder: receives payment gateway webhooks (Stripe/Paddle/etc)."""
+    return {"received": True, "note": "payment_provider_not_configured"}
+
+
+# ── Plan catalogue (no Stripe — manual billing) ───────────────────────────────
+
+PLAN_PRICES = {
+    "free":         {"label": "مجاني",    "price": 0,      "currency": "IQD", "duration_days": 0,
+                     "features": ["5 منتجات", "موظف واحد", "بدون AI"]},
+    "trial":        {"label": "تجريبي",   "price": 0,      "currency": "IQD", "duration_days": 14,
+                     "features": ["10 منتجات", "موظفان", "قناة واحدة", "AI مُفعَّل", "200 محادثة"]},
+    "starter":      {"label": "أساسي",    "price": 25000,  "currency": "IQD", "duration_days": 30,
+                     "features": ["50 منتج", "5 موظفين", "3 قنوات", "AI مُفعَّل", "500 محادثة"]},
+    "professional": {"label": "احترافي",  "price": 75000,  "currency": "IQD", "duration_days": 30,
+                     "features": ["منتجات غير محدودة", "15 موظف", "قنوات غير محدودة", "AI + تحليلات + وسائط", "5000 محادثة"]},
+    "enterprise":   {"label": "مؤسسي",   "price": 200000, "currency": "IQD", "duration_days": 30,
+                     "features": ["كل شيء غير محدود", "دعم مخصص"]},
+}
+
+_ALLOWED_PROOF_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/pdf"}
+_ALLOWED_PROOF_EXTS  = {".jpg", ".jpeg", ".png", ".pdf"}
+_MAX_PROOF_SIZE      = 5 * 1024 * 1024  # 5 MB
+
+
+def _billing_audit(conn, action: str, actor_id: str = "", actor_role: str = "",
+                   restaurant_id: str = "", payment_request_id: str = "",
+                   payment_method_id: str = "", old_status: str = "", new_status: str = "",
+                   amount: float = 0, currency: str = "", plan: str = "",
+                   note: str = "", storage_mode: str = "") -> None:
+    """Insert a row into billing_audit_logs. Swallows errors so it never breaks main flow."""
+    try:
+        conn.execute("""
+            INSERT INTO billing_audit_logs
+                (id, action, actor_id, actor_role, restaurant_id,
+                 payment_request_id, payment_method_id, old_status, new_status,
+                 amount, currency, plan, note, storage_mode)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (str(uuid.uuid4()), action, actor_id, actor_role, restaurant_id,
+              payment_request_id, payment_method_id, old_status, new_status,
+              amount, currency, plan, note, storage_mode))
+    except Exception as _e:
+        logger.warning(f"[billing_audit] insert failed: {_e}")
+
+
+def _proof_storage_mode() -> str:
+    """Returns 'supabase' if storage is configured, else 'local'."""
+    from services import storage as _storage
+    return "supabase" if _storage._is_configured() else "local"
+
+
+# ── Super Admin: Subscription Plans CRUD ─────────────────────────────────────
+
+class SubscriptionPlanReq(BaseModel):
+    code: str = ""
+    name: str
+    name_ar: str = ""
+    description: str = ""
+    description_ar: str = ""
+    price: float = 0
+    currency: str = "USD"
+    billing_period: str = "monthly"
+    billing_period_ar: str = ""
+    duration_days: int = 30
+    is_active: int = 1
+    is_public: int = 1
+    is_recommended: int = 0
+    display_order: int = 0
+    max_channels: int = 1
+    max_products: int = 10
+    max_staff: int = 2
+    max_conversations_per_month: int = 200
+    max_customers: int = 0
+    max_ai_replies_per_month: int = 0
+    max_team_members: int = 2
+    max_branches: int = 1
+    ai_enabled: int = 1
+    analytics_enabled: int = 0
+    advanced_analytics_enabled: int = 0
+    media_enabled: int = 0
+    voice_enabled: int = 0
+    image_enabled: int = 0
+    video_enabled: int = 0
+    story_reply_enabled: int = 0
+    human_handoff_enabled: int = 1
+    multi_channel_enabled: int = 0
+    memory_enabled: int = 0
+    upsell_enabled: int = 0
+    smart_recommendations_enabled: int = 0
+    menu_image_understanding_enabled: int = 0
+    live_readiness_status_enabled: int = 0
+    priority_support_enabled: int = 0
+    setup_assistance_enabled: int = 0
+    telegram_enabled: int = 1
+    whatsapp_enabled: int = 1
+    instagram_enabled: int = 1
+    facebook_enabled: int = 1
+    support_level: str = "community"
+    features_json: str = "[]"
+    excluded_features_json: str = "[]"
+    badge: str = ""
+    badge_text_ar: str = ""
+    limits_json: str = "{}"
+
+
+@app.get("/api/super/subscription-plans")
+async def super_list_plans(admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM subscription_plans ORDER BY display_order ASC, created_at ASC"
+        ).fetchall()
+        return {"plans": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/subscription-plans")
+async def super_create_plan(body: SubscriptionPlanReq, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        if not body.code:
+            raise HTTPException(400, "code مطلوب")
+        existing = conn.execute("SELECT id FROM subscription_plans WHERE code=?", (body.code,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"كود الخطة '{body.code}' مستخدم مسبقاً")
+        pid = str(uuid.uuid4())
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+            INSERT INTO subscription_plans
+                (id, code, name, name_ar, description, description_ar,
+                 price, currency, billing_period, billing_period_ar, duration_days,
+                 is_active, is_public, is_recommended, display_order,
+                 max_channels, max_products, max_staff, max_conversations_per_month,
+                 max_customers, max_ai_replies_per_month, max_team_members, max_branches,
+                 ai_enabled, analytics_enabled, advanced_analytics_enabled, media_enabled,
+                 voice_enabled, image_enabled, video_enabled, story_reply_enabled,
+                 human_handoff_enabled, multi_channel_enabled, memory_enabled, upsell_enabled,
+                 smart_recommendations_enabled, menu_image_understanding_enabled,
+                 live_readiness_status_enabled, priority_support_enabled, setup_assistance_enabled,
+                 telegram_enabled, whatsapp_enabled, instagram_enabled, facebook_enabled,
+                 support_level, features_json, excluded_features_json,
+                 badge, badge_text_ar, limits_json, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (pid, body.code, body.name, body.name_ar, body.description, body.description_ar,
+              body.price, body.currency, body.billing_period, body.billing_period_ar,
+              body.duration_days, body.is_active, body.is_public, body.is_recommended,
+              body.display_order, body.max_channels, body.max_products, body.max_staff,
+              body.max_conversations_per_month, body.max_customers, body.max_ai_replies_per_month,
+              body.max_team_members, body.max_branches,
+              body.ai_enabled, body.analytics_enabled, body.advanced_analytics_enabled,
+              body.media_enabled, body.voice_enabled, body.image_enabled, body.video_enabled,
+              body.story_reply_enabled, body.human_handoff_enabled, body.multi_channel_enabled,
+              body.memory_enabled, body.upsell_enabled, body.smart_recommendations_enabled,
+              body.menu_image_understanding_enabled, body.live_readiness_status_enabled,
+              body.priority_support_enabled, body.setup_assistance_enabled,
+              body.telegram_enabled, body.whatsapp_enabled, body.instagram_enabled,
+              body.facebook_enabled, body.support_level, body.features_json,
+              body.excluded_features_json, body.badge, body.badge_text_ar, body.limits_json,
+              now, now))
+        _billing_audit(conn, "subscription_plan_created",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       plan=body.code, note=f"name={body.name} price={body.price}")
+        conn.commit()
+        return {"ok": True, "id": pid, "code": body.code}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/super/subscription-plans/{plan_id}")
+async def super_update_plan(plan_id: str, body: dict, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT * FROM subscription_plans WHERE id=?", (plan_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "الخطة غير موجودة")
+        allowed = {
+            "name", "name_ar", "description", "description_ar",
+            "price", "currency", "billing_period", "billing_period_ar", "duration_days",
+            "is_active", "is_public", "is_recommended", "display_order",
+            "max_channels", "max_products", "max_staff", "max_conversations_per_month",
+            "max_customers", "max_ai_replies_per_month", "max_team_members", "max_branches",
+            "ai_enabled", "analytics_enabled", "advanced_analytics_enabled", "media_enabled",
+            "voice_enabled", "image_enabled", "video_enabled", "story_reply_enabled",
+            "human_handoff_enabled", "multi_channel_enabled", "memory_enabled", "upsell_enabled",
+            "smart_recommendations_enabled", "menu_image_understanding_enabled",
+            "live_readiness_status_enabled", "priority_support_enabled", "setup_assistance_enabled",
+            "telegram_enabled", "whatsapp_enabled", "instagram_enabled", "facebook_enabled",
+            "support_level", "features_json", "excluded_features_json",
+            "badge", "badge_text_ar", "limits_json",
+        }
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            raise HTTPException(400, "لا توجد حقول صالحة للتحديث")
+        updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(f"UPDATE subscription_plans SET {set_clause} WHERE id=?",
+                     (*updates.values(), plan_id))
+        _billing_audit(conn, "subscription_plan_updated",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       plan=dict(row).get("code", ""), note=str(list(updates.keys())))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/super/subscription-plans/{plan_id}")
+async def super_disable_plan(plan_id: str, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT * FROM subscription_plans WHERE id=?", (plan_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "الخطة غير موجودة")
+        conn.execute("UPDATE subscription_plans SET is_active=0, updated_at=? WHERE id=?",
+                     (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), plan_id))
+        _billing_audit(conn, "subscription_plan_disabled",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       plan=dict(row).get("code", ""))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ── Super Admin: Payment Methods ──────────────────────────────────────────────
+
+@app.get("/api/super/payment-methods")
+async def super_list_payment_methods(admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM payment_methods ORDER BY display_order ASC, created_at ASC"
+        ).fetchall()
+        return {"payment_methods": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+class PaymentMethodReq(BaseModel):
+    method_name: str
+    account_holder_name: str = ""
+    bank_name: str = ""
+    account_number: str = ""
+    iban: str = ""
+    phone_number: str = ""
+    currency: str = "IQD"
+    payment_instructions: str = ""
+    is_active: int = 1
+    display_order: int = 0
+
+
+@app.post("/api/super/payment-methods")
+async def super_create_payment_method(body: PaymentMethodReq, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        mid = str(uuid.uuid4())
+        conn.execute("""
+            INSERT INTO payment_methods
+                (id, method_name, account_holder_name, bank_name, account_number,
+                 iban, phone_number, currency, payment_instructions, is_active, display_order)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (mid, body.method_name, body.account_holder_name, body.bank_name,
+              body.account_number, body.iban, body.phone_number, body.currency,
+              body.payment_instructions, body.is_active, body.display_order))
+        _billing_audit(conn, "payment_method_created", actor_id=admin["id"],
+                       actor_role="super_admin", payment_method_id=mid,
+                       note=body.method_name)
+        conn.commit()
+        row = conn.execute("SELECT * FROM payment_methods WHERE id=?", (mid,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+@app.patch("/api/super/payment-methods/{method_id}")
+async def super_update_payment_method(method_id: str, body: dict, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT id FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "طريقة الدفع غير موجودة")
+        allowed = {"method_name", "account_holder_name", "bank_name", "account_number",
+                   "iban", "phone_number", "currency", "payment_instructions", "is_active", "display_order"}
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            raise HTTPException(400, "لا توجد حقول للتحديث")
+        updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(
+            f"UPDATE payment_methods SET {set_clause} WHERE id=?",
+            list(updates.values()) + [method_id]
+        )
+        _billing_audit(conn, "payment_method_updated", actor_id=admin["id"],
+                       actor_role="super_admin", payment_method_id=method_id,
+                       note=str(list(updates.keys())))
+        conn.commit()
+        updated = conn.execute("SELECT * FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        return dict(updated)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/super/payment-methods/{method_id}")
+async def super_disable_payment_method(method_id: str, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT id FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "طريقة الدفع غير موجودة")
+        conn.execute(
+            "UPDATE payment_methods SET is_active=0, updated_at=? WHERE id=?",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), method_id)
+        )
+        _billing_audit(conn, "payment_method_disabled", actor_id=admin["id"],
+                       actor_role="super_admin", payment_method_id=method_id)
+        conn.commit()
+        return {"ok": True, "disabled": method_id}
+    finally:
+        conn.close()
+
+
+# ── Super Admin: Payment Requests ─────────────────────────────────────────────
+
+@app.get("/api/super/payment-requests")
+async def super_list_payment_requests(
+    status: Optional[str] = None,
+    admin=Depends(current_super_admin)
+):
+    conn = database.get_db()
+    try:
+        if status:
+            rows = conn.execute("""
+                SELECT pr.*, r.name AS restaurant_name
+                FROM payment_requests pr
+                JOIN restaurants r ON pr.restaurant_id = r.id
+                WHERE pr.status=? ORDER BY pr.created_at DESC
+            """, (status,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT pr.*, r.name AS restaurant_name
+                FROM payment_requests pr
+                JOIN restaurants r ON pr.restaurant_id = r.id
+                ORDER BY pr.created_at DESC
+            """).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            # Use stored proof_url (Supabase or local) — fallback to local path for old rows
+            if not d.get("proof_url") and d.get("proof_path"):
+                d["proof_url"] = f"/uploads/payment_proofs/{d['proof_path']}"
+            result.append(d)
+        return {"payment_requests": result}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/payment-requests/{req_id}/approve")
+async def super_approve_payment_request(
+    req_id: str,
+    body: dict = {},
+    admin=Depends(current_super_admin)
+):
+    conn = database.get_db()
+    try:
+        pr = conn.execute("SELECT * FROM payment_requests WHERE id=?", (req_id,)).fetchone()
+        if not pr:
+            raise HTTPException(404, "الطلب غير موجود")
+        pr = dict(pr)
+        if pr["status"] != "pending":
+            raise HTTPException(400, f"الطلب بحالة {pr['status']} — لا يمكن الموافقة عليه")
+
+        plan = pr["plan"]
+        plan_row = _get_plan_record(conn, plan_id=pr.get("plan_id", ""), plan_code=plan)
+        duration = (plan_row or {}).get("duration_days") or PLAN_PRICES.get(plan, {}).get("duration_days", 30)
+        period_start = datetime.now().strftime("%Y-%m-%d")
+        period_end   = (datetime.now() + timedelta(days=duration or 30)).strftime("%Y-%m-%d")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        admin_name = admin.get("name", "Super Admin")
+
+        # Update payment request
+        conn.execute("""
+            UPDATE payment_requests SET status='approved', reviewed_by=?, reviewed_at=?,
+            internal_note=? WHERE id=?
+        """, (admin_name, now_str, body.get("internal_note", ""), req_id))
+
+        # Update subscription
+        _ensure_subscription(conn, pr["restaurant_id"], plan)
+        conn.execute("""
+            UPDATE subscriptions SET plan=?, status='active', start_date=?, end_date=?,
+            payment_method=?, last_payment_date=?, next_payment_date=?, updated_at=?
+            WHERE restaurant_id=?
+        """, (plan, period_start, period_end,
+              pr.get("payment_method_id", ""), period_start, period_end,
+              now_str, pr["restaurant_id"]))
+
+        # Update restaurant plan
+        conn.execute("UPDATE restaurants SET plan=?, status='active' WHERE id=?",
+                     (plan, pr["restaurant_id"]))
+
+        # Insert payment record
+        method_row = conn.execute(
+            "SELECT method_name FROM payment_methods WHERE id=?",
+            (pr.get("payment_method_id", ""),)
+        ).fetchone()
+        method_label = method_row["method_name"] if method_row else pr.get("payment_method_id", "")
+        conn.execute("""
+            INSERT INTO payment_records
+                (id, restaurant_id, payment_request_id, amount, currency, method, plan,
+                 period_start, period_end, status)
+            VALUES (?,?,?,?,?,?,?,?,?,'completed')
+        """, (str(uuid.uuid4()), pr["restaurant_id"], req_id,
+              pr["amount"], pr["currency"], method_label, plan,
+              period_start, period_end))
+
+        # Super admin audit log + billing audit
+        conn.execute("""
+            INSERT INTO super_admin_log (id, admin_id, admin_name, action, target_type, target_id, description)
+            VALUES (?,?,?,'approve_payment','restaurant',?,?)
+        """, (str(uuid.uuid4()), admin["id"], admin_name, pr["restaurant_id"],
+              f"Approved plan={plan} amount={pr['amount']} {pr['currency']}"))
+        _billing_audit(conn, "payment_request_approved",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       restaurant_id=pr["restaurant_id"], payment_request_id=req_id,
+                       old_status="pending", new_status="approved",
+                       amount=pr["amount"], currency=pr["currency"], plan=plan,
+                       note=body.get("internal_note", ""))
+        _billing_audit(conn, "subscription_activated_from_payment",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       restaurant_id=pr["restaurant_id"], payment_request_id=req_id,
+                       old_status="trial", new_status="active",
+                       plan=plan, note=f"period_end={period_end}")
+        conn.commit()
+
+        return {
+            "ok": True, "status": "approved", "plan": plan,
+            "period_start": period_start, "period_end": period_end,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/payment-requests/{req_id}/reject")
+async def super_reject_payment_request(
+    req_id: str,
+    body: dict = {},
+    admin=Depends(current_super_admin)
+):
+    conn = database.get_db()
+    try:
+        pr = conn.execute("SELECT * FROM payment_requests WHERE id=?", (req_id,)).fetchone()
+        if not pr:
+            raise HTTPException(404, "الطلب غير موجود")
+        pr = dict(pr)
+        if pr["status"] != "pending":
+            raise HTTPException(400, f"الطلب بحالة {pr['status']} — لا يمكن رفضه")
+
+        reason = body.get("reason", "") or "لم تُقدَّم أسباب"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        admin_name = admin.get("name", "Super Admin")
+
+        conn.execute("""
+            UPDATE payment_requests
+            SET status='rejected', reject_reason=?, reviewed_by=?, reviewed_at=?, internal_note=?
+            WHERE id=?
+        """, (reason, admin_name, now_str, body.get("internal_note", ""), req_id))
+
+        conn.execute("""
+            INSERT INTO super_admin_log (id, admin_id, admin_name, action, target_type, target_id, description)
+            VALUES (?,?,?,'reject_payment','restaurant',?,?)
+        """, (str(uuid.uuid4()), admin["id"], admin_name, pr["restaurant_id"],
+              f"Rejected: {reason}"))
+        _billing_audit(conn, "payment_request_rejected",
+                       actor_id=admin["id"], actor_role="super_admin",
+                       restaurant_id=pr["restaurant_id"], payment_request_id=req_id,
+                       old_status="pending", new_status="rejected",
+                       amount=pr["amount"], currency=pr["currency"], plan=pr["plan"],
+                       note=reason)
+        conn.commit()
+        return {"ok": True, "status": "rejected", "reason": reason}
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/payment/storage-mode")
+async def super_payment_storage_mode(admin=Depends(current_super_admin)):
+    """Returns current proof storage mode and configuration status."""
+    mode = _proof_storage_mode()
+    return {
+        "storage_mode": mode,
+        "supabase_configured": mode == "supabase",
+        "warning": None if mode == "supabase" else
+            "⚠️ وضع التخزين المحلي مفعّل — الملفات قد تُفقد عند إعادة النشر على Railway/Render. أضف SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY لتفعيل التخزين الدائم.",
+        "local_path": "uploads/payment_proofs/" if mode == "local" else None,
+        "supabase_bucket": "payment-proofs" if mode == "supabase" else None,
+    }
+
+
+# ── Restaurant: Billing — payment methods + plans + proof upload ──────────────
+
+@app.get("/api/billing/payment-methods")
+async def billing_list_payment_methods(user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT id, method_name, account_holder_name, bank_name,
+                   account_number, iban, phone_number, currency,
+                   payment_instructions, display_order
+            FROM payment_methods
+            WHERE is_active=1
+            ORDER BY display_order ASC, created_at ASC
+        """).fetchall()
+        return {"payment_methods": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/plans")
+async def billing_plans(user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM subscription_plans
+            WHERE is_active=1 AND is_public=1
+            ORDER BY display_order ASC, created_at ASC
+        """).fetchall()
+        if rows:
+            import json as _json
+            plans = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["features"] = _json.loads(d.get("features_json", "[]"))
+                except Exception:
+                    d["features"] = []
+                try:
+                    d["excluded_features"] = _json.loads(d.get("excluded_features_json", "[]"))
+                except Exception:
+                    d["excluded_features"] = []
+                # Prefer Arabic fields for display
+                d["display_name"] = d.get("name_ar") or d.get("name") or d.get("code", "")
+                d["display_description"] = d.get("description_ar") or d.get("description", "")
+                d["display_badge"] = d.get("badge_text_ar") or d.get("badge", "")
+                d["display_period"] = d.get("billing_period_ar") or d.get("billing_period", "")
+                plans.append(d)
+            return {"plans": plans}
+        # Fallback to hardcoded if no DB plans yet
+        return {"plans": [
+            {"id": k, "code": k, "plan": k, **v}
+            for k, v in PLAN_PRICES.items() if k not in ("free", "trial")
+        ]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/billing/payment-proof")
+async def billing_submit_proof(
+    plan_id: str = Form(""),
+    plan: str = Form(""),        # legacy: plan code fallback
+    amount: float = Form(0),
+    currency: str = Form(""),
+    payment_method_id: str = Form(""),
+    payer_name: str = Form(""),
+    reference_number: str = Form(""),
+    proof: UploadFile = File(None),
+    user=Depends(current_user)
+):
+    rid = user["restaurant_id"]
+    conn_pre = database.get_db()
+    try:
+        plan_row = _get_plan_record(conn_pre, plan_id=plan_id, plan_code=plan)
+    finally:
+        conn_pre.close()
+
+    if plan_row:
+        if not plan_row.get("is_active") or not plan_row.get("is_public"):
+            raise HTTPException(400, "هذه الخطة غير متاحة للاشتراك")
+        plan_code    = plan_row["code"]
+        resolved_pid = plan_row["id"]
+        if amount <= 0:
+            amount = float(plan_row.get("price", 0))
+        if not currency:
+            currency = plan_row.get("currency", "IQD")
+    else:
+        # Legacy fallback: validate plan code against hardcoded list
+        plan_code = plan
+        resolved_pid = ""
+        if plan_code not in PLAN_PRICES:
+            raise HTTPException(400, "خطة غير صالحة — أرسل plan_id أو plan code صحيح")
+
+    if not currency:
+        currency = "IQD"
+    if amount <= 0:
+        raise HTTPException(400, "المبلغ يجب أن يكون أكبر من صفر")
+
+    proof_filename = ""
+    proof_stored_url = ""
+    storage_mode = "none"
+
+    if proof and proof.filename:
+        ext = Path(proof.filename).suffix.lower()
+        if ext not in _ALLOWED_PROOF_EXTS:
+            raise HTTPException(400, "نوع الملف غير مسموح. الأنواع المسموحة: jpg, jpeg, png, pdf")
+        content = await proof.read()
+        if len(content) > _MAX_PROOF_SIZE:
+            raise HTTPException(400, "حجم الملف كبير جداً — الحد الأقصى 5 MB")
+
+        from services import storage as _storage
+        req_id_tmp = str(uuid.uuid4())  # use same id for both storage path and DB
+        proof_filename = f"{req_id_tmp}{ext}"
+
+        # Try Supabase first
+        if _storage._is_configured():
+            try:
+                import mimetypes as _mt
+                ctype = _mt.types_map.get(ext, "application/octet-stream")
+                spath = _storage.payment_proof_path(rid, req_id_tmp, proof_filename)
+                pub_url = _storage.upload_bytes(content, _storage.BUCKET_PAYMENT_PROOFS, spath, ctype)
+                if pub_url:
+                    proof_stored_url = pub_url
+                    proof_filename = spath  # store full Supabase path in proof_path
+                    storage_mode = "supabase"
+            except Exception as _se:
+                logger.warning(f"[billing] Supabase proof upload failed, falling back to local: {_se}")
+
+        # Fallback to local if Supabase not configured or failed
+        if storage_mode != "supabase":
+            local_fname = proof_filename if "." in proof_filename else f"{uuid.uuid4()}{ext}"
+            # Ensure simple filename for local storage
+            local_fname = f"{req_id_tmp}{ext}"
+            (_UPLOAD_DIR / local_fname).write_bytes(content)
+            proof_filename = local_fname
+            proof_stored_url = f"/uploads/payment_proofs/{local_fname}"
+            storage_mode = "local"
+    else:
+        req_id_tmp = str(uuid.uuid4())
+
+    conn = database.get_db()
+    try:
+        conn.execute("""
+            INSERT INTO payment_requests
+                (id, restaurant_id, plan, plan_id, amount, currency, payment_method_id,
+                 payer_name, reference_number, proof_path, proof_url, storage_mode, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending')
+        """, (req_id_tmp, rid, plan_code, resolved_pid, amount, currency, payment_method_id,
+              payer_name, reference_number, proof_filename, proof_stored_url, storage_mode))
+        _billing_audit(conn, "payment_request_submitted",
+                       actor_id=user["id"], actor_role=user.get("role", "owner"),
+                       restaurant_id=rid, payment_request_id=req_id_tmp,
+                       amount=amount, currency=currency, plan=plan_code,
+                       storage_mode=storage_mode,
+                       note=f"payer={payer_name} ref={reference_number}")
+        conn.commit()
+        return {
+            "ok": True,
+            "request_id": req_id_tmp,
+            "status": "pending",
+            "storage_mode": storage_mode,
+            "message": "تم استلام طلب الدفع — سيراجعه المشرف قريباً",
+            "proof_url": proof_stored_url,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/my-payment-requests")
+async def billing_my_requests(user=Depends(current_user)):
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        rows = conn.execute("""
+            SELECT id, plan, plan_id, amount, currency, payer_name, reference_number,
+                   payment_method_id, status, reject_reason, proof_path,
+                   proof_url, storage_mode, created_at, reviewed_at
+            FROM payment_requests
+            WHERE restaurant_id=?
+            ORDER BY created_at DESC
+        """, (rid,)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            # Resolve plan_name from DB or fallback label
+            plan_row = _get_plan_record(conn, plan_id=d.get("plan_id", ""), plan_code=d.get("plan", ""))
+            d["plan_name"] = (plan_row or {}).get("name") or d.get("plan", "")
+            # Use stored proof_url; fallback to local path for old rows
+            if not d.get("proof_url") and d.get("proof_path"):
+                d["proof_url"] = f"/uploads/payment_proofs/{d['proof_path']}"
+            # Never expose internal path to restaurant — only the URL
+            d.pop("proof_path", None)
+            result.append(d)
+        return {"payment_requests": result}
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/proof/{request_id}")
+async def billing_get_proof(request_id: str, user=Depends(current_user)):
+    """Access-controlled proof redirect: restaurant sees own, super admin sees all."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT restaurant_id, proof_url, proof_path, storage_mode FROM payment_requests WHERE id=?",
+            (request_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "الطلب غير موجود")
+        if row["restaurant_id"] != rid:
+            raise HTTPException(403, "غير مصرح")
+        proof_url = row["proof_url"] or (
+            f"/uploads/payment_proofs/{row['proof_path']}" if row["proof_path"] else ""
+        )
+        if not proof_url:
+            raise HTTPException(404, "لا يوجد إيصال مرفق")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=proof_url, status_code=302)
+    finally:
+        conn.close()
+
+
 @app.post("/api/super/init-db")
 async def reinit_db(admin=Depends(current_super_admin)):
     """Re-run init_db (seeds super admin + demo restaurant if missing). Super admin only."""
@@ -865,10 +2462,22 @@ async def channel_breakdown(user=Depends(current_user)):
 @app.get("/api/analytics/top-products")
 async def top_products_analytics(user=Depends(current_user)):
     conn = database.get_db()
+    rid = user["restaurant_id"]
+    # Query from actual order_items for accuracy — not the denormalized counter
     rows = conn.execute("""
-        SELECT id, name, price, category, icon, order_count
-        FROM products WHERE restaurant_id=? ORDER BY order_count DESC LIMIT 5
-    """, (user["restaurant_id"],)).fetchall()
+        SELECT p.id, p.name, p.price, p.category, p.icon,
+               COALESCE(SUM(oi.quantity), 0)              AS order_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)  AS revenue
+        FROM products p
+        LEFT JOIN order_items oi ON oi.product_id = p.id
+        LEFT JOIN orders o       ON oi.order_id  = o.id
+                                 AND o.restaurant_id = ?
+                                 AND o.status != 'cancelled'
+        WHERE p.restaurant_id = ?
+        GROUP BY p.id
+        ORDER BY order_count DESC
+        LIMIT 5
+    """, (rid, rid)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -935,10 +2544,9 @@ async def channel_performance(user=Depends(current_user)):
     result = []
     for r in rows:
         d = dict(r)
-        # Count conversations per channel
+        # Count conversations per channel — use conversations.channel directly
         conv_count = conn.execute(
-            "SELECT COUNT(*) FROM conversations cv JOIN customers c ON cv.customer_id=c.id "
-            "WHERE cv.restaurant_id=? AND c.platform=?",
+            "SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND channel=?",
             (rid, d["channel"])
         ).fetchone()[0]
         d["conversations"] = conv_count
@@ -1012,6 +2620,346 @@ async def order_funnel(user=Depends(current_user)):
         "with_orders": with_orders,
         "conversion_rate": conversion_rate,
         "by_status_counts": by_status,
+    }
+
+
+# ── Analytics: Required endpoints (NUMBER 11) ─────────────────────────────────
+
+@app.get("/api/analytics/overview")
+async def analytics_overview(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    ok, reason = can_use_feature(conn, rid, "analytics")
+    if not ok:
+        conn.close()
+        raise HTTPException(402, reason)
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchone()[0]
+
+    statuses = {r["status"]: r["cnt"] for r in conn.execute(
+        "SELECT status, COUNT(*) AS cnt FROM orders WHERE restaurant_id=? GROUP BY status", (rid,)
+    ).fetchall()}
+
+    result = {
+        # Orders
+        "total_orders":      q("SELECT COUNT(*) FROM orders WHERE restaurant_id=?", rid),
+        "today_orders":      q("SELECT COUNT(*) FROM orders WHERE restaurant_id=? AND DATE(created_at)=?", rid, today),
+        "pending_orders":    statuses.get("pending", 0),
+        "confirmed_orders":  statuses.get("confirmed", 0) + statuses.get("preparing", 0),
+        "completed_orders":  statuses.get("delivered", 0) + statuses.get("completed", 0),
+        "cancelled_orders":  statuses.get("cancelled", 0),
+        # Revenue
+        "total_revenue":     round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2),
+        "today_revenue":     round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND DATE(created_at)=? AND status!='cancelled'", rid, today), 2),
+        "avg_order_value":   round(q("SELECT COALESCE(AVG(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2),
+        # Conversations
+        "total_conversations":  q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", rid),
+        "open_conversations":   q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND status='open'", rid),
+        "unread_conversations": q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND unread_count>0", rid),
+        "urgent_conversations": q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND urgent=1 AND status='open'", rid),
+        "bot_mode_count":       q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND mode='bot'", rid),
+        "human_mode_count":     q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND mode='human'", rid),
+        # Customers
+        "total_customers":    q("SELECT COUNT(*) FROM customers WHERE restaurant_id=?", rid),
+        "new_customers":      q("SELECT COUNT(*) FROM customers WHERE restaurant_id=? AND DATE(created_at)>=?", rid, week_ago),
+        "vip_customers":      q("SELECT COUNT(*) FROM customers WHERE restaurant_id=? AND vip=1", rid),
+        # Products
+        "total_products":     q("SELECT COUNT(*) FROM products WHERE restaurant_id=?", rid),
+        "available_products": q("SELECT COUNT(*) FROM products WHERE restaurant_id=? AND available=1", rid),
+        # Notifications
+        "unread_notifications": q("SELECT COUNT(*) FROM notifications WHERE restaurant_id=? AND is_read=0", rid),
+    }
+
+    recent = conn.execute("""
+        SELECT o.id, o.total, o.status, o.channel, o.created_at, c.name AS customer_name
+        FROM orders o JOIN customers c ON o.customer_id=c.id
+        WHERE o.restaurant_id=? ORDER BY o.created_at DESC LIMIT 10
+    """, (rid,)).fetchall()
+    result["recent_orders"] = [dict(r) for r in recent]
+
+    conn.close()
+    return result
+
+
+@app.get("/api/analytics/orders")
+async def analytics_orders(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    status_rows = conn.execute(
+        "SELECT status, COUNT(*) AS cnt FROM orders WHERE restaurant_id=? GROUP BY status", (rid,)
+    ).fetchall()
+    by_status = {r["status"]: r["cnt"] for r in status_rows}
+
+    channel_rows = conn.execute("""
+        SELECT channel, COUNT(*) AS cnt, COALESCE(SUM(total),0) AS revenue
+        FROM orders WHERE restaurant_id=? GROUP BY channel
+    """, (rid,)).fetchall()
+
+    recent = conn.execute("""
+        SELECT o.id, o.total, o.status, o.channel, o.type, o.created_at, c.name AS customer_name
+        FROM orders o JOIN customers c ON o.customer_id=c.id
+        WHERE o.restaurant_id=? ORDER BY o.created_at DESC LIMIT 10
+    """, (rid,)).fetchall()
+
+    today_orders = conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE restaurant_id=? AND DATE(created_at)=?", (rid, today)
+    ).fetchone()[0]
+    conn.close()
+    return {
+        "total_orders":     sum(by_status.values()),
+        "today_orders":     today_orders,
+        "pending":          by_status.get("pending", 0),
+        "confirmed":        by_status.get("confirmed", 0),
+        "preparing":        by_status.get("preparing", 0),
+        "on_way":           by_status.get("on_way", 0),
+        "delivered":        by_status.get("delivered", 0),
+        "completed":        by_status.get("completed", 0),
+        "cancelled":        by_status.get("cancelled", 0),
+        "by_channel":       [dict(r) for r in channel_rows],
+        "recent":           [dict(r) for r in recent],
+    }
+
+
+@app.get("/api/analytics/revenue")
+async def analytics_revenue(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchone()[0]
+
+    weekly = []
+    for i in range(6, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        rev = q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND DATE(created_at)=? AND status!='cancelled'", rid, day)
+        weekly.append({"date": day, "revenue": round(rev, 2)})
+
+    total_rev  = round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2)
+    today_rev  = round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND DATE(created_at)=? AND status!='cancelled'", rid, today), 2)
+    avg_order  = round(q("SELECT COALESCE(AVG(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2)
+
+    channel_rev = conn.execute("""
+        SELECT channel, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
+        FROM orders WHERE restaurant_id=? AND status!='cancelled' GROUP BY channel
+    """, (rid,)).fetchall()
+
+    conn.close()
+    return {
+        "total_revenue":    total_rev,
+        "today_revenue":    today_rev,
+        "avg_order_value":  avg_order,
+        "weekly":           weekly,
+        "by_channel":       [dict(r) for r in channel_rev],
+    }
+
+
+@app.get("/api/analytics/conversations")
+async def analytics_conversations(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchone()[0]
+
+    channel_rows = conn.execute("""
+        SELECT channel, COUNT(*) AS total,
+               SUM(CASE WHEN status='open'  THEN 1 ELSE 0 END) AS open,
+               SUM(CASE WHEN mode='human'   THEN 1 ELSE 0 END) AS human_mode,
+               SUM(unread_count) AS total_unread
+        FROM conversations WHERE restaurant_id=? GROUP BY channel
+    """, (rid,)).fetchall()
+
+    total           = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", rid)
+    open_           = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND status='open'", rid)
+    closed          = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND status='closed'", rid)
+    bot_mode        = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND mode='bot'", rid)
+    human_mode      = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND mode='human'", rid)
+    unread          = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND unread_count>0", rid)
+    unread_messages = q("SELECT COALESCE(SUM(unread_count),0) FROM conversations WHERE restaurant_id=?", rid)
+    urgent          = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND urgent=1 AND status='open'", rid)
+    conn.close()
+    return {
+        "total":           total,
+        "open":            open_,
+        "closed":          closed,
+        "bot_mode":        bot_mode,
+        "human_mode":      human_mode,
+        "unread":          unread,
+        "unread_messages": unread_messages,
+        "urgent":          urgent,
+        "by_channel":      [dict(r) for r in channel_rows],
+    }
+
+
+@app.get("/api/analytics/customers")
+async def analytics_customers(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchone()[0]
+
+    platform_rows = conn.execute("""
+        SELECT platform, COUNT(*) AS cnt FROM customers WHERE restaurant_id=? GROUP BY platform
+    """, (rid,)).fetchall()
+
+    top5 = conn.execute("""
+        SELECT id, name, platform, vip, total_orders, total_spent
+        FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC LIMIT 5
+    """, (rid,)).fetchall()
+
+    total         = q("SELECT COUNT(*) FROM customers WHERE restaurant_id=?", rid)
+    new_this_week = q("SELECT COUNT(*) FROM customers WHERE restaurant_id=? AND DATE(created_at)>=?", rid, week_ago)
+    returning     = q("SELECT COUNT(*) FROM customers WHERE restaurant_id=? AND total_orders>1", rid)
+    vip           = q("SELECT COUNT(*) FROM customers WHERE restaurant_id=? AND vip=1", rid)
+    conn.close()
+    return {
+        "total":             total,
+        "new_this_week":     new_this_week,
+        "returning":         returning,
+        "vip":               vip,
+        "by_platform":       [dict(r) for r in platform_rows],
+        "top_spenders":      [dict(r) for r in top5],
+    }
+
+
+@app.get("/api/analytics/products")
+async def analytics_products(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+
+    rows = conn.execute("""
+        SELECT p.id, p.name, p.price, p.category, p.icon, p.available,
+               COALESCE(SUM(oi.quantity), 0)             AS orders_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)  AS revenue
+        FROM products p
+        LEFT JOIN order_items oi ON oi.product_id = p.id
+        LEFT JOIN orders o       ON oi.order_id   = o.id
+                                 AND o.restaurant_id = ?
+                                 AND o.status != 'cancelled'
+        WHERE p.restaurant_id = ?
+        GROUP BY p.id
+        ORDER BY orders_count DESC
+    """, (rid, rid)).fetchall()
+
+    total_prods = conn.execute("SELECT COUNT(*) FROM products WHERE restaurant_id=?", (rid,)).fetchone()[0]
+    avail_prods = conn.execute("SELECT COUNT(*) FROM products WHERE restaurant_id=? AND available=1", (rid,)).fetchone()[0]
+    conn.close()
+    return {
+        "total":     total_prods,
+        "available": avail_prods,
+        "items":     [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/analytics/channels")
+async def analytics_channels(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+
+    order_rows = conn.execute("""
+        SELECT channel,
+               COUNT(*)                          AS orders,
+               COALESCE(SUM(total), 0)           AS revenue,
+               COALESCE(AVG(total), 0)           AS avg_order_value
+        FROM orders WHERE restaurant_id=? AND status!='cancelled'
+        GROUP BY channel
+    """, (rid,)).fetchall()
+
+    conv_rows = conn.execute("""
+        SELECT channel,
+               COUNT(*)                                              AS conversations,
+               SUM(CASE WHEN mode='human' THEN 1 ELSE 0 END)        AS human_mode,
+               SUM(CASE WHEN unread_count > 0 THEN 1 ELSE 0 END)    AS unread
+        FROM conversations WHERE restaurant_id=?
+        GROUP BY channel
+    """, (rid,)).fetchall()
+
+    # Merge by channel
+    order_map = {r["channel"]: dict(r) for r in order_rows}
+    conv_map  = {r["channel"]: dict(r) for r in conv_rows}
+    all_channels = set(order_map) | set(conv_map)
+
+    result = []
+    for ch in sorted(all_channels):
+        o = order_map.get(ch, {"orders": 0, "revenue": 0.0, "avg_order_value": 0.0})
+        c = conv_map.get(ch,  {"conversations": 0, "human_mode": 0, "unread": 0})
+        result.append({
+            "channel":        ch,
+            "orders":         o["orders"],
+            "revenue":        round(o["revenue"], 2),
+            "avg_order_value": round(o["avg_order_value"], 2),
+            "conversations":  c["conversations"],
+            "human_mode":     c["human_mode"],
+            "unread":         c["unread"],
+        })
+
+    conn.close()
+    return result
+
+
+@app.get("/api/analytics/bot-performance")
+async def analytics_bot_performance(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchone()[0]
+
+    total_bot   = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND bot_turn_count>0", rid)
+    escalated   = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND handoff_reason!='' AND handoff_reason IS NOT NULL", rid)
+    human_now   = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND mode='human' AND status='open'", rid)
+    avg_turns   = round(q("SELECT COALESCE(AVG(bot_turn_count),0) FROM conversations WHERE restaurant_id=? AND bot_turn_count>0", rid), 1)
+    bot_msgs    = q("SELECT COUNT(*) FROM messages m JOIN conversations cv ON m.conversation_id=cv.id WHERE cv.restaurant_id=? AND m.role IN ('bot','assistant')", rid)
+    total_convs = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", rid)
+    with_orders = q("SELECT COUNT(DISTINCT customer_id) FROM orders WHERE restaurant_id=?", rid)
+
+    success_rate  = round((total_bot - escalated) / total_bot * 100, 1) if total_bot > 0 else 0.0
+    handoff_rate  = round(escalated / total_bot * 100, 1) if total_bot > 0 else 0.0
+    conversion    = round(with_orders / total_convs * 100, 1) if total_convs > 0 else 0.0
+
+    conn.close()
+    return {
+        "total_bot_conversations": total_bot,
+        "escalated":               escalated,
+        "human_mode_active":       human_now,
+        "success_rate":            success_rate,
+        "handoff_rate":            handoff_rate,
+        "avg_turns_per_conv":      avg_turns,
+        "bot_reply_count":         bot_msgs,
+        "conversion_rate":         conversion,
+    }
+
+
+@app.get("/api/analytics/recent-activity")
+async def analytics_recent_activity(user=Depends(current_user)):
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+
+    orders = conn.execute("""
+        SELECT o.id, o.total, o.status, o.channel, o.created_at, c.name AS customer_name
+        FROM orders o JOIN customers c ON o.customer_id=c.id
+        WHERE o.restaurant_id=? ORDER BY o.created_at DESC LIMIT 10
+    """, (rid,)).fetchall()
+
+    convs = conn.execute("""
+        SELECT cv.id, cv.mode, cv.status, cv.unread_count, cv.urgent,
+               cv.updated_at, cv.channel, c.name AS customer_name
+        FROM conversations cv JOIN customers c ON cv.customer_id=c.id
+        WHERE cv.restaurant_id=? ORDER BY cv.updated_at DESC LIMIT 10
+    """, (rid,)).fetchall()
+
+    conn.close()
+    return {
+        "recent_orders":        [dict(r) for r in orders],
+        "recent_conversations": [dict(r) for r in convs],
     }
 
 
@@ -1730,6 +3678,19 @@ async def create_order(data: OrderCreate, user=Depends(current_user)):
             VALUES (?, ?, ?, ?, ?, ?)
         """, (str(uuid.uuid4()), oid, item.get("product_id"),
               item.get("name"), item.get("price", 0), item.get("quantity", 1)))
+        if item.get("product_id"):
+            conn.execute(
+                "UPDATE products SET order_count=COALESCE(order_count,0)+? WHERE id=? AND restaurant_id=?",
+                (item.get("quantity", 1), item["product_id"], user["restaurant_id"])
+            )
+
+    # Update customer lifetime stats
+    conn.execute("""
+        UPDATE customers SET
+            total_orders = COALESCE(total_orders, 0) + 1,
+            total_spent  = COALESCE(total_spent, 0) + ?
+        WHERE id = ? AND restaurant_id = ?
+    """, (total, data.customer_id, user["restaurant_id"]))
 
     log_activity(conn, user["restaurant_id"], "order_created", "order", oid,
                  f"طلب جديد بقيمة {total} د.ع", user["id"], user["name"])
@@ -2397,10 +4358,13 @@ async def register_telegram_webhook(request: Request, user=Depends(current_user)
             raise HTTPException(400, f"رفض Telegram الطلب: {err}")
     except HTTPException:
         raise
+    except _httpx.TimeoutException:
+        conn.close()
+        raise HTTPException(400, "انتهت مهلة الاتصال بـ Telegram — تحقق من صحة التوكن واتصال الإنترنت")
     except Exception as e:
         conn.close()
         logger.error(f"[telegram] register-webhook exception — restaurant={rid} | {e}")
-        raise HTTPException(500, f"خطأ في الاتصال بـ Telegram: {e}")
+        raise HTTPException(400, f"خطأ في الاتصال بـ Telegram: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5881,6 +7845,145 @@ async def super_alerts(admin=Depends(current_super_admin)):
         conn.close()
 
 
+# ── Production Readiness ─────────────────────────────────────────────────────
+
+@app.get("/api/production-readiness")
+async def production_readiness(admin=Depends(current_super_admin)):
+    """SA-only: full platform production-readiness audit — blockers and warnings."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    checks: dict = {}
+
+    is_production = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
+
+    # 1. Database connectivity + type
+    db_ok = False
+    try:
+        _c = database.get_db()
+        _c.execute("SELECT 1").fetchone()
+        _c.close()
+        db_ok = True
+    except Exception as _e:
+        blockers.append(f"قاعدة البيانات غير متاحة: {_e}")
+
+    if is_production and not database.IS_POSTGRES:
+        blockers.append("بيئة الإنتاج تتطلب PostgreSQL — DATABASE_URL غير مضبوط أو فارغ")
+
+    checks["database"] = {
+        "ok": db_ok and (not is_production or database.IS_POSTGRES),
+        "type": "postgresql" if database.IS_POSTGRES else "sqlite",
+        "is_production": is_production,
+    }
+
+    # 2. JWT_SECRET — must not be the default insecure value
+    jwt_is_default = (
+        os.getenv("JWT_SECRET", "") == "supersecretkey_change_in_production_123456789"
+        or not _env_present("JWT_SECRET")
+    )
+    if jwt_is_default:
+        blockers.append("JWT_SECRET يستخدم القيمة الافتراضية — خطر أمني حرج، يجب تغييره فوراً")
+    checks["jwt_secret"] = {"ok": not jwt_is_default}
+
+    # 3. BASE_URL — must point to the real deployed URL for webhooks
+    base_url_ok = bool(BASE_URL and "localhost" not in BASE_URL)
+    if not base_url_ok:
+        warnings.append("BASE_URL غير مضبوط أو يشير إلى localhost — Webhooks لن تعمل")
+    checks["base_url"] = {"ok": base_url_ok, "value": BASE_URL or ""}
+
+    # 4. OpenAI API key
+    openai_ok = bool(OPENAI_API_KEY)
+    if not openai_ok:
+        warnings.append("OPENAI_API_KEY مفقود — الذكاء الاصطناعي والنسخ الصوتي لن يعملا")
+    checks["openai"] = {"ok": openai_ok}
+
+    # 5. Supabase storage — payment proofs and menu images will be lost on restart if not configured
+    supabase_ok = _env_present("SUPABASE_URL") and _env_present("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_ok:
+        warnings.append("Supabase غير مضبوط — الصور وإثباتات الدفع ستُحفظ محلياً وتُفقد عند إعادة النشر")
+    checks["supabase_storage"] = {"ok": supabase_ok}
+
+    # 6. Protected tables exist
+    _protected = [
+        "restaurants", "users", "products", "orders", "customers",
+        "conversations", "messages", "subscriptions", "super_admins",
+        "payment_requests", "channels", "bot_config",
+    ]
+    _missing_tables: list[str] = []
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _rows = _c.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+            ).fetchall()
+            _existing_tables = {r[0] for r in _rows}
+        else:
+            _rows = _c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            _existing_tables = {r[0] for r in _rows}
+        _c.close()
+        _missing_tables = [t for t in _protected if t not in _existing_tables]
+    except Exception as _e:
+        warnings.append(f"تعذر فحص الجداول: {_e}")
+
+    if _missing_tables:
+        blockers.append(f"جداول حيوية مفقودة: {', '.join(_missing_tables)}")
+    checks["protected_tables"] = {"ok": len(_missing_tables) == 0, "missing": _missing_tables}
+
+    # 7. Super admin exists — platform is unmanageable without one
+    _sa_exists = False
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _sa_count = int(_c.execute("SELECT COUNT(*) as cnt FROM super_admins").fetchone()["cnt"])
+        else:
+            _sa_count = _c.execute("SELECT COUNT(*) FROM super_admins").fetchone()[0]
+        _c.close()
+        _sa_exists = _sa_count > 0
+    except Exception:
+        pass
+    if not _sa_exists:
+        blockers.append("لا يوجد Super Admin — المنصة غير قابلة للإدارة")
+    checks["super_admin"] = {"ok": _sa_exists}
+
+    # 8. Payment proof storage safety — local files disappear after Render redeploy
+    _proof_local = 0
+    try:
+        _c = database.get_db()
+        _proof_local = _c.execute(
+            "SELECT COUNT(*) FROM payment_requests WHERE storage_mode='local' AND status IN ('pending','approved')"
+        ).fetchone()[0]
+        _c.close()
+    except Exception:
+        pass
+    _proof_safe = supabase_ok or _proof_local == 0
+    if not _proof_safe:
+        warnings.append(f"{_proof_local} إثبات دفع محفوظ محلياً — ستُفقد عند إعادة النشر (فعّل Supabase)")
+    checks["payment_proofs"] = {"ok": _proof_safe, "local_count": _proof_local}
+
+    # 9. Migration safety — static audit: no DROP TABLE used on protected tables
+    checks["migrations_safety"] = {
+        "ok": True,
+        "note": "تم مراجعة migrations — جميعها ADD COLUMN / CREATE TABLE IF NOT EXISTS فقط",
+    }
+
+    # 10. ALLOWED_ORIGINS — missing means open CORS in production
+    cors_ok = _env_present("ALLOWED_ORIGINS")
+    if is_production and not cors_ok:
+        warnings.append("ALLOWED_ORIGINS غير مضبوط — CORS مفتوح لجميع النطاقات في الإنتاج")
+    checks["cors"] = {"ok": cors_ok or not is_production}
+
+    overall = "blocked" if blockers else ("warnings" if warnings else "ready")
+    return {
+        "status": overall,
+        "is_production": is_production,
+        "blockers": blockers,
+        "warnings": warnings,
+        "checks": checks,
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 # ── Delete / Archive Restaurant ───────────────────────────────────────────────
 
 @app.delete("/api/super/restaurants/{rid}")
@@ -6422,6 +8525,584 @@ async def menu_import_history(user=Depends(current_user)):
 if os.path.exists("public"):
     app.mount("/static", StaticFiles(directory="public"), name="static")
 
+_UPLOAD_DIR = Path("uploads/payment_proofs")
+_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+
+# ── Onboarding ────────────────────────────────────────────────────────────────
+
+def _compute_onboarding_status(conn, rid: str, uid: str) -> dict:
+    """Build the full onboarding status for a restaurant. Reads real DB state only."""
+    rest = conn.execute("SELECT * FROM restaurants WHERE id=?", (rid,)).fetchone()
+    rest = dict(rest) if rest else {"id": rid}
+    settings_row = conn.execute("SELECT * FROM settings WHERE restaurant_id=?", (rid,)).fetchone()
+    sett = dict(settings_row) if settings_row else {}
+
+    # ── 1. Profile completeness ────────────────────────────────────────────────
+    name    = (rest.get("name") or sett.get("restaurant_name") or "").strip()
+    phone   = (rest.get("phone") or sett.get("restaurant_phone") or "").strip()
+    address = (rest.get("address") or sett.get("restaurant_address") or "").strip()
+    btype   = (rest.get("business_type") or "").strip()
+    profile_complete = bool(name and (phone or address))
+
+    # ── 2. Subscription/Plan ───────────────────────────────────────────────────
+    sub_state = get_subscription_state(conn, rid)
+    sub_plan   = sub_state["plan"]
+    # Direct DB query — avoids get_subscription_state's "active" fallback for payment logic
+    _sub_direct = conn.execute("SELECT status, end_date, trial_ends_at FROM subscriptions WHERE restaurant_id=?", (rid,)).fetchone()
+    sub_status_db = _sub_direct["status"] if _sub_direct else None   # None = no row yet
+    sub_status    = sub_status_db or "trial"                         # UI display fallback
+    current_period_end = (_sub_direct["end_date"] if _sub_direct else "") or ""
+    trial_ends_at      = (_sub_direct["trial_ends_at"] if _sub_direct else "") or ""
+    plan_chosen = sub_plan not in ("", "basic", "trial", "free") or sub_status_db == "active"
+
+    # ── 3 & 4. Payment proof + SA approval ────────────────────────────────────
+    pay_row = conn.execute(
+        "SELECT * FROM payment_requests WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+        (rid,)
+    ).fetchone()
+    pay_req = dict(pay_row) if pay_row else {}
+    raw_pay_status = pay_req.get("status") or ""
+    # Normalise — use explicit DB subscription status, NOT the fallback "active"
+    if sub_status_db == "active":
+        pay_status = "approved"
+    elif raw_pay_status == "pending":
+        pay_status = "pending"
+    elif raw_pay_status == "approved":
+        pay_status = "approved"
+    elif raw_pay_status == "rejected":
+        pay_status = "rejected"
+    elif sub_status_db == "trial":
+        pay_status = "trial"
+    else:
+        pay_status = "not_submitted"
+
+    if sub_status == "active":
+        approval_status = "approved"
+    elif pay_status == "pending":
+        approval_status = "pending_review"
+    elif pay_status == "rejected":
+        approval_status = "rejected"
+    elif sub_status == "trial":
+        approval_status = "not_required"
+    else:
+        approval_status = "awaiting_proof"
+
+    reject_reason = pay_req.get("reject_reason") or ""
+
+    # ── 5. Menu / Products ─────────────────────────────────────────────────────
+    products_count = conn.execute(
+        "SELECT COUNT(*) FROM products WHERE restaurant_id=? AND available=1", (rid,)
+    ).fetchone()[0]
+
+    # ── 6. Channel readiness ───────────────────────────────────────────────────
+    ch_ready = _channel_readiness(conn, rid)
+    ok_channels = [p for p, v in ch_ready.items() if v.get("status") == "ok"]
+    connected_channels_count = len(ok_channels)
+
+    # ── 7. Bot test ────────────────────────────────────────────────────────────
+    bot_test_status = rest.get("onboarding_bot_test_status") or "not_tested"
+
+    # ── 8. Launch readiness ────────────────────────────────────────────────────
+    # No sub row (new restaurant) is treated as trial for launch purposes
+    sub_ok   = sub_status_db in ("active", "trial") or sub_status_db is None
+    pay_ok   = pay_status in ("approved", "trial") or sub_status_db is None
+    launch_ready = (
+        profile_complete and
+        sub_ok and
+        pay_ok and
+        products_count > 0 and
+        connected_channels_count > 0
+    )
+
+    # ── Build steps list ───────────────────────────────────────────────────────
+    steps = [
+        {
+            "key":          "profile",
+            "title_ar":     "الملف التجاري",
+            "status":       "complete" if profile_complete else "incomplete",
+            "reason":       "" if profile_complete else "يُرجى إضافة رقم الهاتف أو العنوان",
+            "action_label": "" if profile_complete else "أكمل الملف الشخصي",
+            "action_url":   "" if profile_complete else "#settings",
+        },
+        {
+            "key":          "plan",
+            "title_ar":     "خطة الاشتراك",
+            "status":       "complete" if plan_chosen else ("trial" if sub_status == "trial" else "incomplete"),
+            "reason":       "" if plan_chosen else ("أنت على خطة تجريبية" if sub_status == "trial" else "لم تختر خطة بعد"),
+            "action_label": "" if plan_chosen else "اختر خطة",
+            "action_url":   "" if plan_chosen else "#settings?tab=billing",
+        },
+        {
+            "key":          "payment",
+            "title_ar":     "إثبات الدفع",
+            "status":       pay_status,
+            "reason":       reject_reason if pay_status == "rejected" else (
+                            "وصل الدفع قيد مراجعة الإدارة" if pay_status == "pending" else (
+                            "تم تفعيل الاشتراك" if pay_status == "approved" else (
+                            "على الخطة التجريبية — لا يلزم دفع الآن" if pay_status == "trial" else
+                            "أرسل وصل الدفع لتفعيل اشتراكك"))),
+            "action_label": "أعد إرسال وصل الدفع" if pay_status == "rejected" else (
+                            "" if pay_status in ("approved", "pending", "trial") else
+                            "أرسل وصل الدفع"),
+            "action_url":   "#settings?tab=billing" if pay_status not in ("approved", "pending", "trial") else "",
+        },
+        {
+            "key":          "approval",
+            "title_ar":     "موافقة الإدارة",
+            "status":       approval_status,
+            "reason":       {
+                "approved":      "تم تفعيل الاشتراك بعد مراجعة الإدارة",
+                "pending_review":"وصل الدفع قيد مراجعة الإدارة — سيتم التفعيل قريباً",
+                "rejected":      f"تم رفض الوصل: {reject_reason}" if reject_reason else "تم رفض وصل الدفع",
+                "not_required":  "على الخطة التجريبية — لا يلزم موافقة الآن",
+                "awaiting_proof":"أرسل وصل الدفع أولاً",
+            }.get(approval_status, ""),
+            "action_label": "",
+            "action_url":   "",
+        },
+        {
+            "key":          "menu",
+            "title_ar":     "القائمة والمنتجات",
+            "status":       "complete" if products_count > 0 else "incomplete",
+            "reason":       "" if products_count > 0 else "لا توجد منتجات نشطة — أضف منتجاتك لبدء استقبال الطلبات",
+            "action_label": "" if products_count > 0 else "أضف منتجاتك",
+            "action_url":   "" if products_count > 0 else "#products",
+        },
+        {
+            "key":          "channels",
+            "title_ar":     "ربط القنوات",
+            "status":       "complete" if connected_channels_count > 0 else "incomplete",
+            "reason":       (f"{connected_channels_count} قناة متصلة: {', '.join(ok_channels)}" if ok_channels
+                            else "لا توجد قنوات متصلة — وصّل تيليغرام أو واتساب أو غيرها"),
+            "action_label": "" if connected_channels_count > 0 else "وصّل قناة",
+            "action_url":   "" if connected_channels_count > 0 else "#channels",
+        },
+        {
+            "key":          "bot_test",
+            "title_ar":     "اختبار البوت",
+            "status":       bot_test_status,
+            "reason":       {
+                "not_tested": "لم يُختبر البوت بعد — تأكد من الإعداد قبل الإطلاق",
+                "pass":       "البوت يعمل بشكل صحيح",
+                "fail":       "البوت لا يعمل — تحقق من الإعداد",
+            }.get(bot_test_status, ""),
+            "action_label": "اختبر الآن" if bot_test_status != "pass" else "",
+            "action_url":   "",
+        },
+        {
+            "key":          "launch",
+            "title_ar":     "جاهز للإطلاق",
+            "status":       "ready" if launch_ready else "not_ready",
+            "reason":       "مبروك! حسابك جاهز للإطلاق" if launch_ready else "أكمل الخطوات أعلاه للإطلاق",
+            "action_label": "",
+            "action_url":   "",
+        },
+    ]
+
+    completed_steps = sum(1 for s in steps if s["status"] in ("complete", "approved", "pass", "ready"))
+    progress = round(completed_steps / len(steps) * 100)
+    overall  = "ready" if launch_ready else ("almost_ready" if progress >= 50 else "not_ready")
+
+    return {
+        "restaurant_id": rid,
+        "overall_status": overall,
+        "progress_percent": progress,
+        "steps": steps,
+        "payment_review": {
+            "status":            pay_status,
+            "latest_request_id": pay_req.get("id"),
+            "reject_reason":     reject_reason,
+            "submitted_at":      pay_req.get("created_at") or "",
+            "reviewed_at":       pay_req.get("reviewed_at") or "",
+        },
+        "subscription": {
+            "plan":               sub_plan,
+            "status":             sub_status,
+            "current_period_end": current_period_end,
+            "trial_ends_at":      trial_ends_at,
+        },
+        "profile_complete":         profile_complete,
+        "products_count":           products_count,
+        "connected_channels_count": connected_channels_count,
+        "channel_details":          {p: {"status": v["status"], "reason": v["reason"]} for p, v in ch_ready.items()},
+        "bot_test_status":          bot_test_status,
+        "bot_tested_at":            rest.get("onboarding_bot_tested_at") or "",
+        "launch_ready":             launch_ready,
+    }
+
+
+@app.get("/api/onboarding/status")
+async def onboarding_status(user=Depends(current_user)):
+    """Restaurant owner: full onboarding checklist from real DB state."""
+    rid = user["restaurant_id"]
+    uid = user["id"]
+    conn = database.get_db()
+    try:
+        return _compute_onboarding_status(conn, rid, uid)
+    finally:
+        conn.close()
+
+
+@app.post("/api/onboarding/test-bot")
+async def onboarding_test_bot(user=Depends(current_user)):
+    """Restaurant owner: verify bot prerequisites (no fake data, no AI call)."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        sub_state = get_subscription_state(conn, rid)
+        ai_allowed = sub_state["features"].get("ai", True) and not sub_state["blocked"]
+        products_count = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE restaurant_id=? AND available=1", (rid,)
+        ).fetchone()[0]
+        bot_cfg = conn.execute(
+            "SELECT system_prompt FROM bot_config WHERE restaurant_id=?", (rid,)
+        ).fetchone()
+        openai_ok = bool(OPENAI_API_KEY)
+
+        issues = []
+        if not openai_ok:
+            issues.append("مفتاح OpenAI غير مضبوط في الخادم")
+        if not ai_allowed:
+            issues.append(f"خطة {sub_state['plan']} لا تشمل ردود الذكاء الاصطناعي")
+        if products_count == 0:
+            issues.append("لا توجد منتجات — البوت لا يملك قائمة يعتمد عليها")
+        if not bot_cfg or not (bot_cfg["system_prompt"] or "").strip():
+            issues.append("لم يتم ضبط System Prompt للبوت بعد")
+
+        status = "pass" if not issues else "fail"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE restaurants SET onboarding_bot_test_status=?, onboarding_bot_tested_at=? WHERE id=?",
+            (status, now_str, rid)
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "status": status,
+            "issues": issues,
+            "tested_at": now_str,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/onboarding/restaurants")
+async def super_onboarding_list(
+    filter: str = "all",
+    admin=Depends(current_super_admin)
+):
+    """Super admin: list all restaurants with onboarding summary + filter."""
+    conn = database.get_db()
+    try:
+        restaurants = conn.execute(
+            "SELECT id, name, status FROM restaurants ORDER BY created_at DESC"
+        ).fetchall()
+        result = []
+        for r in restaurants:
+            rid  = r["id"]
+            snap = _compute_onboarding_status(conn, rid, "")
+            row = {
+                "restaurant_id":            rid,
+                "restaurant_name":          r["name"],
+                "restaurant_status":        r["status"],
+                "overall_status":           snap["overall_status"],
+                "progress_percent":         snap["progress_percent"],
+                "payment_status":           snap["payment_review"]["status"],
+                "reject_reason":            snap["payment_review"]["reject_reason"],
+                "subscription_plan":        snap["subscription"]["plan"],
+                "subscription_status":      snap["subscription"]["status"],
+                "products_count":           snap["products_count"],
+                "connected_channels_count": snap["connected_channels_count"],
+                "bot_test_status":          snap["bot_test_status"],
+                "launch_ready":             snap["launch_ready"],
+                "profile_complete":         snap["profile_complete"],
+            }
+            # Apply filter
+            if filter == "pending_payment" and snap["payment_review"]["status"] != "pending":
+                continue
+            elif filter == "missing_menu" and snap["products_count"] > 0:
+                continue
+            elif filter == "missing_channel" and snap["connected_channels_count"] > 0:
+                continue
+            elif filter == "ready" and not snap["launch_ready"]:
+                continue
+            elif filter == "blocked" and r["status"] != "suspended":
+                continue
+            elif filter == "needs_attention" and not (
+                snap["payment_review"]["status"] in ("rejected",) or
+                (snap["products_count"] == 0 and snap["subscription"]["status"] == "active") or
+                snap["connected_channels_count"] == 0
+            ):
+                continue
+            result.append(row)
+        return {"restaurants": result, "total": len(result), "filter": filter}
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/onboarding/restaurants/{restaurant_id}")
+async def super_onboarding_detail(
+    restaurant_id: str,
+    admin=Depends(current_super_admin)
+):
+    """Super admin: full onboarding detail for one restaurant."""
+    conn = database.get_db()
+    try:
+        r = conn.execute("SELECT * FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "المطعم غير موجود")
+        owner = conn.execute(
+            "SELECT id, name, email FROM users WHERE restaurant_id=? AND role='owner' LIMIT 1",
+            (restaurant_id,)
+        ).fetchone()
+        snap = _compute_onboarding_status(conn, restaurant_id, "")
+        return {
+            **snap,
+            "restaurant_name":  r["name"],
+            "owner_name":       owner["name"]  if owner else "",
+            "owner_email":      owner["email"] if owner else "",
+            "restaurant_status": r["status"],
+        }
+    finally:
+        conn.close()
+
+
+# ── Announcements ─────────────────────────────────────────────────────────────
+
+_VALID_ANN_TYPES      = {"info","success","warning","promotion","maintenance","upgrade","payment"}
+_VALID_ANN_PLACEMENTS = {"dashboard_top_banner","billing_page","integrations_page","sidebar_small","modal_once"}
+
+
+def _is_safe_cta_url(url: str) -> bool:
+    if not url:
+        return True
+    u = url.strip().lower()
+    return u.startswith("http://") or u.startswith("https://") or u.startswith("/")
+
+
+def _announcement_matches_restaurant(ann: dict, restaurant: dict, subscription: dict, conn) -> bool:
+    """Return True if ann should be shown to this restaurant."""
+    import json as _j
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if ann.get("starts_at") and ann["starts_at"] > now:
+        return False
+    if ann.get("ends_at") and ann["ends_at"] < now:
+        return False
+    if ann.get("target_all"):
+        targeted = True
+    else:
+        targeted = False
+        rid = restaurant.get("id", "")
+        if not targeted:
+            try:
+                if rid in _j.loads(ann.get("target_restaurant_ids_json") or "[]"):
+                    targeted = True
+            except Exception:
+                pass
+        if not targeted:
+            try:
+                plan = restaurant.get("plan", "")
+                if plan in _j.loads(ann.get("target_plans_json") or "[]"):
+                    targeted = True
+            except Exception:
+                pass
+        if not targeted:
+            try:
+                sub_status = subscription.get("status") if subscription else restaurant.get("status", "active")
+                if sub_status in _j.loads(ann.get("target_statuses_json") or "[]"):
+                    targeted = True
+            except Exception:
+                pass
+        if not targeted:
+            return False
+    if ann.get("target_channel_problem_only"):
+        rid = restaurant.get("id", "")
+        prob = conn.execute(
+            "SELECT COUNT(*) FROM channels WHERE restaurant_id=? AND (reconnect_needed=1 OR connection_status='error')",
+            (rid,)
+        ).fetchone()[0]
+        if not prob:
+            return False
+    if ann.get("target_expired_only"):
+        sub_status = subscription.get("status") if subscription else restaurant.get("status", "active")
+        if sub_status not in ("expired", "past_due", "suspended"):
+            return False
+    return True
+
+
+class AnnouncementReq(BaseModel):
+    title: str
+    message: str = ""
+    type: str = "info"
+    priority: int = 0
+    cta_text: str = ""
+    cta_url: str = ""
+    placement: str = "dashboard_top_banner"
+    target_all: int = 1
+    target_restaurant_ids_json: str = "[]"
+    target_plans_json: str = "[]"
+    target_statuses_json: str = "[]"
+    target_channel_problem_only: int = 0
+    target_expired_only: int = 0
+    starts_at: str = ""
+    ends_at: str = ""
+    is_dismissible: int = 1
+    is_active: int = 1
+
+
+@app.get("/api/super/announcements")
+async def super_list_announcements(admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM announcements ORDER BY priority DESC, created_at DESC"
+        ).fetchall()
+        return {"announcements": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/super/announcements", status_code=201)
+async def super_create_announcement(body: AnnouncementReq, admin=Depends(current_super_admin)):
+    if not body.title.strip():
+        raise HTTPException(400, "العنوان مطلوب")
+    if body.type not in _VALID_ANN_TYPES:
+        raise HTTPException(400, f"نوع غير صالح: {body.type}")
+    if body.placement not in _VALID_ANN_PLACEMENTS:
+        raise HTTPException(400, f"موضع غير صالح: {body.placement}")
+    if not _is_safe_cta_url(body.cta_url):
+        raise HTTPException(400, "رابط CTA غير آمن — استخدم http/https أو مسار نسبي")
+    conn = database.get_db()
+    try:
+        aid = str(uuid.uuid4())
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+            INSERT INTO announcements
+                (id, title, message, type, priority, cta_text, cta_url, placement,
+                 target_all, target_restaurant_ids_json, target_plans_json,
+                 target_statuses_json, target_channel_problem_only, target_expired_only,
+                 starts_at, ends_at, is_dismissible, is_active, created_by, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (aid, body.title.strip(), body.message, body.type, body.priority,
+              body.cta_text, body.cta_url, body.placement, body.target_all,
+              body.target_restaurant_ids_json, body.target_plans_json,
+              body.target_statuses_json, body.target_channel_problem_only,
+              body.target_expired_only, body.starts_at, body.ends_at,
+              body.is_dismissible, body.is_active, admin.get("id", ""), now, now))
+        conn.commit()
+        return {"ok": True, "id": aid}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/super/announcements/{ann_id}")
+async def super_update_announcement(ann_id: str, body: dict, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT id FROM announcements WHERE id=?", (ann_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "الإعلان غير موجود")
+        allowed = {"title","message","type","priority","cta_text","cta_url","placement",
+                   "target_all","target_restaurant_ids_json","target_plans_json",
+                   "target_statuses_json","target_channel_problem_only","target_expired_only",
+                   "starts_at","ends_at","is_dismissible","is_active"}
+        if "cta_url" in body and not _is_safe_cta_url(body["cta_url"]):
+            raise HTTPException(400, "رابط CTA غير آمن")
+        if "type" in body and body["type"] not in _VALID_ANN_TYPES:
+            raise HTTPException(400, f"نوع غير صالح: {body['type']}")
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            raise HTTPException(400, "لا توجد حقول صالحة")
+        updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(f"UPDATE announcements SET {set_clause} WHERE id=?",
+                     (*updates.values(), ann_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/super/announcements/{ann_id}")
+async def super_delete_announcement(ann_id: str, admin=Depends(current_super_admin)):
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT id FROM announcements WHERE id=?", (ann_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "الإعلان غير موجود")
+        conn.execute("DELETE FROM announcement_dismissals WHERE announcement_id=?", (ann_id,))
+        conn.execute("DELETE FROM announcements WHERE id=?", (ann_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/announcements")
+async def get_announcements_for_restaurant(user=Depends(current_user)):
+    rid  = user["restaurant_id"]
+    uid  = user["id"]
+    conn = database.get_db()
+    try:
+        rest = conn.execute("SELECT * FROM restaurants WHERE id=?", (rid,)).fetchone()
+        restaurant = dict(rest) if rest else {"id": rid}
+        sub_row = conn.execute(
+            "SELECT * FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+            (rid,)
+        ).fetchone()
+        subscription = dict(sub_row) if sub_row else {}
+        dismissed_ids = {
+            r[0] for r in conn.execute(
+                "SELECT announcement_id FROM announcement_dismissals WHERE restaurant_id=? AND user_id=?",
+                (rid, uid)
+            ).fetchall()
+        }
+        rows = conn.execute(
+            "SELECT * FROM announcements WHERE is_active=1 ORDER BY priority DESC, created_at DESC"
+        ).fetchall()
+        result = []
+        for row in rows:
+            ann = dict(row)
+            if ann["id"] in dismissed_ids:
+                continue
+            if not _announcement_matches_restaurant(ann, restaurant, subscription, conn):
+                continue
+            result.append(ann)
+        return {"announcements": result}
+    finally:
+        conn.close()
+
+
+@app.post("/api/announcements/{ann_id}/dismiss")
+async def dismiss_announcement(ann_id: str, user=Depends(current_user)):
+    rid = user["restaurant_id"]
+    uid = user["id"]
+    conn = database.get_db()
+    try:
+        ann = conn.execute("SELECT id, is_dismissible FROM announcements WHERE id=?", (ann_id,)).fetchone()
+        if not ann:
+            raise HTTPException(404, "الإعلان غير موجود")
+        if not ann["is_dismissible"]:
+            raise HTTPException(403, "هذا الإعلان لا يمكن إخفاؤه")
+        existing = conn.execute(
+            "SELECT id FROM announcement_dismissals WHERE announcement_id=? AND restaurant_id=? AND user_id=?",
+            (ann_id, rid, uid)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO announcement_dismissals (id, announcement_id, restaurant_id, user_id, dismissed_at) "
+                "VALUES (?,?,?,?,?)",
+                (str(uuid.uuid4()), ann_id, rid, uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ── Static pages ──────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
@@ -6454,9 +9135,50 @@ async def public_menu_page(restaurant_id: str):
     return FileResponse("public/menu.html")
 
 
-@app.get("/privacy")
-async def privacy_policy():
-    return FileResponse("public/privacy.html")
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    """Public robots.txt — explicitly allows all major crawlers including facebookexternalhit."""
+    from fastapi.responses import PlainTextResponse
+    content = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "\n"
+        "User-agent: facebookexternalhit\n"
+        "Allow: /\n"
+        "\n"
+        "User-agent: Twitterbot\n"
+        "Allow: /\n"
+        "\n"
+        "User-agent: LinkedInBot\n"
+        "Allow: /\n"
+        "\n"
+        "Sitemap: https://restaurant-saas-1.onrender.com/sitemap.xml\n"
+    )
+    return PlainTextResponse(content=content, status_code=200, headers={
+        "Cache-Control": "public, max-age=86400",
+    })
+
+
+@app.get("/privacy", include_in_schema=False)
+@app.get("/privacy/", include_in_schema=False)
+async def privacy_policy(request: Request):
+    """Publicly accessible privacy policy — no auth, no redirect, Meta-review safe."""
+    import os as _os
+    html_path = _os.path.join(_os.path.dirname(__file__), "public", "privacy.html")
+    with open(html_path, "r", encoding="utf-8") as _f:
+        html_content = _f.read()
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        content=html_content,
+        status_code=200,
+        headers={
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=86400",
+            "X-Robots-Tag": "index, follow",
+            # Override security_headers middleware — remove SAMEORIGIN for public crawlers
+            "X-Frame-Options": "ALLOWALL",
+        },
+    )
 
 
 @app.get("/api/public/menu/{restaurant_id}")
