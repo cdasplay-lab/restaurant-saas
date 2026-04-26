@@ -726,6 +726,14 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         logger.warning(f"[ig-error] no sender_id in messaging — skipping")
         return
 
+    # Filter echo messages: sent BY the page/business account back to itself.
+    # sender_id == entry["id"] means the page sent this message (our own reply echoed back).
+    # is_echo flag is also set by Meta on echoed messages.
+    entry_ig_id = entry.get("id", "")
+    if message.get("is_echo") or (entry_ig_id and sender_id == entry_ig_id):
+        logger.info(f"[ig-echo] skipping echo message — sender={sender_id} entry={entry_ig_id} mid={message.get('mid','')[:20]}")
+        return
+
     # Dedup — Meta retries unacknowledged messages
     mid_ig = message.get("mid", "")
     if mid_ig and _is_duplicate_event(restaurant_id, "instagram", mid_ig):
@@ -879,6 +887,12 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
     )
     if not sender_id:
         logger.warning(f"[facebook] no sender_id — dropping")
+        return
+
+    # Filter echo messages: page sending its own replies back as webhook events.
+    entry_fb_id = entry.get("id", "")
+    if message.get("is_echo") or (entry_fb_id and sender_id == entry_fb_id):
+        logger.info(f"[fb-echo] skipping echo message — sender={sender_id} entry={entry_fb_id} mid={mid_fb[:20]}")
         return
 
     # Dedup — Meta retries unacknowledged messages
