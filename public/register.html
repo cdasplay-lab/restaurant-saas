@@ -80,7 +80,7 @@
     <!-- Password -->
     <div>
       <label class="block text-slate-300 text-sm mb-2">كلمة المرور <span class="text-red-400">*</span></label>
-      <input id="password" type="password" minlength="6"
+      <input id="reg-password" type="password" minlength="6" autocomplete="new-password"
         class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
                focus:border-green-500 focus:bg-white/15 transition placeholder-slate-500"
         placeholder="6 أحرف على الأقل" required>
@@ -208,7 +208,7 @@
           restaurant_name: document.getElementById('restaurantName').value.trim(),
           owner_name: document.getElementById('ownerName').value.trim(),
           email: document.getElementById('email').value.trim(),
-          password: document.getElementById('password').value,
+          password: document.getElementById('reg-password').value,
           plan: selectedPlan,
           business_type: selectedType,
         }),
