@@ -146,3 +146,20 @@ Script: `scripts/day20_elite_reply_brain_check.py`
 *J04/J05: test expects duplicate order detection via history context, impossible from message text alone.
 
 **Critical safety checks: 0 failures.**
+
+---
+
+## NUMBER 20C Fixes (applied to `reply_quality.py`)
+
+| Fix | Description |
+|-----|-------------|
+| Orphaned leading punctuation | After phrase strip, `_clean_leading_punctuation()` removes leading `! . ، — :` |
+| Broken sentence drop | If first sentence is a broken fragment and remainder ≥10 chars, drop first sentence |
+| Broken-start detector | 19 patterns for `وهي/وتحتوي/الصورة/في معرفة/بناءً/وفقاً...` → triggers template |
+| Context-aware min length | Complaint intents: ≥12 chars; media/order intents: ≥8 chars |
+| Multi-question in order flow | `STRICT_ONE_QUESTION_INTENTS` now includes `direct_order`, `voice_order`, `story_reply` etc. |
+| Best-question stripping | Strips leading `و/ف/أ` conjunctions from selected question |
+| Factual memory preservation | `"آخر طلب"`, `"طلبك السابق"` added to never-replace markers |
+| 20 new banned phrases | `وفقاً للسجلات`, `بناءً على سجلاتنا`, `استقبلنا رسالتك الصوتية`, `تم معالجة طلبك الصوتي`, `من خلال الصورة`, `حسب الصورة`, `يسرنا`, `تم رصد`, `تم تحديد`, `تم التعرف على` and 10 more |
+
+**NUMBER 20C result:** 155 scenarios, avg 8.5/10, **0 rejected**, 0 regressions.
