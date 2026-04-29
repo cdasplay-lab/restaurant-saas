@@ -298,6 +298,18 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         reply_text, val_issues = _validate_reply(reply_text, history, memory, customer_message)
         if val_issues:
             logger.warning(f"[bot_validate] restaurant={restaurant_id} conv={conversation_id} fixed={val_issues}")
+        # NUMBER 20 — Elite Reply Brain (additive layer, never blocks order flow)
+        try:
+            from services.reply_brain import elite_reply_pass
+            reply_text = elite_reply_pass(
+                reply=reply_text,
+                customer_message=customer_message,
+                history=[dict(h) if not isinstance(h, dict) else h for h in history],
+                memory=memory,
+                products=[dict(p) for p in products],
+            )
+        except Exception as _elite_err:
+            logger.warning(f"[elite_reply] fallback — {_elite_err}")
     except Exception as e:
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
