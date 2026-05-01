@@ -18,6 +18,28 @@ from datetime import datetime, timedelta
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_PATH = os.getenv("DB_PATH", "restaurant.db")
+
+# ── DATABASE_URL normalization (Render / Heroku compatibility) ────────────────
+# Must run before IS_POSTGRES is set and before any pool is created.
+def _normalize_db_url(url: str) -> str:
+    if not url:
+        return url
+    # postgres:// → postgresql:// (psycopg2 requires the longer scheme)
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    # sslmode=no-verify is not a valid psycopg2 value — replace with require
+    url = url.replace("sslmode=no-verify", "sslmode=require")
+    # External host with no sslmode: append sslmode=require
+    # Internal Render hosts have no dots (e.g. dpg-xxx-a); external hosts do
+    _hm = re.search(r'@([^/:@]+)', url)
+    if _hm:
+        _host = _hm.group(1)
+        _is_external = '.' in _host
+        if _is_external and 'sslmode=' not in url:
+            url += ('&' if '?' in url else '?') + 'sslmode=require'
+    return url
+
+DATABASE_URL = _normalize_db_url(DATABASE_URL)
 IS_POSTGRES = bool(DATABASE_URL)
 
 # Connection pool (PostgreSQL only)
@@ -1072,7 +1094,26 @@ def _migrate_db(conn):
         conn._conn.autocommit = False
 
 
+def _log_db_config():
+    """Print safe DB startup info. Never prints passwords or full URLs."""
+    backend = "PostgreSQL" if IS_POSTGRES else "SQLite"
+    print(f"[DB] backend={backend}")
+    if IS_POSTGRES:
+        _hm = re.search(r'@([^/:@]+)', DATABASE_URL)
+        _host = _hm.group(1) if _hm else ""
+        _sm = re.search(r'sslmode=([^&\s]+)', DATABASE_URL)
+        _sslmode = _sm.group(1) if _sm else "none"
+        _internal = '.' not in _host if _host else None
+        print(f"[DB] database_url_present=true")
+        print(f"[DB] host_present={bool(_host)}")
+        print(f"[DB] sslmode={_sslmode}")
+        print(f"[DB] looks_internal={_internal}")
+    else:
+        print(f"[DB] database_url_present=false")
+
+
 def init_db():
+    _log_db_config()
     print(f"[DB] init_db starting — backend={'PostgreSQL' if IS_POSTGRES else 'SQLite'}")
     conn = get_db()
 
