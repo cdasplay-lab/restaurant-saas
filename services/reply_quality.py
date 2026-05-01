@@ -105,6 +105,25 @@ ELITE_BANNED_ADDITIONAL = [
     "فرصة لا تفوتك",
     "اطلب الآن قبل النفاد",
     "عرض خاص اليوم فقط",
+    # NUMBER 20D additions — A: new banned phrases
+    "لا أستطيع",            # bot exposing its own limitations (I19)
+    "لا يمكنني",            # same
+    "لا نستطيع",            # same
+    "صيانة تقنية",          # exposes technical internals (B06)
+    "مشكلة تقنية",          # same
+    "خطأ تقني",             # same
+    "لتفعيل الخدمة",        # exposes subscription system (B07)
+    "لتفعيل الاشتراك",      # same pattern
+    "لتفعيل حسابك",         # same pattern
+    "يرجى التواصل مع المطعم",  # specific full phrase (B07)
+    "يرجى ",                # standalone يرجى with space — catches remaining variants
+    "يمكنني تحويلك",        # formal robotic handoff (C21)
+    "يمكنني تحويل",         # same
+    # NUMBER 20D additions — D: voice/story polish
+    "طلبت ",                # voice transcript readback opener (V03, V04)
+    "وصلتني! ",             # redundant exclamation voice opener (V09)
+    "نعم ",                 # MSA formal yes — not Iraqi (S22)
+    "تواصل معنا بالخاص",    # double CTA on story replies (S22)
 ]
 
 # Technical AI/media exposure patterns (regex)
@@ -119,7 +138,7 @@ TECH_EXPOSURE_PATTERNS = [
     r"بناءً\s+على\s+(سجلات?|الصورة|الفويس|التسجيل)",
     r"من\s+خلال\s+(الصورة|الفويس|التسجيل)",
     r"استقبلنا\s+(رسالتك|استفسارك)",
-    r"تم\s+(تحديد|التعرف|رصد|معالجة)",
+    r"تم\s+(تحديد|التعرف|رصد|معالجة|استقبال)",
     r"يظهر\s+(في|من)\s+(الصورة|الصوت)",
     r"سجلاتنا\s+تبين",
     r"نظامنا\s+يوضح",
@@ -146,6 +165,13 @@ BROKEN_START_PATTERNS = [
     r"^التسجيل\s",
     r"^تحتوي\s",
     r"^في\s+(معرفة|تتبع|مساعدة|خدمة|الحصول|تحليل)",
+    # NUMBER 20D additions — B
+    r"^بينما\s+(أرتب|أجهز|أحضر|أرسل|نرتب|نجهز)",  # T15: "بينما أرتب لك القائمة."
+    r"^يبدو\s+أنه?ا",                               # I15: "يبدو أنها صورة مطعم."
+    r"^عن\s+",                                      # V17: "عن الطلبات، تفضل..."
+    r"^معالجة\s+",                                  # I19: "معالجة الطلب من الصور..."
+    r"^التواصل\s+",                                 # B07: "التواصل مع المطعم..."
+    r"^كتابة\s+",                                   # I19 secondary: "كتابة طلبك نصياً."
 ]
 
 # Signs the reply is corporate/formal (detect and flag)
@@ -244,6 +270,19 @@ def extended_quality_gate(reply: str, ctx: dict) -> tuple:
     # 9. Dangling standalone question mark / whitespace collapse
     fixed = re.sub(r'(^|\s+)[؟?](\s*|$)', r'\1', fixed).strip()
     fixed = re.sub(r'[ \t]{2,}', ' ', fixed).strip()
+
+    # 9b. NUMBER 20D — Group C: trailing orphan punctuation & fragment normalization
+    fixed = re.sub(r'\.\s*\.+', '.', fixed)            # ". ." → "."
+    fixed = re.sub(r'[،,]\s*\.', '.', fixed)            # "، ." → "."
+    fixed = re.sub(r'[-—]\s*\.', '.', fixed)            # "- ." → "."
+    fixed = re.sub(r'\s+\.(\s|$)', r'.\1', fixed)       # " ." → "."
+    fixed = fixed.strip().rstrip('،').strip()            # trailing lone comma
+    # Remove trailing hanging prepositions left after phrase stripping
+    fixed = re.sub(r'\s+(بسبب|من|في|على|عن|مع|إلى|لـ?|و)\s*[.،]?\s*$', '.', fixed).strip()
+    # Remove orphaned trailing "." or "،" after "؟" or "!" (left when CTA phrase is stripped)
+    fixed = re.sub(r'(?<=[؟!])[.،\s]+$', '', fixed).strip()
+    # Remove short orphaned final sentence (≤2 meaningful words, no verb/question)
+    fixed = _clean_orphaned_tail(fixed)
 
     # 10. Final leading punctuation pass (catches edge cases after step 7-9)
     fixed = _clean_leading_punctuation(fixed)
@@ -423,6 +462,25 @@ def _strip_leading_conjunction(text: str) -> str:
     return re.sub(r'^[وفأ]\s*(?=[^\s])', '', text).strip()
 
 
+def _clean_orphaned_tail(text: str) -> str:
+    """
+    Remove a short meaningless final sentence left after phrase stripping.
+    Example: "الخدمة موقوفة حالياً. المطعم." → "الخدمة موقوفة حالياً."
+    Only removes if the last sentence has ≤2 meaningful words and no question mark.
+    """
+    if not text:
+        return text
+    parts = re.split(r'(?<=[.؟!])\s+', text.strip())
+    if len(parts) <= 1:
+        return text
+    last = parts[-1].strip()
+    # Count meaningful Arabic words (≥2 chars)
+    words = [w for w in re.sub(r'[.؟!،🌷]', '', last).split() if len(w) >= 2]
+    if len(words) <= 2 and '؟' not in last and len(last) < 15:
+        return ' '.join(parts[:-1]).strip()
+    return text
+
+
 def should_use_template(intent: str, reply: str, issues: list, ctx: dict) -> bool:
     """
     Decide if we should replace the current reply with an elite template.
@@ -446,8 +504,22 @@ def should_use_template(intent: str, reply: str, issues: list, ctx: dict) -> boo
         return False
 
     # Use template if reply has critical issues (tech exposure, broken start, empty, too short)
-    if any(i.startswith("tech_exposure") or i.startswith("empty") or
-           i in ("broken_start", "reply_too_short") for i in issues):
+    # For image/story intents: also treat elite_banned AI-exposure removals as critical.
+    # Voice intents are excluded — their remaining content after stripping is often valid.
+    _AI_EXPOSE_BANNED = frozenset([
+        "تم تحليل", "الصورة تحتوي", "تم تحديد",
+        "تم التعرف على", "تم رصد", "تم معالجة", "تم استقبال",
+        "استقبلنا رسالتك", "استقبلنا استفسارك",
+    ])
+    _AI_EXPOSE_INTENTS = {"image_product", "image_menu", "image_complaint", "story_reply"}
+    if any(
+        i.startswith("tech_exposure") or i.startswith("empty") or
+        i in ("broken_start", "reply_too_short") or
+        (i.startswith("elite_banned") and
+         intent in _AI_EXPOSE_INTENTS and
+         any(m in i for m in _AI_EXPOSE_BANNED))
+        for i in issues
+    ):
         return True
 
     # Use template for simple intents that don't need AI-generated text

@@ -181,9 +181,11 @@ TEMPLATES: dict = {
         "يسلم ذوقك 🌷 تريده؟",
     ],
 
+    # NUMBER 20D: single CTA only, Iraqi dialect أيه/إي not نعم
     "story_reply_available": [
+        "أيه موجود 🌷 أرتبلك؟",
         "إي موجود 🌷 تريده؟",
-        "موجود، أرتبلك؟",
+        "موجود 🌷 راسلنا بالخاص ونثبت الطلب.",
     ],
 
     "story_reply_unavailable": [
@@ -192,6 +194,7 @@ TEMPLATES: dict = {
     ],
 
     # ── Image replies ──────────────────────────────────────
+    # NUMBER 20D: added safe fallback for unclear/hallucinated image cases
     "image_product": [
         "وصلت الصورة 🌷 إذا تقصد {item}، سعره {price} د.ع. تريده؟",
         "هذا {item} بـ {price} د.ع. تطلبه؟",
@@ -210,17 +213,30 @@ TEMPLATES: dict = {
     "image_unclear": [
         "وصلت الصورة 🌷 شتريد بالضبط؟",
         "وصلتني 🌷 كلّيلي شتحب؟",
+        "وصلتني 🌷 شتريد من المنيو؟",
+    ],
+
+    # Safe fallback when image context is unclear or GPT output is unreliable
+    "image_safe_fallback": [
+        "وصلت الصورة 🌷 شتريد بالضبط؟",
+        "وصلتني 🌷 كلّيلي شتحب؟",
     ],
 
     # ── Voice replies ──────────────────────────────────────
+    # NUMBER 20D: warmer, no exclamation, confirm order naturally
     "voice_order": [
-        "وصلني الفويس 🌷 {item} واحد، صح؟",
-        "وصلت — {item}؟ تأكد الطلب.",
-        "وصلني 🌷 تريد {item}؟",
+        "وصلني الفويس 🌷 {item} واحد — صح؟",
+        "وصلني 🌷 {item}، توصيل لو استلام؟",
+        "تمام 🌷 {item} — واحد؟",
+    ],
+
+    "voice_confirm_payment": [
+        "وصلني 🌷 كاش وتوصيل — صح؟",
+        "تمام 🌷 كاش وتوصيل.",
     ],
 
     "voice_unclear": [
-        "وصلني الفويس 🌷 ما وضح هواي — شتريد بالضبط؟",
+        "وصلني 🌷 ما وضح هواي — شتريد بالضبط؟",
         "وصلني 🌷 كلّيلي شتحب؟",
     ],
 
@@ -286,10 +302,12 @@ TEMPLATES: dict = {
     ],
 
     # ── Human handoff ──────────────────────────────────────
+    # NUMBER 20D: added callback-specific variant
     "human_handoff": [
         "حاضر 🌷 أحولك لموظف هسه.",
         "تمام، موظفنا يتواصل وياك هسه 🌷",
         "وصلتني 🌷 أحولك.",
+        "حاضر 🌷 موظفنا يتواصل وياك.",
     ],
 
     # ── Thanks ─────────────────────────────────────────────
@@ -321,9 +339,11 @@ TEMPLATES: dict = {
     ],
 
     # ── Subscription blocked ───────────────────────────────
+    # NUMBER 20D: no technical internals, no يرجى, always give direction
     "blocked_subscription": [
-        "الخدمة متوقفة مؤقتًا 🌷 تواصل مع الإدارة حتى تتفعل.",
-        "هسه الخدمة موقوفة، تواصل مع المطعم مباشرة.",
+        "الخدمة موقوفة مؤقتاً 🌷 تواصل مع المطعم مباشرة.",
+        "هسه الخدمة موقوفة 🌷 راسل الإدارة حتى تتفعل.",
+        "الحساب يحتاج تفعيل 🌷 تواصل مع المطعم.",
     ],
 
     # ── Bot in human mode (should not reply) ──────────────

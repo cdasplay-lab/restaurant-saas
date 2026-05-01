@@ -38,10 +38,14 @@ INTENT_PATTERNS: list = [
     ("complaint",              ["شكوى", "مشكلة", "غلط", "خطأ", "ما زبط", "زبالة"]),
 
     # Human handoff — before direct_order so "ابي موظف" hits here not direct_order
+    # NUMBER 20D: added callback request phrases
     ("human_handoff",          ["أريد موظف", "اريد موظف", "كلمني موظف", "أريد مدير", "اريد مدير",
                                  "ما أريد بوت", "ما اريد بوت", "أريد إنسان", "اريد انسان",
                                  "موظف", "مدير", "إنسان", "شخص حقيقي",
-                                 "أحچي ويا بوت", "ما أريد أحچي"]),
+                                 "أحچي ويا بوت", "ما أريد أحچي",
+                                 "اتصلوا بي", "اتصل علي", "اتصل بي",
+                                 "خلي موظف يتصل", "أريد اتصال", "ما أريد بوت اتصلوا",
+                                 "تصلوا بي", "أبي تتصلون"]),
 
     # Memory
     ("memory_same_order",      ["مثل آخر مرة", "نفس الطلب", "مثل قبل", "نفسه من قبل",
@@ -136,10 +140,31 @@ def detect_intent(message: str, history: list = None, memory: dict = None) -> st
 
     # Pattern matching
     msg_lower = msg.lower()
+    matched_intent = None
     for intent, patterns in INTENT_PATTERNS:
         for p in patterns:
             if p in msg or p in msg_lower:
-                return intent
+                matched_intent = intent
+                break
+        if matched_intent:
+            break
+
+    # NUMBER 20D — Fix E: secondary complaint scan for voice messages.
+    # [فويس] matches voice_order first, but if the voice content contains
+    # complaint/anger keywords, override to the appropriate complaint intent.
+    if matched_intent == "voice_order":
+        VOICE_ANGRY_WORDS = ["أسوأ", "زعلت", "سيء", "غشاش", "خراء", "وسخ",
+                              "ما أجي ثاني", "ما أرجع", "فلوسي رجعوا"]
+        VOICE_COMPLAINT_WORDS = ["بارد", "ناقص", "غلط", "تأخير", "مو زين",
+                                  "تعبان", "ما عجبني", "فلوسي", "رجعوا", "اشتكي",
+                                  "مشكلة", "شكوى"]
+        if any(w in msg for w in VOICE_ANGRY_WORDS):
+            return "angry_complaint"
+        if any(w in msg for w in VOICE_COMPLAINT_WORDS):
+            return "complaint"
+
+    if matched_intent:
+        return matched_intent
 
     # Fallback: short message is likely casual
     if len(msg.strip()) <= 3:
@@ -257,6 +282,14 @@ def elite_reply_pass(
         # 1. Build context
         ctx = build_message_context(customer_message, history, memory, products)
         intent = ctx["intent"]
+
+        # 1b. Override intent when bot reply signals subscription block.
+        # Customer may say "هلا" (greeting) but the reply is about the service
+        # being off — the quality gate must route to blocked_subscription template.
+        _BLOCKED_MARKERS = ["الخدمة موقوفة", "الخدمة متوقفة", "موقوفة مؤقتاً", "موقوفة حالياً"]
+        if any(m in reply for m in _BLOCKED_MARKERS):
+            intent = "blocked_subscription"
+            ctx["intent"] = "blocked_subscription"
 
         # 2. Quality gate
         is_ok, issues, fixed = extended_quality_gate(reply, ctx)

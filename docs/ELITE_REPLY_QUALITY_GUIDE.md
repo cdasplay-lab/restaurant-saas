@@ -163,3 +163,20 @@ Script: `scripts/day20_elite_reply_brain_check.py`
 | 20 new banned phrases | `وفقاً للسجلات`, `بناءً على سجلاتنا`, `استقبلنا رسالتك الصوتية`, `تم معالجة طلبك الصوتي`, `من خلال الصورة`, `حسب الصورة`, `يسرنا`, `تم رصد`, `تم تحديد`, `تم التعرف على` and 10 more |
 
 **NUMBER 20C result:** 155 scenarios, avg 8.5/10, **0 rejected**, 0 regressions.
+
+---
+
+## NUMBER 20D Fixes
+
+| Fix | File | Description |
+|-----|------|-------------|
+| `تم استقبال` AI exposure (V06) | `reply_quality.py` | Added `استقبال` to `TECH_EXPOSURE_PATTERNS` regex group → sentence removed → `angry_complaint` template |
+| Subscription block intent override (B02) | `reply_brain.py` | Detects `"موقوفة"` markers in bot reply → overrides intent to `blocked_subscription` before quality gate |
+| Voice transcript readback (V03/V04) | `reply_quality.py` | Added `"طلبت "` to `ELITE_BANNED_ADDITIONAL` — strips readback prefix from voice replies |
+| Redundant voice opener (V09) | `reply_quality.py` | Added `"وصلتني! "` to `ELITE_BANNED_ADDITIONAL` |
+| MSA "نعم" + double CTA (S22) | `reply_quality.py` | Added `"نعم "` and `"تواصل معنا بالخاص"` to `ELITE_BANNED_ADDITIONAL` |
+| AI-expose banned in image/story (I15/I18) | `reply_quality.py` | `_AI_EXPOSE_BANNED` + `_AI_EXPOSE_INTENTS` in `should_use_template` — triggers template for image/story intents when AI-expose phrase was stripped |
+| `للاستفسار` false-positive (V17) | `reply_quality.py` | Removed `للاستفسار` from banned — was causing broken-start match → wrong template |
+| Orphaned trailing punctuation | `reply_quality.py` | Step 9b: strips `.،` after `؟!` left when CTA phrase stripped |
+
+**NUMBER 20D result:** 155 scenarios, avg **8.8/10**, **0 rejected**, voice 8.8 ✅, image 8.8 ✅, story 8.8 ✅.
