@@ -1,0 +1,33 @@
+{
+  "verdict": "CLOSED",
+  "passed": 99,
+  "failed": 0,
+  "warned": 2,
+  "skipped": 7,
+  "failures": [],
+  "warnings": [
+    "[D07] R1 payment requests list empty after submission",
+    "[D12] Resubmit returned 400: {'detail': 'خطة غير صالحة — أرسل plan_id أو plan code صحيح'}"
+  ],
+  "r1_id": "dd657e4e-ac93-4b8d-b420-d10577bc23a5",
+  "r2_id": "4abf5c83-83f6-487d-9a5e-2b08a9f1b195",
+  "r1_email": "prod_r1_05012329@qa19b.test",
+  "r2_email": "prod_r2_05012329@qa19b.test",
+  "r1_products": {
+    "زينگر": "01c0098e-fa56-4a74-bbaf-f82e65fd305e",
+    "برگر كلاسيك": "cd3cefec-5298-43d7-b95f-e7c30b2981ee",
+    "كولا": "d74b77e0-f17b-4876-bdde-83aec5027c35",
+    "ليموناضة": "2a6d35fb-ad6a-4df0-980e-85df707e5c71"
+  },
+  "r2_products": {
+    "شاورما": "e54babd6-9486-4b1b-9a10-895d9185cae5",
+    "عصير برتقال": "5b667f96-aa49-409e-a314-1aaba8919d02",
+    "كيك شوكولاتة": "2469206a-1426-438a-a155-24b1a45f979d"
+  },
+  "r1_orders": [
+    "0d9ab2cc-85ab-42a6-a627-c0226a87b381"
+  ],
+  "r1_payment_req_id": null,
+  "base_url": "https://restaurant-saas-1.onrender.com",
+  "run_at": "2026-05-01T23:31:32.206907"
+}
