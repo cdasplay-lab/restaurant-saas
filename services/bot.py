@@ -298,7 +298,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         reply_text, val_issues = _validate_reply(reply_text, history, memory, customer_message)
         if val_issues:
             logger.warning(f"[bot_validate] restaurant={restaurant_id} conv={conversation_id} fixed={val_issues}")
-        # NUMBER 20 — Elite Reply Brain (additive layer, never blocks order flow)
+        # NUMBER 20 — Elite Reply Brain (post-processing quality layer, LOCKED 2026-05-01)
+        # SAFETY: this block only rewrites reply_text for tone/banned-phrase cleanup.
+        # It must never affect order creation, order persistence, or extracted_order.
+        # Disable with env var ELITE_REPLY_ENGINE=false if regression appears.
         try:
             from services.reply_brain import elite_reply_pass
             reply_text = elite_reply_pass(
