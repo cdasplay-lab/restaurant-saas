@@ -165,7 +165,43 @@
 
     <!-- === DASHBOARD === -->
     <section id="sec-dashboard" class="section active space-y-6">
+      <!-- Main KPI row -->
       <div id="kpiGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      <!-- Health KPI row (from analytics/health) -->
+      <div id="healthKpiRow" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+      <!-- Warnings center -->
+      <div id="warningsCenter" class="hidden">
+        <div class="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+          <div class="flex items-center gap-2 mb-3">
+            <i class="fa-solid fa-triangle-exclamation text-red-400"></i>
+            <h3 class="text-red-300 font-semibold text-sm">تنبيهات تحتاج انتباه</h3>
+            <span id="warningsCenterCount" class="bg-red-500/30 text-red-300 text-xs px-2 py-0.5 rounded-full ml-auto">0</span>
+          </div>
+          <div id="warningsCenterList" class="space-y-2"></div>
+        </div>
+      </div>
+      <!-- Production readiness quick view -->
+      <div id="dashReadinessPanel" class="hidden">
+        <div class="card p-4 border-l-4 border-l-yellow-500/50">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-slate-300 font-semibold text-sm">جاهزية الإنتاج</h3>
+            <button onclick="showSection('prod-safety')" class="text-indigo-400 text-xs hover:underline">عرض التفاصيل</button>
+          </div>
+          <div id="dashReadinessContent"></div>
+        </div>
+      </div>
+      <!-- AI Learning overview panel -->
+      <div id="dashAiPanel" class="hidden">
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-slate-300 font-semibold text-sm flex items-center gap-2">
+              <span class="text-indigo-400">🧠</span> نظرة عامة — تدريب الذكاء الاصطناعي
+            </h3>
+          </div>
+          <div id="dashAiContent" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+        </div>
+      </div>
+      <!-- Expiring subs + Recent -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div class="card p-4">
           <h3 class="text-slate-300 font-semibold mb-4 text-sm">الاشتراكات المنتهية قريباً</h3>
@@ -239,20 +275,42 @@
 
     <!-- === ANALYTICS === -->
     <section id="sec-analytics" class="section space-y-6">
-      <div class="card p-4">
-        <h3 class="text-slate-300 font-semibold mb-4 text-sm">نمو المطاعم شهرياً</h3>
-        <canvas id="growthChart" height="100"></canvas>
-      </div>
+      <!-- Platform KPI Row -->
+      <div id="analyticsKpiRow" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+      <!-- Growth + Plans -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="card p-4 lg:col-span-2">
+          <h3 class="text-slate-300 font-semibold mb-4 text-sm">نمو المطاعم شهرياً</h3>
+          <canvas id="growthChart" height="100"></canvas>
+        </div>
         <div class="card p-4">
           <h3 class="text-slate-300 font-semibold mb-4 text-sm">توزيع الخطط</h3>
           <canvas id="plansChart"></canvas>
         </div>
-        <div class="card p-4 col-span-2">
-          <h3 class="text-slate-300 font-semibold mb-4 text-sm">أفضل المطاعم (بالطلبات)</h3>
-          <div id="topRestaurants" class="space-y-2"></div>
-        </div>
       </div>
+      <!-- Restaurants Analytics Table -->
+      <div class="card p-4 overflow-x-auto">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-slate-300 font-semibold text-sm">المطاعم — تفصيل الأداء</h3>
+          <button onclick="loadAnalytics()" class="text-slate-400 hover:text-white text-xs flex items-center gap-1"><i class="fa-solid fa-rotate-right text-xs"></i> تحديث</button>
+        </div>
+        <table class="w-full text-xs min-w-[700px]">
+          <thead class="text-slate-500 border-b border-slate-700">
+            <tr>
+              <th class="text-right pb-2 pr-2">المطعم</th>
+              <th class="text-right pb-2">الخطة</th>
+              <th class="text-right pb-2">الطلبات</th>
+              <th class="text-right pb-2">الإيرادات</th>
+              <th class="text-right pb-2">العملاء</th>
+              <th class="text-right pb-2">القنوات</th>
+              <th class="text-right pb-2">🎙️ صوتي</th>
+              <th class="text-right pb-2">🖼️ صور</th>
+            </tr>
+          </thead>
+          <tbody id="analyticsRestTable" class="divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+      <!-- Channel Usage -->
       <div class="card p-4">
         <h3 class="text-slate-300 font-semibold mb-4 text-sm">استخدام القنوات</h3>
         <div id="channelUsage" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
@@ -1170,21 +1228,28 @@ function loadSection(name) {
 // ---- DASHBOARD ----
 async function loadDashboard() {
   try {
-    const d = await api('/api/super/dashboard');
+    const [d, health, overview, aiOverview] = await Promise.all([
+      api('/api/super/dashboard'),
+      api('/api/super/analytics/health').catch(() => ({})),
+      api('/api/super/analytics/overview').catch(() => ({})),
+      api('/api/super/ai/overview').catch(() => ({})),
+    ]);
+
     // Support both nested and flat response shapes
-    const totalRest = (d.restaurants && d.restaurants.total != null) ? d.restaurants.total : (d.total_restaurants ?? 0);
-    const activeRest = (d.restaurants && d.restaurants.active != null) ? d.restaurants.active : (d.active_restaurants ?? 0);
-    const mrr = (d.revenue && d.revenue.mrr != null) ? d.revenue.mrr : (d.mrr ?? 0);
+    const totalRest  = (d.restaurants && d.restaurants.total != null) ? d.restaurants.total : (d.total_restaurants ?? overview.total_restaurants ?? 0);
+    const activeRest = (d.restaurants && d.restaurants.active != null) ? d.restaurants.active : (d.active_restaurants ?? overview.active_restaurants ?? 0);
+    const mrr = (d.revenue && d.revenue.mrr != null) ? d.revenue.mrr : (d.mrr ?? overview.current_mrr ?? 0);
     const arr = (d.revenue && d.revenue.arr != null) ? d.revenue.arr : (d.arr ?? 0);
-    const totalOrders = (d.orders && d.orders.total != null) ? d.orders.total : (d.total_orders ?? 0);
-    const totalConvs = (d.conversations && d.conversations.total != null) ? d.conversations.total : (d.total_conversations ?? 0);
+    const totalOrders = (d.orders && d.orders.total != null) ? d.orders.total : (d.total_orders ?? overview.total_orders ?? 0);
+    const totalConvs  = (d.conversations && d.conversations.total != null) ? d.conversations.total : (d.total_conversations ?? overview.total_conversations ?? 0);
+
+    const colorMap = { indigo: 'border-indigo-500/30 text-indigo-400', green: 'border-green-500/30 text-green-400', blue: 'border-blue-500/30 text-blue-400', purple: 'border-purple-500/30 text-purple-400' };
     const kpis = [
       { label: 'إجمالي المطاعم', value: totalRest, icon: '🏪', color: 'indigo', sub: `${activeRest} نشط` },
       { label: 'الدخل الشهري (MRR)', value: formatCurrency(mrr), icon: '💰', color: 'green', sub: `ARR: ${formatCurrency(arr)}` },
       { label: 'إجمالي الطلبات', value: totalOrders, icon: '📦', color: 'blue', sub: `المحادثات: ${totalConvs}` },
-      { label: 'المستخدمون', value: d.total_users ?? 0, icon: '👥', color: 'purple', sub: `القنوات: ${d.active_channels ?? 0}` },
+      { label: 'المستخدمون', value: d.total_users ?? 0, icon: '👥', color: 'purple', sub: `القنوات: ${d.active_channels ?? overview.active_channels ?? 0}` },
     ];
-    const colorMap = { indigo: 'border-indigo-500/30 text-indigo-400', green: 'border-green-500/30 text-green-400', blue: 'border-blue-500/30 text-blue-400', purple: 'border-purple-500/30 text-purple-400' };
     document.getElementById('kpiGrid').innerHTML = kpis.map(k => `
       <div class="kpi-card p-4 border-t-2 ${colorMap[k.color]}">
         <div class="flex items-start justify-between mb-2">
@@ -1195,7 +1260,65 @@ async function loadDashboard() {
         <div class="text-slate-500 text-xs mt-1">${k.sub}</div>
       </div>`).join('');
 
-    // Expiring soon — show count or fetch from restaurants list
+    // Health KPI row
+    const failedOut = health.failed_outbound_24h ?? 0;
+    const voiceFail = health.voice_failed_24h ?? 0;
+    const chanErrors = health.channel_errors ?? 0;
+    const suspended = health.suspended_restaurants ?? 0;
+    const healthKpis = [
+      { label: 'رسائل فاشلة (24س)', val: failedOut, warn: failedOut > 0, icon: '📤' },
+      { label: 'صوت فاشل (24س)', val: voiceFail, warn: voiceFail > 0, icon: '🎙️' },
+      { label: 'قنوات بأخطاء', val: chanErrors, warn: chanErrors > 0, icon: '📡' },
+      { label: 'مطاعم موقوفة', val: suspended, warn: suspended > 0, icon: '🚫' },
+    ];
+    document.getElementById('healthKpiRow').innerHTML = healthKpis.map(k => `
+      <div class="kpi-card p-3 text-center ${k.warn && k.val > 0 ? 'border border-red-500/30 bg-red-500/5' : ''}">
+        <div class="text-xl mb-1">${k.icon}</div>
+        <div class="font-bold ${k.warn && k.val > 0 ? 'text-red-400' : 'text-slate-300'}">${k.val}</div>
+        <div class="text-slate-500 text-xs mt-0.5">${k.label}</div>
+      </div>`).join('');
+
+    // Warnings center
+    const warnings = [];
+    if (failedOut > 0)   warnings.push(`📤 ${failedOut} رسالة صادرة فاشلة في آخر 24 ساعة`);
+    if (voiceFail > 0)   warnings.push(`🎙️ ${voiceFail} رسالة صوتية فشل تفريغها في آخر 24 ساعة`);
+    if (chanErrors > 0)  warnings.push(`📡 ${chanErrors} قناة تُبلّغ عن خطأ في الاتصال`);
+    if (suspended > 0)   warnings.push(`🚫 ${suspended} مطعم حالته موقوفة`);
+    if ((health.expiring_soon ?? 0) > 0) warnings.push(`⏰ ${health.expiring_soon} اشتراك ينتهي خلال 7 أيام`);
+    if ((health.expired_subscriptions ?? 0) > 0) warnings.push(`❌ ${health.expired_subscriptions} اشتراك منتهٍ وما يزال مفعلاً`);
+    const wc = document.getElementById('warningsCenter');
+    if (warnings.length > 0) {
+      document.getElementById('warningsCenterCount').textContent = warnings.length;
+      document.getElementById('warningsCenterList').innerHTML = warnings.map(w =>
+        `<div class="flex items-center gap-2 text-red-300 text-sm"><span>${w}</span></div>`
+      ).join('');
+      wc.classList.remove('hidden');
+    } else {
+      wc.classList.add('hidden');
+    }
+
+    // AI Learning panel
+    const aiPanel = document.getElementById('dashAiPanel');
+    const aiContent = document.getElementById('dashAiContent');
+    if (aiOverview && !aiOverview.error && aiContent) {
+      const aiKpis = [
+        { label: 'تصحيحات نشطة',     val: aiOverview.total_active_corrections ?? 0, icon: '✏️' },
+        { label: 'قاعدة المعرفة',     val: aiOverview.total_active_knowledge    ?? 0, icon: '📚' },
+        { label: 'تقييمات معلقة',    val: aiOverview.pending_feedback           ?? 0, icon: '📬', warn: (aiOverview.pending_feedback ?? 0) > 0 },
+        { label: 'تقييمات إجمالي',   val: aiOverview.total_feedback             ?? 0, icon: '💬' },
+        { label: 'رضا العملاء (جيد)', val: aiOverview.good_feedback             ?? 0, icon: '👍' },
+        { label: 'سجل جودة (7أيام)', val: aiOverview.quality_logs_7d            ?? 0, icon: '📊' },
+      ];
+      aiContent.innerHTML = aiKpis.map(k => `
+        <div class="kpi-card p-3 text-center ${k.warn ? 'border border-amber-500/30 bg-amber-500/5' : ''}">
+          <div class="text-xl mb-1">${k.icon}</div>
+          <div class="font-bold ${k.warn ? 'text-amber-400' : 'text-slate-300'}">${k.val}</div>
+          <div class="text-slate-500 text-xs mt-0.5">${k.label}</div>
+        </div>`).join('');
+      aiPanel.classList.remove('hidden');
+    }
+
+    // Expiring soon
     const expEl = document.getElementById('expiringList');
     const expCount = typeof d.expiring_soon === 'number' ? d.expiring_soon : (d.expiring_soon || []).length;
     if (expCount > 0) {
@@ -1208,7 +1331,7 @@ async function loadDashboard() {
       expEl.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">✅ لا توجد اشتراكات تنتهي قريباً</p>';
     }
 
-    // Recent
+    // Recent restaurants
     const recEl = document.getElementById('recentRestaurants');
     if (d.recent_restaurants && d.recent_restaurants.length) {
       recEl.innerHTML = d.recent_restaurants.map(r => `
@@ -1312,11 +1435,13 @@ function renderRestaurants(list) {
       </td>
       <td class="px-4 py-3 text-slate-300 text-sm">${r.total_orders ?? 0}</td>
       <td class="px-4 py-3">
-        <div class="flex gap-1 flex-wrap">
+        <div class="flex gap-1 flex-wrap items-center">
+          <span title="حالة تدريب الذكاء الاصطناعي" class="text-xs px-1.5 py-0.5 rounded-full ${r.ai_learning_enabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-red-500/20 text-red-400'}">${r.ai_learning_enabled ? '🧠' : '🚫'}</span>
           <button onclick="viewRestaurant('${r.id}')" class="btn btn-ghost btn-sm" title="عرض">🔍</button>
           <button onclick="openEditRest('${r.id}','${h(r.status||'active')}','${h(r.plan||'trial')}','${h(r.internal_notes||'')}')" class="btn btn-ghost btn-sm" title="تعديل">✏️</button>
           <button onclick="openSub('${r.id}','${h(r.plan||'trial')}','${h(r.sub_status||r.status||'trial')}','${r.sub_price||0}','${r.sub_end||''}')" class="btn btn-ghost btn-sm" title="الاشتراك">💳</button>
           <button onclick="impersonate('${r.id}')" class="btn btn-ghost btn-sm" title="دخول كمالك">🔑</button>
+          <button onclick="saToggleAiLearning('${r.id}', ${r.ai_learning_enabled ? 'true' : 'false'})" class="btn btn-ghost btn-sm" title="${r.ai_learning_enabled ? 'تعطيل تدريب AI' : 'تفعيل تدريب AI'}">${r.ai_learning_enabled ? '🛑' : '▶️'}</button>
           <button onclick="resetRestaurantData('${r.id}','${h(r.name)}')" class="btn btn-danger btn-sm" title="حذف البيانات التجريبية">🗑️</button>
           <button onclick="archiveRest('${r.id}')" class="btn btn-danger btn-sm" title="أرشفة">📦</button>
         </div>
@@ -1392,7 +1517,25 @@ async function subAction(rid, action) {
 // ---- ANALYTICS ----
 async function loadAnalytics() {
   try {
-    const d = await api('/api/super/analytics');
+    const [d, overview, restData, chData] = await Promise.all([
+      api('/api/super/analytics'),
+      api('/api/super/analytics/overview').catch(() => ({})),
+      api('/api/super/analytics/restaurants').catch(() => ({ restaurants: [] })),
+      api('/api/super/analytics/channels').catch(() => ({ channels: [] })),
+    ]);
+
+    // Platform KPI row
+    const kpis = [
+      { label: 'المطاعم النشطة', val: overview.active_restaurants ?? overview.total_restaurants ?? 0, color: 'text-purple-400' },
+      { label: 'إجمالي الإيرادات', val: 'د.إ ' + (overview.platform_revenue ?? 0).toLocaleString(), color: 'text-green-400' },
+      { label: 'إجمالي الطلبات', val: overview.total_orders ?? 0, color: 'text-indigo-400' },
+      { label: '🎙️ رسائل صوتية', val: overview.total_voice_messages ?? 0, color: 'text-cyan-400' },
+    ];
+    document.getElementById('analyticsKpiRow').innerHTML = kpis.map(k => `
+      <div class="kpi-card p-4 text-center">
+        <div class="text-xl font-bold ${k.color} mb-1">${k.val}</div>
+        <div class="text-slate-500 text-xs">${k.label}</div>
+      </div>`).join('');
 
     // Growth chart
     if (growthChartInst) growthChartInst.destroy();
@@ -1417,32 +1560,40 @@ async function loadAnalytics() {
       type: 'doughnut',
       data: {
         labels: plans.map(p => p.plan),
-        datasets: [{ data: plans.map(p => p.count), backgroundColor: ['#6d28d9','#2563eb','#059669','#d97706'] }]
+        datasets: [{ data: plans.map(p => p.count || p.cnt || 0), backgroundColor: ['#6d28d9','#2563eb','#059669','#d97706','#dc2626'] }]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
     });
 
-    // Top restaurants
-    const top = d.top_restaurants || [];
-    document.getElementById('topRestaurants').innerHTML = top.length ? top.slice(0,8).map((r, i) => `
-      <div class="flex items-center gap-3 py-2 border-b border-slate-800">
-        <span class="text-slate-500 text-sm w-6">${i+1}</span>
-        <div class="flex-1">
-          <div class="text-white text-sm">${h(r.name)}</div>
-          <div class="text-slate-500 text-xs">${planBadge(r.plan || 'trial')}</div>
-        </div>
-        <span class="text-slate-300 text-sm">${r.total_orders || 0} طلب</span>
-      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد بيانات</p>';
+    // Restaurants analytics table
+    const rests = restData.restaurants || [];
+    const tbody = document.getElementById('analyticsRestTable');
+    tbody.innerHTML = rests.length ? rests.map(r => `
+      <tr class="hover:bg-slate-800/40 transition">
+        <td class="py-2 pr-2">
+          <div class="text-white text-xs font-medium">${h(r.name)}</div>
+          <div class="text-slate-500 text-xs">${r.status === 'active' ? '<span class="text-green-400">●</span>' : '<span class="text-red-400">●</span>'} ${h(r.status)}</div>
+        </td>
+        <td class="py-2">${planBadge(r.plan || 'trial')}</td>
+        <td class="py-2 text-slate-200">${r.total_orders}</td>
+        <td class="py-2 text-green-400">د.إ ${parseFloat(r.total_revenue||0).toLocaleString()}</td>
+        <td class="py-2 text-slate-300">${r.total_customers}</td>
+        <td class="py-2 text-slate-300">${r.channel_count}</td>
+        <td class="py-2 text-cyan-400">${r.voice_messages}</td>
+        <td class="py-2 text-purple-400">${r.menu_images}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="py-6 text-center text-slate-500">لا توجد بيانات</td></tr>';
 
-    // Channel usage
-    const ch = d.channel_usage || [];
-    const chIcons = { telegram: '✈️', instagram: '📷', whatsapp: '📱', website: '🌐' };
-    document.getElementById('channelUsage').innerHTML = ch.map(c => `
+    // Channel usage from new endpoint
+    const chList = chData.channels || d.channel_usage || [];
+    const chIcons = { telegram: '✈️', instagram: '📷', whatsapp: '📱', facebook: '📘', website: '🌐' };
+    document.getElementById('channelUsage').innerHTML = chList.map(c => `
       <div class="card p-3 text-center">
-        <div class="text-2xl mb-1">${chIcons[c.type] || '📡'}</div>
-        <div class="text-white font-bold">${c.count}</div>
-        <div class="text-slate-500 text-xs">${c.type}</div>
-      </div>`).join('');
+        <div class="text-2xl mb-1">${chIcons[c.channel || c.type] || '📡'}</div>
+        <div class="text-white font-bold">${c.restaurants_using || c.active || c.count || 0}</div>
+        <div class="text-slate-500 text-xs">${c.channel || c.type}</div>
+        <div class="text-green-400 text-xs mt-1">${c.total_orders || 0} طلب</div>
+      </div>`).join('') || '<p class="text-slate-500 text-sm col-span-4 text-center py-4">لا توجد بيانات</p>';
 
   } catch(e) { showToast(e.message, 'error'); }
 }
@@ -1658,6 +1809,18 @@ async function archiveRest(rid) {
   try {
     await api('/api/super/restaurants/' + rid, { method: 'DELETE' });
     showToast('تمت الأرشفة', 'success');
+    loadRestaurants();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+// ── NUMBER 25B — Super Admin AI Learning Controls ─────────────────
+async function saToggleAiLearning(rid, currentlyEnabled) {
+  const action = currentlyEnabled ? 'disable-learning' : 'enable-learning';
+  const label  = currentlyEnabled ? 'تعطيل تدريب الذكاء الاصطناعي' : 'تفعيل تدريب الذكاء الاصطناعي';
+  if (!confirm(label + ' لهذا المطعم؟')) return;
+  try {
+    await api(`/api/super/ai/restaurant/${rid}/${action}`, { method: 'POST' });
+    showToast(currentlyEnabled ? 'تم تعطيل تدريب AI ⚠️' : 'تم تفعيل تدريب AI ✅', currentlyEnabled ? 'warning' : 'success');
     loadRestaurants();
   } catch(e) { showToast(e.message, 'error'); }
 }

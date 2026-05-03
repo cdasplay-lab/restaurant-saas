@@ -470,9 +470,42 @@ async def _processed_events_cleanup_job():
         await asyncio.sleep(43200)  # 12 hours
 
 
+def _run_super_admin_password_reset():
+    """Run at startup when RESET_SUPER_ADMIN_PASSWORD env var is set (one-time Render recovery)."""
+    import uuid as _uuid
+    new_pw = os.environ.get("RESET_SUPER_ADMIN_PASSWORD", "")
+    if not new_pw:
+        return
+    try:
+        pw_hash = _bcrypt.hashpw(new_pw.encode(), _bcrypt.gensalt()).decode()
+        del new_pw
+        conn = database.get_db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM super_admins WHERE email=?", ("superadmin@platform.com",)
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE super_admins SET password_hash=? WHERE email=?",
+                    (pw_hash, "superadmin@platform.com"),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO super_admins (id, email, password_hash, name) VALUES (?,?,?,?)",
+                    (str(_uuid.uuid4()), "superadmin@platform.com", pw_hash, "Super Admin"),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        logger.info("Super admin password reset complete")
+    except Exception as _e:
+        logger.error(f"Super admin password reset failed: {_e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
+    _run_super_admin_password_reset()
     asyncio.create_task(_subscription_cleanup_job())
     asyncio.create_task(_report_job())
     asyncio.create_task(_token_refresh_job())
@@ -2411,15 +2444,26 @@ async def summary(user=Depends(current_user)):
         return conn.execute(sql, p).fetchone()[0]
 
     result = {
-        "total_orders":    q("SELECT COUNT(*) FROM orders WHERE restaurant_id=?", rid),
-        "today_revenue":   round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND DATE(created_at)=? AND status!='cancelled'", rid, today), 2),
-        "open_chats":      q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND status='open'", rid),
-        "total_customers": q("SELECT COUNT(*) FROM customers WHERE restaurant_id=?", rid),
-        "pending_orders":  q("SELECT COUNT(*) FROM orders WHERE restaurant_id=? AND status IN ('pending','confirmed','preparing','on_way')", rid),
-        "total_revenue":   round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2),
-        "total_products":  q("SELECT COUNT(*) FROM products WHERE restaurant_id=?", rid),
-        "urgent_chats":    q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND urgent=1 AND status='open'", rid),
+        "total_orders":        q("SELECT COUNT(*) FROM orders WHERE restaurant_id=?", rid),
+        "today_orders":        q("SELECT COUNT(*) FROM orders WHERE restaurant_id=? AND DATE(created_at)=?", rid, today),
+        "today_revenue":       round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND DATE(created_at)=? AND status!='cancelled'", rid, today), 2),
+        "open_chats":          q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND status='open'", rid),
+        "total_customers":     q("SELECT COUNT(*) FROM customers WHERE restaurant_id=?", rid),
+        "pending_orders":      q("SELECT COUNT(*) FROM orders WHERE restaurant_id=? AND status IN ('pending','confirmed','preparing','on_way')", rid),
+        "total_revenue":       round(q("SELECT COALESCE(SUM(total),0) FROM orders WHERE restaurant_id=? AND status!='cancelled'", rid), 2),
+        "total_products":      q("SELECT COUNT(*) FROM products WHERE restaurant_id=?", rid),
+        "urgent_chats":        q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND urgent=1 AND status='open'", rid),
+        "failed_outbound_24h": q("SELECT COUNT(*) FROM outbound_messages WHERE restaurant_id=? AND status='failed' AND created_at >= datetime('now', '-24 hours')", rid),
+        "connected_channels":  q("SELECT COUNT(*) FROM channels WHERE restaurant_id=? AND enabled=1", rid),
+        "menu_images_count":   q("SELECT COUNT(*) FROM menu_images WHERE restaurant_id=? AND is_active=1", rid),
     }
+
+    # Subscription status
+    sub_row = conn.execute(
+        "SELECT plan, status, end_date FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+        (rid,)
+    ).fetchone()
+    result["subscription"] = dict(sub_row) if sub_row else {"plan": "trial", "status": "active", "end_date": ""}
 
     recent = conn.execute("""
         SELECT o.id, o.total, o.status, o.channel, o.created_at, c.name AS customer_name
@@ -2963,6 +3007,36 @@ async def analytics_recent_activity(user=Depends(current_user)):
     }
 
 
+# ── Analytics: Voice (NUMBER 23) ──────────────────────────────────────────────
+
+@app.get("/api/analytics/voice")
+async def analytics_voice(
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+    user=Depends(current_user),
+):
+    from services.analytics_service import get_voice_analytics
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    try:
+        return get_voice_analytics(conn, rid, date_from=date_from, date_to=date_to)
+    finally:
+        conn.close()
+
+
+# ── Analytics: Menu Images (NUMBER 23) ────────────────────────────────────────
+
+@app.get("/api/analytics/menu-images")
+async def analytics_menu_images(user=Depends(current_user)):
+    from services.analytics_service import get_menu_image_analytics
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    try:
+        return get_menu_image_analytics(conn, rid)
+    finally:
+        conn.close()
+
+
 # ── Products ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/products")
@@ -3098,6 +3172,98 @@ async def delete_product(pid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"message": "تم الحذف"}
+
+
+# ── Menu Images ───────────────────────────────────────────────────────────────
+
+@app.get("/api/menu-images")
+async def list_menu_images(user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM menu_images WHERE restaurant_id=? ORDER BY sort_order ASC, created_at ASC",
+            (user["restaurant_id"],)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/menu-images", status_code=201)
+async def create_menu_image(data: dict, user=Depends(current_user)):
+    image_url = (data.get("image_url") or "").strip()
+    if not image_url:
+        raise HTTPException(400, "image_url مطلوب")
+    mid = str(uuid.uuid4())
+    conn = database.get_db()
+    try:
+        conn.execute(
+            """INSERT INTO menu_images (id, restaurant_id, title, image_url, category, sort_order, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                mid,
+                user["restaurant_id"],
+                (data.get("title") or "").strip(),
+                image_url,
+                (data.get("category") or "").strip(),
+                int(data.get("sort_order") or 0),
+                1 if data.get("is_active", True) else 0,
+            )
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM menu_images WHERE id=?", (mid,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+@app.put("/api/menu-images/{mid}")
+async def update_menu_image(mid: str, data: dict, user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM menu_images WHERE id=? AND restaurant_id=?",
+            (mid, user["restaurant_id"])
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "صورة المنيو غير موجودة")
+        fields, vals = [], []
+        for col in ("title", "image_url", "category"):
+            if col in data:
+                fields.append(f"{col}=?")
+                vals.append((data[col] or "").strip())
+        if "sort_order" in data:
+            fields.append("sort_order=?")
+            vals.append(int(data["sort_order"] or 0))
+        if "is_active" in data:
+            fields.append("is_active=?")
+            vals.append(1 if data["is_active"] else 0)
+        if not fields:
+            raise HTTPException(400, "لا توجد بيانات للتحديث")
+        fields.append("updated_at=CURRENT_TIMESTAMP")
+        vals.append(mid)
+        conn.execute(f"UPDATE menu_images SET {', '.join(fields)} WHERE id=?", vals)
+        conn.commit()
+        row = conn.execute("SELECT * FROM menu_images WHERE id=?", (mid,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/menu-images/{mid}")
+async def delete_menu_image(mid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    try:
+        if not conn.execute(
+            "SELECT id FROM menu_images WHERE id=? AND restaurant_id=?",
+            (mid, user["restaurant_id"])
+        ).fetchone():
+            raise HTTPException(404, "صورة المنيو غير موجودة")
+        conn.execute("DELETE FROM menu_images WHERE id=?", (mid,))
+        conn.commit()
+        return {"message": "تم الحذف"}
+    finally:
+        conn.close()
 
 
 @app.patch("/api/categories/rename")
@@ -5473,6 +5639,861 @@ async def delete_bot_correction(cid: str, user=Depends(current_user)):
     return {"ok": True}
 
 
+# ── NUMBER 25 — AI Training / Learning System ─────────────────────────────────
+
+# ── NUMBER 25B helpers — audit + versioning ───────────────────────────────────
+
+def _ai_log(conn, restaurant_id: str, actor_id: str, actor_role: str,
+            entity_type: str, entity_id: str, action: str,
+            old_val: dict = None, new_val: dict = None):
+    """Write one row to ai_change_logs. Never raises."""
+    try:
+        conn.execute(
+            "INSERT INTO ai_change_logs "
+            "(id, restaurant_id, actor_user_id, actor_role, entity_type, entity_id, action, old_value_json, new_value_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()), restaurant_id or "", actor_id or "", actor_role or "",
+                entity_type or "", entity_id or "", action or "",
+                json.dumps(old_val or {}, ensure_ascii=False),
+                json.dumps(new_val or {}, ensure_ascii=False),
+            )
+        )
+    except Exception:
+        pass
+
+
+def _snap_correction(conn, row: dict, changed_by: str, reason: str = ""):
+    """Snapshot current correction state into bot_correction_versions."""
+    try:
+        last = conn.execute(
+            "SELECT COALESCE(MAX(version_number),0) FROM bot_correction_versions WHERE correction_id=?",
+            (row["id"],)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO bot_correction_versions "
+            "(id, correction_id, restaurant_id, trigger_text, correction_text, category, priority, is_active, version_number, changed_by, change_reason) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()), row["id"], row.get("restaurant_id",""),
+                row.get("trigger_text",""), row.get("correction_text",""),
+                row.get("category",""), row.get("priority",0),
+                row.get("is_active",1), int(last) + 1, changed_by or "", reason or "",
+            )
+        )
+    except Exception:
+        pass
+
+
+def _snap_knowledge(conn, row: dict, changed_by: str, reason: str = ""):
+    """Snapshot current knowledge state into restaurant_knowledge_versions."""
+    try:
+        last = conn.execute(
+            "SELECT COALESCE(MAX(version_number),0) FROM restaurant_knowledge_versions WHERE knowledge_id=?",
+            (row["id"],)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO restaurant_knowledge_versions "
+            "(id, knowledge_id, restaurant_id, title, content, category, priority, is_active, version_number, changed_by, change_reason) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()), row["id"], row.get("restaurant_id",""),
+                row.get("title",""), row.get("content",""),
+                row.get("category",""), row.get("priority",0),
+                row.get("is_active",1), int(last) + 1, changed_by or "", reason or "",
+            )
+        )
+    except Exception:
+        pass
+
+
+def _correction_row(conn, cid: str) -> dict:
+    r = conn.execute("SELECT * FROM bot_corrections WHERE id=?", (cid,)).fetchone()
+    return dict(r) if r else {}
+
+
+def _knowledge_row(conn, kid: str) -> dict:
+    r = conn.execute("SELECT * FROM restaurant_knowledge WHERE id=?", (kid,)).fetchone()
+    return dict(r) if r else {}
+
+
+# ── AI Corrections (enriched CRUD) ───────────────────────────────────────────
+
+@app.get("/api/ai/corrections")
+async def ai_list_corrections(user=Depends(current_user)):
+    """List all AI corrections for this restaurant (enriched format)."""
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM bot_corrections WHERE restaurant_id=? ORDER BY priority DESC, created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/ai/corrections")
+async def ai_add_correction(data: dict, user=Depends(current_user)):
+    """Add or update an AI correction with trigger/correction/category/priority."""
+    rid = user["restaurant_id"]
+    trigger_text = (data.get("trigger_text") or "").strip()
+    correction_text = (data.get("correction_text") or "").strip()
+    category = (data.get("category") or "").strip()
+    priority = int(data.get("priority") or 0)
+    legacy_text = (data.get("text") or "").strip()
+    created_by = user.get("name") or user.get("email") or ""
+
+    if trigger_text and correction_text:
+        canonical = f"إذا قال العميل '{trigger_text}' → رد بـ: {correction_text}"
+    elif legacy_text:
+        canonical = legacy_text
+    else:
+        raise HTTPException(400, "trigger_text+correction_text أو text مطلوب")
+
+    conn = database.get_db()
+    existing = conn.execute(
+        "SELECT id FROM bot_corrections WHERE restaurant_id=? AND text=?",
+        (rid, canonical)
+    ).fetchone()
+    if existing:
+        cid = existing["id"] if hasattr(existing, "keys") else existing[0]
+        conn.execute(
+            "UPDATE bot_corrections SET trigger_text=?, correction_text=?, category=?, "
+            "priority=?, is_active=1, deleted_at='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (trigger_text, correction_text, category, priority, cid)
+        )
+        new_row = _correction_row(conn, cid)
+        _snap_correction(conn, new_row, created_by, "reactivated via add")
+        _ai_log(conn, rid, user.get("id",""), user.get("role","owner"), "correction", cid, "reactivated", {}, new_row)
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": cid, "deduped": True}
+
+    cid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO bot_corrections (id, restaurant_id, text, trigger_text, correction_text, "
+        "category, priority, is_active, added_by, created_by, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)",
+        (cid, rid, canonical, trigger_text, correction_text, category, priority, created_by, created_by)
+    )
+    new_row = _correction_row(conn, cid)
+    _snap_correction(conn, new_row, created_by, "created")
+    _ai_log(conn, rid, user.get("id",""), user.get("role","owner"), "correction", cid, "created", {}, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": cid}
+
+
+@app.put("/api/ai/corrections/{cid}")
+async def ai_update_correction(cid: str, data: dict, user=Depends(current_user)):
+    """Update an existing AI correction (creates version snapshot)."""
+    conn = database.get_db()
+    old_row = _correction_row(conn, cid)
+    if not old_row or old_row.get("restaurant_id") != user["restaurant_id"]:
+        conn.close()
+        raise HTTPException(404, "Correction not found")
+
+    trigger_text = (data.get("trigger_text") or "").strip()
+    correction_text = (data.get("correction_text") or "").strip()
+    category = (data.get("category") or "").strip()
+    priority = int(data.get("priority") or 0)
+    is_active = int(bool(data.get("is_active", True)))
+
+    if trigger_text and correction_text:
+        canonical = f"إذا قال العميل '{trigger_text}' → رد بـ: {correction_text}"
+    else:
+        canonical = (data.get("text") or "").strip() or trigger_text or correction_text
+
+    actor = user.get("name") or user.get("email") or ""
+    conn.execute(
+        "UPDATE bot_corrections SET text=?, trigger_text=?, correction_text=?, category=?, "
+        "priority=?, is_active=?, deleted_at='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (canonical, trigger_text, correction_text, category, priority, is_active, cid)
+    )
+    new_row = _correction_row(conn, cid)
+    _snap_correction(conn, new_row, actor, data.get("change_reason","updated"))
+    _ai_log(conn, user["restaurant_id"], user.get("id",""), user.get("role","owner"),
+            "correction", cid, "updated", old_row, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/ai/corrections/{cid}")
+async def ai_delete_correction(cid: str, user=Depends(current_user)):
+    """Soft-delete an AI correction (sets is_active=0, preserves audit history)."""
+    conn = database.get_db()
+    old_row = _correction_row(conn, cid)
+    if not old_row or old_row.get("restaurant_id") != user["restaurant_id"]:
+        conn.close()
+        raise HTTPException(404, "Correction not found")
+
+    actor = user.get("name") or user.get("email") or ""
+    conn.execute(
+        "UPDATE bot_corrections SET is_active=0, deleted_at=CURRENT_TIMESTAMP, "
+        "updated_at=CURRENT_TIMESTAMP WHERE id=?", (cid,)
+    )
+    new_row = _correction_row(conn, cid)
+    _snap_correction(conn, new_row, actor, "soft-deleted")
+    _ai_log(conn, user["restaurant_id"], user.get("id",""), user.get("role","owner"),
+            "correction", cid, "deleted", old_row, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── AI Feedback ───────────────────────────────────────────────────────────────
+
+@app.get("/api/ai/feedback")
+async def ai_list_feedback(status: str = "", user=Depends(current_user)):
+    """List AI feedback items, optionally filtered by status."""
+    conn = database.get_db()
+    if status:
+        rows = conn.execute(
+            "SELECT * FROM ai_feedback WHERE restaurant_id=? AND status=? ORDER BY created_at DESC LIMIT 100",
+            (user["restaurant_id"], status)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM ai_feedback WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 100",
+            (user["restaurant_id"],)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/ai/feedback")
+async def ai_add_feedback(data: dict, user=Depends(current_user)):
+    """Submit feedback on a bot reply (good/bad/needs_correction)."""
+    rid = user["restaurant_id"]
+    rating = data.get("rating") or "bad"
+    if rating not in ("good", "bad", "needs_correction"):
+        raise HTTPException(400, "rating must be good / bad / needs_correction")
+
+    fid = str(uuid.uuid4())
+    conn = database.get_db()
+    conn.execute(
+        "INSERT INTO ai_feedback (id, restaurant_id, conversation_id, message_id, rating, "
+        "reason, suggested_correction, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        (
+            fid, rid,
+            data.get("conversation_id") or "",
+            data.get("message_id") or "",
+            rating,
+            (data.get("reason") or "").strip(),
+            (data.get("suggested_correction") or "").strip(),
+            user.get("name") or user.get("email") or "",
+        )
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": fid}
+
+
+@app.put("/api/ai/feedback/{fid}/approve")
+async def ai_approve_feedback(fid: str, data: dict = None, user=Depends(current_user)):
+    """Approve feedback — optionally promote suggested_correction into bot_corrections."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT * FROM ai_feedback WHERE id=? AND restaurant_id=?",
+        (fid, user["restaurant_id"])
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Feedback not found")
+
+    row = dict(row)
+    conn.execute(
+        "UPDATE ai_feedback SET status='approved', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?",
+        (user.get("name") or user.get("email") or "", fid)
+    )
+
+    # If there's a suggested correction and promote=true, add it to bot_corrections
+    promote = bool(data.get("promote_correction", False))
+    if promote and row.get("suggested_correction"):
+        text = row["suggested_correction"].strip()
+        if text:
+            existing = conn.execute(
+                "SELECT id FROM bot_corrections WHERE restaurant_id=? AND text=?",
+                (row["restaurant_id"], text)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO bot_corrections (id, restaurant_id, text, added_by, is_active, created_by) "
+                    "VALUES (?, ?, ?, ?, 1, ?)",
+                    (str(uuid.uuid4()), row["restaurant_id"], text,
+                     user.get("name") or "", user.get("name") or "")
+                )
+
+    conn.commit()
+    conn.close()
+    return {"ok": True, "promoted": promote and bool(row.get("suggested_correction"))}
+
+
+@app.put("/api/ai/feedback/{fid}/reject")
+async def ai_reject_feedback(fid: str, data: dict = None, user=Depends(current_user)):
+    """Reject feedback."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT id FROM ai_feedback WHERE id=? AND restaurant_id=?",
+        (fid, user["restaurant_id"])
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Feedback not found")
+    conn.execute(
+        "UPDATE ai_feedback SET status='rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?",
+        (user.get("name") or user.get("email") or "", fid)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Knowledge Base ────────────────────────────────────────────────────────────
+
+@app.get("/api/ai/knowledge")
+async def ai_list_knowledge(user=Depends(current_user)):
+    """List all knowledge base entries for this restaurant."""
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM restaurant_knowledge WHERE restaurant_id=? ORDER BY priority DESC, created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/ai/knowledge")
+async def ai_add_knowledge(data: dict, user=Depends(current_user)):
+    """Add a knowledge base entry."""
+    title = (data.get("title") or "").strip()
+    content = (data.get("content") or "").strip()
+    if not title or not content:
+        raise HTTPException(400, "title and content are required")
+
+    kid = str(uuid.uuid4())
+    actor = user.get("name") or user.get("email") or ""
+    conn = database.get_db()
+    conn.execute(
+        "INSERT INTO restaurant_knowledge (id, restaurant_id, title, content, category, "
+        "source, is_active, priority, created_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (
+            kid, user["restaurant_id"], title, content,
+            (data.get("category") or "").strip(),
+            data.get("source") or "manual",
+            int(data.get("priority") or 0),
+            actor,
+        )
+    )
+    new_row = _knowledge_row(conn, kid)
+    _snap_knowledge(conn, new_row, actor, "created")
+    _ai_log(conn, user["restaurant_id"], user.get("id",""), user.get("role","owner"),
+            "knowledge", kid, "created", {}, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": kid}
+
+
+@app.put("/api/ai/knowledge/{kid}")
+async def ai_update_knowledge(kid: str, data: dict, user=Depends(current_user)):
+    """Update a knowledge base entry (creates version snapshot)."""
+    conn = database.get_db()
+    old_row = _knowledge_row(conn, kid)
+    if not old_row or old_row.get("restaurant_id") != user["restaurant_id"]:
+        conn.close()
+        raise HTTPException(404, "Knowledge entry not found")
+
+    title = (data.get("title") or old_row.get("title","")).strip()
+    content = (data.get("content") or old_row.get("content","")).strip()
+    category = (data.get("category") or "").strip()
+    priority = int(data.get("priority") or 0)
+    is_active = int(bool(data.get("is_active", True)))
+    actor = user.get("name") or user.get("email") or ""
+
+    conn.execute(
+        "UPDATE restaurant_knowledge SET title=?, content=?, category=?, priority=?, "
+        "is_active=?, deleted_at='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (title, content, category, priority, is_active, kid)
+    )
+    new_row = _knowledge_row(conn, kid)
+    _snap_knowledge(conn, new_row, actor, data.get("change_reason","updated"))
+    _ai_log(conn, user["restaurant_id"], user.get("id",""), user.get("role","owner"),
+            "knowledge", kid, "updated", old_row, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/ai/knowledge/{kid}")
+async def ai_delete_knowledge(kid: str, user=Depends(current_user)):
+    """Soft-delete a knowledge base entry (sets is_active=0, preserves audit history)."""
+    conn = database.get_db()
+    old_row = _knowledge_row(conn, kid)
+    if not old_row or old_row.get("restaurant_id") != user["restaurant_id"]:
+        conn.close()
+        raise HTTPException(404, "Knowledge entry not found")
+
+    actor = user.get("name") or user.get("email") or ""
+    conn.execute(
+        "UPDATE restaurant_knowledge SET is_active=0, deleted_at=CURRENT_TIMESTAMP, "
+        "updated_at=CURRENT_TIMESTAMP WHERE id=?", (kid,)
+    )
+    new_row = _knowledge_row(conn, kid)
+    _snap_knowledge(conn, new_row, actor, "soft-deleted")
+    _ai_log(conn, user["restaurant_id"], user.get("id",""), user.get("role","owner"),
+            "knowledge", kid, "deleted", old_row, new_row)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── AI Quality Logs ───────────────────────────────────────────────────────────
+
+@app.get("/api/ai/quality")
+async def ai_quality_logs(limit: int = 50, user=Depends(current_user)):
+    """List recent AI quality log entries for this restaurant."""
+    limit = min(limit, 200)
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM ai_quality_logs WHERE restaurant_id=? ORDER BY created_at DESC LIMIT ?",
+        (user["restaurant_id"], limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/ai/quality/summary")
+async def ai_quality_summary(user=Depends(current_user)):
+    """Aggregate quality metrics for this restaurant."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        total_logs = conn.execute(
+            "SELECT COUNT(*) FROM ai_quality_logs WHERE restaurant_id=?", (rid,)
+        ).fetchone()[0]
+        escalations = conn.execute(
+            "SELECT COUNT(*) FROM ai_quality_logs WHERE restaurant_id=? AND escalation_triggered=1", (rid,)
+        ).fetchone()[0]
+        with_corrections = conn.execute(
+            "SELECT COUNT(*) FROM ai_quality_logs WHERE restaurant_id=? AND used_corrections=1", (rid,)
+        ).fetchone()[0]
+        with_knowledge = conn.execute(
+            "SELECT COUNT(*) FROM ai_quality_logs WHERE restaurant_id=? AND used_knowledge=1", (rid,)
+        ).fetchone()[0]
+        total_feedback = conn.execute(
+            "SELECT COUNT(*) FROM ai_feedback WHERE restaurant_id=?", (rid,)
+        ).fetchone()[0]
+        pending_feedback = conn.execute(
+            "SELECT COUNT(*) FROM ai_feedback WHERE restaurant_id=? AND status='pending'", (rid,)
+        ).fetchone()[0]
+        good_feedback = conn.execute(
+            "SELECT COUNT(*) FROM ai_feedback WHERE restaurant_id=? AND rating='good'", (rid,)
+        ).fetchone()[0]
+        total_corrections = conn.execute(
+            "SELECT COUNT(*) FROM bot_corrections WHERE restaurant_id=? AND is_active=1", (rid,)
+        ).fetchone()[0]
+        total_knowledge = conn.execute(
+            "SELECT COUNT(*) FROM restaurant_knowledge WHERE restaurant_id=? AND is_active=1", (rid,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    satisfaction = round(good_feedback / total_feedback * 100, 1) if total_feedback > 0 else None
+    return {
+        "total_logs": total_logs,
+        "escalation_rate": round(escalations / total_logs * 100, 1) if total_logs > 0 else 0,
+        "corrections_usage_rate": round(with_corrections / total_logs * 100, 1) if total_logs > 0 else 0,
+        "knowledge_usage_rate": round(with_knowledge / total_logs * 100, 1) if total_logs > 0 else 0,
+        "total_feedback": total_feedback,
+        "pending_feedback": pending_feedback,
+        "satisfaction_rate": satisfaction,
+        "active_corrections": total_corrections,
+        "active_knowledge": total_knowledge,
+    }
+
+
+# ── NUMBER 25B — Safety, Rollback & Super Admin Control ───────────────────────
+
+# ── Version history (restaurant user) ────────────────────────────────────────
+
+@app.get("/api/ai/corrections/{cid}/versions")
+async def ai_correction_versions(cid: str, user=Depends(current_user)):
+    """List version history for one correction (tenant-scoped)."""
+    conn = database.get_db()
+    # Verify ownership first
+    owner = conn.execute(
+        "SELECT id FROM bot_corrections WHERE id=? AND restaurant_id=?",
+        (cid, user["restaurant_id"])
+    ).fetchone()
+    if not owner:
+        conn.close()
+        raise HTTPException(404, "Correction not found")
+    rows = conn.execute(
+        "SELECT * FROM bot_correction_versions WHERE correction_id=? ORDER BY version_number DESC",
+        (cid,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/ai/knowledge/{kid}/versions")
+async def ai_knowledge_versions(kid: str, user=Depends(current_user)):
+    """List version history for one knowledge entry (tenant-scoped)."""
+    conn = database.get_db()
+    owner = conn.execute(
+        "SELECT id FROM restaurant_knowledge WHERE id=? AND restaurant_id=?",
+        (kid, user["restaurant_id"])
+    ).fetchone()
+    if not owner:
+        conn.close()
+        raise HTTPException(404, "Knowledge entry not found")
+    rows = conn.execute(
+        "SELECT * FROM restaurant_knowledge_versions WHERE knowledge_id=? ORDER BY version_number DESC",
+        (kid,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Rollback endpoints ────────────────────────────────────────────────────────
+
+@app.post("/api/ai/corrections/{cid}/restore-version/{vid}")
+async def ai_restore_correction_version(cid: str, vid: str, user=Depends(current_user)):
+    """Restore a correction to a specific version snapshot."""
+    conn = database.get_db()
+    # Ownership check (restaurant user → own restaurant; super admin → any)
+    is_super = user.get("is_super", False)
+    if not is_super:
+        owner = conn.execute(
+            "SELECT id FROM bot_corrections WHERE id=? AND restaurant_id=?",
+            (cid, user["restaurant_id"])
+        ).fetchone()
+        if not owner:
+            conn.close()
+            raise HTTPException(404, "Correction not found")
+
+    ver = conn.execute(
+        "SELECT * FROM bot_correction_versions WHERE id=? AND correction_id=?",
+        (vid, cid)
+    ).fetchone()
+    if not ver:
+        conn.close()
+        raise HTTPException(404, "Version not found")
+
+    ver = dict(ver)
+    old_row = _correction_row(conn, cid)
+    actor = user.get("name") or user.get("email") or ""
+    rid = ver.get("restaurant_id") or (old_row.get("restaurant_id",""))
+
+    # Apply version snapshot back to live row
+    if ver.get("trigger_text") and ver.get("correction_text"):
+        canonical = f"إذا قال العميل '{ver['trigger_text']}' → رد بـ: {ver['correction_text']}"
+    else:
+        canonical = old_row.get("text","")
+
+    conn.execute(
+        "UPDATE bot_corrections SET text=?, trigger_text=?, correction_text=?, category=?, "
+        "priority=?, is_active=?, deleted_at='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (canonical, ver.get("trigger_text",""), ver.get("correction_text",""),
+         ver.get("category",""), ver.get("priority",0), ver.get("is_active",1), cid)
+    )
+    new_row = _correction_row(conn, cid)
+    _snap_correction(conn, new_row, actor, f"rolled back to version {ver.get('version_number')}")
+    _ai_log(conn, rid, user.get("id",""), user.get("role","super" if is_super else "owner"),
+            "correction", cid, "rollback",
+            old_row, {"restored_from_version": ver.get("version_number"), **new_row})
+    conn.commit()
+    conn.close()
+    return {"ok": True, "restored_version": ver.get("version_number")}
+
+
+@app.post("/api/ai/knowledge/{kid}/restore-version/{vid}")
+async def ai_restore_knowledge_version(kid: str, vid: str, user=Depends(current_user)):
+    """Restore a knowledge entry to a specific version snapshot."""
+    conn = database.get_db()
+    is_super = user.get("is_super", False)
+    if not is_super:
+        owner = conn.execute(
+            "SELECT id FROM restaurant_knowledge WHERE id=? AND restaurant_id=?",
+            (kid, user["restaurant_id"])
+        ).fetchone()
+        if not owner:
+            conn.close()
+            raise HTTPException(404, "Knowledge entry not found")
+
+    ver = conn.execute(
+        "SELECT * FROM restaurant_knowledge_versions WHERE id=? AND knowledge_id=?",
+        (vid, kid)
+    ).fetchone()
+    if not ver:
+        conn.close()
+        raise HTTPException(404, "Version not found")
+
+    ver = dict(ver)
+    old_row = _knowledge_row(conn, kid)
+    actor = user.get("name") or user.get("email") or ""
+    rid = ver.get("restaurant_id") or old_row.get("restaurant_id","")
+
+    conn.execute(
+        "UPDATE restaurant_knowledge SET title=?, content=?, category=?, priority=?, "
+        "is_active=?, deleted_at='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (ver.get("title",""), ver.get("content",""), ver.get("category",""),
+         ver.get("priority",0), ver.get("is_active",1), kid)
+    )
+    new_row = _knowledge_row(conn, kid)
+    _snap_knowledge(conn, new_row, actor, f"rolled back to version {ver.get('version_number')}")
+    _ai_log(conn, rid, user.get("id",""), user.get("role","super" if is_super else "owner"),
+            "knowledge", kid, "rollback",
+            old_row, {"restored_from_version": ver.get("version_number"), **new_row})
+    conn.commit()
+    conn.close()
+    return {"ok": True, "restored_version": ver.get("version_number")}
+
+
+# ── Change logs (restaurant user) ─────────────────────────────────────────────
+
+@app.get("/api/ai/change-logs")
+async def ai_change_logs(limit: int = 50, user=Depends(current_user)):
+    """List AI change-log entries for this restaurant."""
+    limit = min(limit, 200)
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM ai_change_logs WHERE restaurant_id=? ORDER BY created_at DESC LIMIT ?",
+        (user["restaurant_id"], limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Restaurant AI learning switch ─────────────────────────────────────────────
+
+@app.get("/api/ai/settings")
+async def ai_get_settings(user=Depends(current_user)):
+    """Get AI learning settings for this restaurant."""
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT ai_learning_enabled FROM restaurants WHERE id=?",
+        (user["restaurant_id"],)
+    ).fetchone()
+    conn.close()
+    enabled = bool(row["ai_learning_enabled"] if row and hasattr(row,"keys") else (row[0] if row else 1))
+    return {"ai_learning_enabled": enabled}
+
+
+@app.put("/api/ai/settings")
+async def ai_update_settings(data: dict, user=Depends(current_user)):
+    """Toggle AI learning on/off for this restaurant."""
+    enabled = int(bool(data.get("ai_learning_enabled", True)))
+    rid = user["restaurant_id"]
+    actor = user.get("name") or user.get("email") or ""
+    conn = database.get_db()
+    old_row = conn.execute("SELECT ai_learning_enabled FROM restaurants WHERE id=?", (rid,)).fetchone()
+    old_val = bool(old_row["ai_learning_enabled"] if old_row and hasattr(old_row,"keys") else (old_row[0] if old_row else 1))
+    conn.execute("UPDATE restaurants SET ai_learning_enabled=? WHERE id=?", (enabled, rid))
+    action = "learning_enabled" if enabled else "learning_disabled"
+    _ai_log(conn, rid, user.get("id",""), user.get("role","owner"), "restaurant", rid,
+            action, {"ai_learning_enabled": old_val}, {"ai_learning_enabled": bool(enabled)})
+    conn.commit()
+    conn.close()
+    return {"ok": True, "ai_learning_enabled": bool(enabled)}
+
+
+# ── Super admin AI control endpoints ──────────────────────────────────────────
+
+@app.get("/api/super/ai/corrections")
+async def super_ai_list_corrections(restaurant_id: str = "", limit: int = 100,
+                                    admin=Depends(current_super_admin)):
+    """SA: list corrections, optionally filtered by restaurant."""
+    limit = min(limit, 500)
+    conn = database.get_db()
+    if restaurant_id:
+        rows = conn.execute(
+            "SELECT bc.*, r.name as restaurant_name FROM bot_corrections bc "
+            "LEFT JOIN restaurants r ON bc.restaurant_id=r.id "
+            "WHERE bc.restaurant_id=? ORDER BY bc.created_at DESC LIMIT ?",
+            (restaurant_id, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT bc.*, r.name as restaurant_name FROM bot_corrections bc "
+            "LEFT JOIN restaurants r ON bc.restaurant_id=r.id "
+            "ORDER BY bc.created_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/super/ai/knowledge")
+async def super_ai_list_knowledge(restaurant_id: str = "", limit: int = 100,
+                                  admin=Depends(current_super_admin)):
+    """SA: list knowledge entries, optionally filtered by restaurant."""
+    limit = min(limit, 500)
+    conn = database.get_db()
+    if restaurant_id:
+        rows = conn.execute(
+            "SELECT rk.*, r.name as restaurant_name FROM restaurant_knowledge rk "
+            "LEFT JOIN restaurants r ON rk.restaurant_id=r.id "
+            "WHERE rk.restaurant_id=? ORDER BY rk.created_at DESC LIMIT ?",
+            (restaurant_id, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT rk.*, r.name as restaurant_name FROM restaurant_knowledge rk "
+            "LEFT JOIN restaurants r ON rk.restaurant_id=r.id "
+            "ORDER BY rk.created_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/super/ai/feedback")
+async def super_ai_list_feedback(restaurant_id: str = "", status: str = "", limit: int = 100,
+                                 admin=Depends(current_super_admin)):
+    """SA: list feedback, optionally filtered."""
+    limit = min(limit, 500)
+    conn = database.get_db()
+    where, params = [], []
+    if restaurant_id:
+        where.append("f.restaurant_id=?"); params.append(restaurant_id)
+    if status:
+        where.append("f.status=?"); params.append(status)
+    wclause = ("WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"SELECT f.*, r.name as restaurant_name FROM ai_feedback f "
+        f"LEFT JOIN restaurants r ON f.restaurant_id=r.id "
+        f"{wclause} ORDER BY f.created_at DESC LIMIT ?",
+        params
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/super/ai/change-logs")
+async def super_ai_change_logs(restaurant_id: str = "", entity_type: str = "",
+                               limit: int = 100, admin=Depends(current_super_admin)):
+    """SA: full audit trail, optionally filtered."""
+    limit = min(limit, 500)
+    conn = database.get_db()
+    where, params = [], []
+    if restaurant_id:
+        where.append("restaurant_id=?"); params.append(restaurant_id)
+    if entity_type:
+        where.append("entity_type=?"); params.append(entity_type)
+    wclause = ("WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"SELECT * FROM ai_change_logs {wclause} ORDER BY created_at DESC LIMIT ?",
+        params
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/super/ai/corrections/{cid}/disable")
+async def super_disable_correction(cid: str, request: Request,
+                                   data: dict = None, admin=Depends(current_super_admin)):
+    """SA: emergency disable a bad correction (any restaurant)."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    old_row = conn.execute("SELECT * FROM bot_corrections WHERE id=?", (cid,)).fetchone()
+    if not old_row:
+        conn.close()
+        raise HTTPException(404, "Correction not found")
+    old_row = dict(old_row)
+    conn.execute(
+        "UPDATE bot_corrections SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?", (cid,)
+    )
+    new_row = _correction_row(conn, cid)
+    _snap_correction(conn, new_row, admin.get("name","sa"), "SA emergency disable")
+    _ai_log(conn, old_row.get("restaurant_id",""), admin.get("id",""), "super",
+            "correction", cid, "sa_disabled", old_row, new_row)
+    _sa_log(conn, admin["id"], admin.get("name",""), "sa_disable_correction",
+            "correction", cid, data.get("reason","emergency disable"),
+            request.client.host if request.client else "")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/super/ai/knowledge/{kid}/disable")
+async def super_disable_knowledge(kid: str, request: Request,
+                                  data: dict = None, admin=Depends(current_super_admin)):
+    """SA: emergency disable a bad knowledge entry (any restaurant)."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    old_row = conn.execute("SELECT * FROM restaurant_knowledge WHERE id=?", (kid,)).fetchone()
+    if not old_row:
+        conn.close()
+        raise HTTPException(404, "Knowledge entry not found")
+    old_row = dict(old_row)
+    conn.execute(
+        "UPDATE restaurant_knowledge SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?", (kid,)
+    )
+    new_row = _knowledge_row(conn, kid)
+    _snap_knowledge(conn, new_row, admin.get("name","sa"), "SA emergency disable")
+    _ai_log(conn, old_row.get("restaurant_id",""), admin.get("id",""), "super",
+            "knowledge", kid, "sa_disabled", old_row, new_row)
+    _sa_log(conn, admin["id"], admin.get("name",""), "sa_disable_knowledge",
+            "knowledge", kid, data.get("reason","emergency disable"),
+            request.client.host if request.client else "")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/super/ai/restaurant/{rid}/disable-learning")
+async def super_disable_learning(rid: str, request: Request,
+                                 data: dict = None, admin=Depends(current_super_admin)):
+    """SA: disable AI learning for one restaurant."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    r = conn.execute("SELECT id FROM restaurants WHERE id=?", (rid,)).fetchone()
+    if not r:
+        conn.close()
+        raise HTTPException(404, "Restaurant not found")
+    conn.execute("UPDATE restaurants SET ai_learning_enabled=0 WHERE id=?", (rid,))
+    _ai_log(conn, rid, admin.get("id",""), "super", "restaurant", rid, "sa_learning_disabled",
+            {"ai_learning_enabled": True}, {"ai_learning_enabled": False})
+    _sa_log(conn, admin["id"], admin.get("name",""), "sa_disable_ai_learning",
+            "restaurant", rid, data.get("reason","SA disabled"),
+            request.client.host if request.client else "")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/super/ai/restaurant/{rid}/enable-learning")
+async def super_enable_learning(rid: str, request: Request,
+                                data: dict = None, admin=Depends(current_super_admin)):
+    """SA: re-enable AI learning for one restaurant."""
+    if data is None:
+        data = {}
+    conn = database.get_db()
+    r = conn.execute("SELECT id FROM restaurants WHERE id=?", (rid,)).fetchone()
+    if not r:
+        conn.close()
+        raise HTTPException(404, "Restaurant not found")
+    conn.execute("UPDATE restaurants SET ai_learning_enabled=1 WHERE id=?", (rid,))
+    _ai_log(conn, rid, admin.get("id",""), "super", "restaurant", rid, "sa_learning_enabled",
+            {"ai_learning_enabled": False}, {"ai_learning_enabled": True})
+    _sa_log(conn, admin["id"], admin.get("name",""), "sa_enable_ai_learning",
+            "restaurant", rid, data.get("reason","SA enabled"),
+            request.client.host if request.client else "")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 # ── Bot Simulate (Algorithm 1: Test → Classify → Fix → Re-test) ───────────────
 
 @app.post("/api/bot/simulate")
@@ -7324,6 +8345,7 @@ async def super_list_restaurants(
         q = """
             SELECT r.id, r.name, r.description, r.phone, r.address, r.plan,
                    r.status, r.internal_notes, r.created_at, r.last_activity_at,
+                   COALESCE(r.ai_learning_enabled, 1) AS ai_learning_enabled,
                    s.status AS sub_status, s.plan AS sub_plan, s.price,
                    s.start_date, s.end_date, s.trial_ends_at,
                    s.last_payment_date, s.next_payment_date,
@@ -7694,6 +8716,70 @@ async def super_analytics(admin=Depends(current_super_admin)):
         conn.close()
 
 
+# ── Super Analytics: Overview (NUMBER 23) ────────────────────────────────────
+
+@app.get("/api/super/analytics/overview")
+async def super_analytics_overview(admin=Depends(current_super_admin)):
+    from services.analytics_service import get_super_overview_analytics
+    conn = database.get_db()
+    try:
+        return get_super_overview_analytics(conn)
+    finally:
+        conn.close()
+
+
+# ── Super Analytics: Restaurants table (NUMBER 23) ───────────────────────────
+
+@app.get("/api/super/analytics/restaurants")
+async def super_analytics_restaurants(
+    limit: int = 20,
+    admin=Depends(current_super_admin),
+):
+    from services.analytics_service import get_super_restaurant_analytics
+    if limit < 1 or limit > 100:
+        limit = 20
+    conn = database.get_db()
+    try:
+        return {"restaurants": get_super_restaurant_analytics(conn, limit=limit)}
+    finally:
+        conn.close()
+
+
+# ── Super Analytics: Channels (NUMBER 23) ────────────────────────────────────
+
+@app.get("/api/super/analytics/channels")
+async def super_analytics_channels(admin=Depends(current_super_admin)):
+    from services.analytics_service import get_super_channel_analytics
+    conn = database.get_db()
+    try:
+        return {"channels": get_super_channel_analytics(conn)}
+    finally:
+        conn.close()
+
+
+# ── Super Analytics: Health (NUMBER 23) ──────────────────────────────────────
+
+@app.get("/api/super/analytics/health")
+async def super_analytics_health(admin=Depends(current_super_admin)):
+    from services.analytics_service import get_super_health_analytics
+    conn = database.get_db()
+    try:
+        return get_super_health_analytics(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/super/ai/overview")
+async def super_ai_overview(admin=Depends(current_super_admin)):
+    """Platform-wide AI learning overview (NUMBER 25)."""
+    from services.analytics_service import get_super_ai_overview
+    conn = database.get_db()
+    try:
+        return get_super_ai_overview(conn)
+    finally:
+        conn.close()
+
+
 # ── System Health ─────────────────────────────────────────────────────────────
 
 @app.get("/api/super/system")
@@ -7899,7 +8985,7 @@ async def production_readiness(admin=Depends(current_super_admin)):
     _protected = [
         "restaurants", "users", "products", "orders", "customers",
         "conversations", "messages", "subscriptions", "super_admins",
-        "payment_requests", "channels", "bot_config",
+        "payment_requests", "channels", "bot_config", "menu_images",
     ]
     _missing_tables: List[str] = []
     try:
@@ -7965,6 +9051,188 @@ async def production_readiness(admin=Depends(current_super_admin)):
     if is_production and not cors_ok:
         warnings.append("ALLOWED_ORIGINS غير مضبوط — CORS مفتوح لجميع النطاقات في الإنتاج")
     checks["cors"] = {"ok": cors_ok or not is_production}
+
+    # 11. Voice transcription (NUMBER 22) — check service import + DB fields
+    _voice_ok = True
+    _voice_fields_ok = False
+    try:
+        from services import voice_service as _vs
+        _voice_enabled = _vs.VOICE_TRANSCRIPTION_ENABLED
+        _voice_provider = _vs.VOICE_TRANSCRIPTION_PROVIDER
+        _voice_key_ok   = bool(_vs._OPENAI_API_KEY)
+        _voice_ok = True
+    except Exception as _ve:
+        blockers.append(f"voice_service تعذر استيراده: {_ve}")
+        _voice_ok = False
+        _voice_enabled = False
+        _voice_provider = ""
+        _voice_key_ok   = False
+
+    if _voice_ok and _voice_enabled and not _voice_key_ok:
+        warnings.append(
+            "VOICE_TRANSCRIPTION_ENABLED=true لكن OPENAI_API_KEY مفقود — "
+            "الصوت سيستخدم الرد الآمن الاحتياطي"
+        )
+
+    # Check that transcription_status column exists in messages table
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _col_rows = _c.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='messages' AND column_name='transcription_status'"
+            ).fetchall()
+            _voice_fields_ok = len(_col_rows) > 0
+        else:
+            _col_rows = _c.execute("PRAGMA table_info(messages)").fetchall()
+            _voice_fields_ok = any(r[1] == "transcription_status" for r in _col_rows)
+        _c.close()
+    except Exception:
+        _voice_fields_ok = False
+
+    if not _voice_fields_ok:
+        blockers.append("حقل transcription_status مفقود من جدول messages — أعد تشغيل init_db")
+
+    checks["voice"] = {
+        "ok": _voice_ok and _voice_fields_ok,
+        "enabled": _voice_enabled if _voice_ok else False,
+        "provider": _voice_provider if _voice_ok else "",
+        "key_configured": _voice_key_ok if _voice_ok else False,
+        "db_fields_ok": _voice_fields_ok,
+    }
+
+    # 12. Analytics service (NUMBER 23) — must import cleanly
+    _analytics_ok = False
+    try:
+        from services import analytics_service as _as
+        # Verify at least one function is callable
+        callable(_as.get_voice_analytics)
+        callable(_as.get_menu_image_analytics)
+        callable(_as.get_super_overview_analytics)
+        _analytics_ok = True
+    except Exception as _ae:
+        blockers.append(f"analytics_service تعذر استيراده: {_ae}")
+
+    checks["analytics"] = {"ok": _analytics_ok}
+
+    # 13. UI files (NUMBER 24) — warnings only, never blockers
+    _ui_dir = os.path.join(os.path.dirname(__file__), "public")
+    _app_html   = os.path.join(_ui_dir, "app.html")
+    _super_html = os.path.join(_ui_dir, "super.html")
+    _ui_app_ok   = os.path.isfile(_app_html)
+    _ui_super_ok = os.path.isfile(_super_html)
+    _ui_features = {}
+    if _ui_app_ok:
+        try:
+            _app_src = open(_app_html, encoding="utf-8").read()
+            _ui_features = {
+                "menu_images_section":  "sec-menu-images"   in _app_src,
+                "analytics_section":    "sec-analytics"     in _app_src,
+                "voice_ui":             "transcription_status" in _app_src,
+                "quick_actions":        "dashQuickActions"  in _app_src,
+                "health_strip":         "dashHealthStrip"   in _app_src,
+                "date_filter":          "analyticsDateFrom" in _app_src,
+            }
+        except Exception:
+            _ui_features = {}
+    if not _ui_app_ok:
+        warnings.append("public/app.html غير موجود — واجهة المطاعم غير متاحة")
+    if not _ui_super_ok:
+        warnings.append("public/super.html غير موجود — واجهة المشرف غير متاحة")
+    checks["ui_files"] = {
+        "ok": _ui_app_ok and _ui_super_ok,
+        "app_html":   _ui_app_ok,
+        "super_html": _ui_super_ok,
+        "features":   _ui_features,
+    }
+
+    # 14. AI Learning tables (NUMBER 25) — must exist for learning system
+    _ai_tables = ["ai_feedback", "restaurant_knowledge", "ai_quality_logs"]
+    _ai_tables_ok = False
+    _ai_tables_missing: List[str] = []
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _ai_rows = _c.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+            ).fetchall()
+            _ai_existing = {r[0] for r in _ai_rows}
+        else:
+            _ai_rows = _c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            _ai_existing = {r[0] for r in _ai_rows}
+        _c.close()
+        _ai_tables_missing = [t for t in _ai_tables if t not in _ai_existing]
+        _ai_tables_ok = len(_ai_tables_missing) == 0
+    except Exception as _aie:
+        warnings.append(f"تعذر فحص جداول AI Learning: {_aie}")
+
+    if not _ai_tables_ok:
+        blockers.append(f"جداول AI Learning مفقودة: {', '.join(_ai_tables_missing)} — أعد تشغيل init_db")
+
+    _ai_learning_ok = False
+    try:
+        from services import analytics_service as _as25
+        callable(_as25.get_ai_learning_metrics)
+        callable(_as25.get_super_ai_overview)
+        _ai_learning_ok = True
+    except Exception as _ae25:
+        blockers.append(f"analytics_service (AI learning functions) تعذر استيرادها: {_ae25}")
+
+    checks["ai_learning"] = {
+        "ok": _ai_tables_ok and _ai_learning_ok,
+        "tables_ok": _ai_tables_ok,
+        "missing_tables": _ai_tables_missing,
+        "analytics_ok": _ai_learning_ok,
+    }
+
+    # 15. AI Learning Safety tables (NUMBER 25B)
+    _safety_tables = ["bot_correction_versions", "restaurant_knowledge_versions", "ai_change_logs"]
+    _safety_missing: List[str] = []
+    _safety_ok = False
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _sr = _c.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+            ).fetchall()
+            _sex = {r[0] for r in _sr}
+        else:
+            _sr = _c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            _sex = {r[0] for r in _sr}
+        _c.close()
+        _safety_missing = [t for t in _safety_tables if t not in _sex]
+        _safety_ok = len(_safety_missing) == 0
+    except Exception as _se:
+        warnings.append(f"تعذر فحص جداول AI Safety: {_se}")
+
+    if not _safety_ok:
+        blockers.append(f"جداول AI Safety مفقودة: {', '.join(_safety_missing)} — أعد تشغيل init_db")
+
+    _ai_learning_enabled_col = False
+    try:
+        _c = database.get_db()
+        if database.IS_POSTGRES:
+            _col = _c.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='restaurants' AND column_name='ai_learning_enabled'"
+            ).fetchone()
+            _ai_learning_enabled_col = _col is not None
+        else:
+            _pi = _c.execute("PRAGMA table_info(restaurants)").fetchall()
+            _ai_learning_enabled_col = any(r[1] == "ai_learning_enabled" for r in _pi)
+        _c.close()
+    except Exception:
+        pass
+
+    if not _ai_learning_enabled_col:
+        blockers.append("عمود ai_learning_enabled مفقود من جدول restaurants — أعد تشغيل init_db")
+
+    checks["ai_safety"] = {
+        "ok": _safety_ok and _ai_learning_enabled_col,
+        "safety_tables_ok": _safety_ok,
+        "missing_safety_tables": _safety_missing,
+        "learning_switch_col_ok": _ai_learning_enabled_col,
+    }
 
     overall = "blocked" if blockers else ("warnings" if warnings else "ready")
     return {

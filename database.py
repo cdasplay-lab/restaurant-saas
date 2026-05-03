@@ -536,6 +536,13 @@ def _migrate_db(conn):
         ("messages", "replied_story_id",      "TEXT DEFAULT ''"),
         ("messages", "replied_story_text",    "TEXT DEFAULT ''"),
         ("messages", "replied_story_media_url", "TEXT DEFAULT ''"),
+        # messages — voice transcription tracking (NUMBER 22)
+        ("messages", "media_mime_type",          "TEXT DEFAULT ''"),
+        ("messages", "media_size",               "INTEGER DEFAULT 0"),
+        ("messages", "transcription_status",     "TEXT DEFAULT 'not_required'"),
+        ("messages", "transcription_error",      "TEXT DEFAULT ''"),
+        ("messages", "transcription_provider",   "TEXT DEFAULT ''"),
+        ("messages", "transcribed_at",           "TEXT DEFAULT ''"),
         # products new columns
         ("products", "image_url",             "TEXT DEFAULT ''"),
         ("products", "gallery_images",        "TEXT DEFAULT '[]'"),
@@ -645,6 +652,18 @@ def _migrate_db(conn):
         # restaurants — onboarding bot test state
         ("restaurants", "onboarding_bot_test_status",  "TEXT DEFAULT 'not_tested'"),
         ("restaurants", "onboarding_bot_tested_at",    "TEXT DEFAULT ''"),
+        # bot_corrections — extended fields for NUMBER 25 AI Training
+        ("bot_corrections", "trigger_text",    "TEXT DEFAULT ''"),
+        ("bot_corrections", "correction_text", "TEXT DEFAULT ''"),
+        ("bot_corrections", "category",        "TEXT DEFAULT ''"),
+        ("bot_corrections", "priority",        "INTEGER DEFAULT 0"),
+        ("bot_corrections", "usage_count",     "INTEGER DEFAULT 0"),
+        ("bot_corrections", "created_by",      "TEXT DEFAULT ''"),
+        ("bot_corrections", "updated_at",      "TEXT DEFAULT CURRENT_TIMESTAMP"),
+        # NUMBER 25B — soft-delete + learning switch
+        ("bot_corrections",        "deleted_at",        "TEXT DEFAULT ''"),
+        ("restaurant_knowledge",   "deleted_at",        "TEXT DEFAULT ''"),
+        ("restaurants",            "ai_learning_enabled", "INTEGER DEFAULT 1"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────
@@ -950,6 +969,163 @@ def _migrate_db(conn):
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_active ON announcements(is_active, placement, priority)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ann_dismissal ON announcement_dismissals(announcement_id, restaurant_id, user_id)")
+    except Exception:
+        pass
+    conn.commit()
+
+    # ── menu_images — restaurant menu/category photos for bot delivery ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS menu_images (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            image_url TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_images_restaurant ON menu_images(restaurant_id, is_active, sort_order)")
+    except Exception:
+        pass
+    conn.commit()
+
+    # ── ai_feedback — customer/owner ratings on bot replies (NUMBER 25) ─────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_feedback (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            conversation_id TEXT DEFAULT '',
+            message_id TEXT DEFAULT '',
+            rating TEXT DEFAULT 'bad',
+            reason TEXT DEFAULT '',
+            suggested_correction TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TEXT DEFAULT '',
+            reviewed_by TEXT DEFAULT '',
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_feedback_restaurant ON ai_feedback(restaurant_id, status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_feedback_conv ON ai_feedback(conversation_id)")
+    except Exception:
+        pass
+
+    # ── restaurant_knowledge — owner-curated knowledge base (NUMBER 25) ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS restaurant_knowledge (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            source TEXT DEFAULT 'manual',
+            is_active INTEGER DEFAULT 1,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_restaurant ON restaurant_knowledge(restaurant_id, is_active, priority)")
+    except Exception:
+        pass
+
+    # ── ai_quality_logs — per-reply quality tracking (NUMBER 25) ──────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_quality_logs (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            conversation_id TEXT DEFAULT '',
+            message_id TEXT DEFAULT '',
+            intent_detected TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.0,
+            used_corrections INTEGER DEFAULT 0,
+            used_knowledge INTEGER DEFAULT 0,
+            escalation_triggered INTEGER DEFAULT 0,
+            response_quality TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_quality_restaurant ON ai_quality_logs(restaurant_id, created_at)")
+    except Exception:
+        pass
+    conn.commit()
+
+    # ── bot_correction_versions — immutable snapshot per change (NUMBER 25B) ────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_correction_versions (
+            id TEXT PRIMARY KEY,
+            correction_id TEXT NOT NULL,
+            restaurant_id TEXT NOT NULL,
+            trigger_text TEXT DEFAULT '',
+            correction_text TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            priority INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            version_number INTEGER DEFAULT 1,
+            changed_by TEXT DEFAULT '',
+            change_reason TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_corr_ver_correction ON bot_correction_versions(correction_id, version_number)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_corr_ver_restaurant ON bot_correction_versions(restaurant_id, created_at)")
+    except Exception:
+        pass
+
+    # ── restaurant_knowledge_versions — immutable snapshot per change (NUMBER 25B)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS restaurant_knowledge_versions (
+            id TEXT PRIMARY KEY,
+            knowledge_id TEXT NOT NULL,
+            restaurant_id TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            priority INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            version_number INTEGER DEFAULT 1,
+            changed_by TEXT DEFAULT '',
+            change_reason TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_know_ver_knowledge ON restaurant_knowledge_versions(knowledge_id, version_number)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_know_ver_restaurant ON restaurant_knowledge_versions(restaurant_id, created_at)")
+    except Exception:
+        pass
+
+    # ── ai_change_logs — full audit trail for all AI learning actions (NUMBER 25B)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_change_logs (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT DEFAULT '',
+            actor_user_id TEXT DEFAULT '',
+            actor_role TEXT DEFAULT '',
+            entity_type TEXT DEFAULT '',
+            entity_id TEXT DEFAULT '',
+            action TEXT DEFAULT '',
+            old_value_json TEXT DEFAULT '{}',
+            new_value_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_change_restaurant ON ai_change_logs(restaurant_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_change_entity ON ai_change_logs(entity_type, entity_id)")
     except Exception:
         pass
     conn.commit()

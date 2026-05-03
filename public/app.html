@@ -16,6 +16,9 @@
   .nav-item:not(.active):hover { background: rgba(255,255,255,.05); }
   .section { display: none; }
   .section.active { display: block; }
+  .ai-tab-btn { color: #94a3b8; background: transparent; border-bottom: 2px solid transparent; transition: all .15s; }
+  .ai-tab-active { color: #818cf8; border-bottom-color: #6366f1; background: rgba(99,102,241,.1); }
+  .ai-tab-btn:not(.ai-tab-active):hover { color: #cbd5e1; }
   .badge { display: inline-flex; align-items: center; justify-content: center;
            padding: 2px 8px; border-radius: 9999px; font-size: .7rem; font-weight: 600; }
   .toast { transition: all .3s; }
@@ -196,6 +199,9 @@
       <a href="#products"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-utensils w-4 text-center"></i> المنتجات
       </a>
+      <a href="#menu-images"   class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-images w-4 text-center"></i> صور المنيو
+      </a>
       <a href="#customers"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-users w-4 text-center"></i> العملاء
       </a>
@@ -211,6 +217,10 @@
       </a>
       <a href="#analytics"     class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-chart-line w-4 text-center"></i> التحليلات
+      </a>
+      <a href="#ai-training" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-brain w-4 text-center"></i> تدريب الذكاء
+        <span id="badgeAiFeedback" class="mr-auto badge bg-rose-500/20 text-rose-400 hidden">!</span>
       </a>
       <a href="#channels"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-satellite-dish w-4 text-center"></i> القنوات
@@ -290,39 +300,93 @@
       <div id="ann-top-banner" class="mb-4 space-y-2"></div>
       <div id="dashLoading" class="flex justify-center py-16"><div class="spinner"></div></div>
       <div id="dashContent" class="hidden">
-        <!-- KPI cards -->
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <div class="flex items-center justify-between mb-3">
-              <div class="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-bag-shopping text-indigo-400"></i></div>
-              <span class="text-slate-500 text-xs">إجمالي</span>
-            </div>
-            <p id="kpiOrders" class="text-2xl font-bold text-white">—</p>
-            <p class="text-slate-500 text-xs mt-1">إجمالي الطلبات</p>
-          </div>
-          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <div class="flex items-center justify-between mb-3">
-              <div class="w-10 h-10 bg-green-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-saudi-riyal text-green-400"></i></div>
+        <!-- KPI cards — 6 cards -->
+        <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 mb-5">
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div class="w-9 h-9 bg-green-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-circle-dollar-to-slot text-green-400 text-sm"></i></div>
               <span class="text-slate-500 text-xs">اليوم</span>
             </div>
-            <p id="kpiRevenue" class="text-2xl font-bold text-white">—</p>
+            <p id="kpiRevenue" class="text-xl font-bold text-green-400">—</p>
             <p class="text-slate-500 text-xs mt-1">إيرادات اليوم</p>
           </div>
-          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <div class="flex items-center justify-between mb-3">
-              <div class="w-10 h-10 bg-blue-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-comments text-blue-400"></i></div>
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div class="w-9 h-9 bg-indigo-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-bag-shopping text-indigo-400 text-sm"></i></div>
+              <span class="text-slate-500 text-xs">اليوم</span>
+            </div>
+            <p id="kpiTodayOrders" class="text-xl font-bold text-indigo-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">طلبات اليوم</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div class="w-9 h-9 bg-blue-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-comments text-blue-400 text-sm"></i></div>
               <span class="text-slate-500 text-xs">مفتوحة</span>
             </div>
-            <p id="kpiChats" class="text-2xl font-bold text-white">—</p>
-            <p class="text-slate-500 text-xs mt-1">المحادثات المفتوحة</p>
+            <p id="kpiChats" class="text-xl font-bold text-blue-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">المحادثات</p>
           </div>
-          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <div class="flex items-center justify-between mb-3">
-              <div class="w-10 h-10 bg-purple-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-users text-purple-400"></i></div>
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div class="w-9 h-9 bg-purple-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-users text-purple-400 text-sm"></i></div>
               <span class="text-slate-500 text-xs">مسجلون</span>
             </div>
-            <p id="kpiCustomers" class="text-2xl font-bold text-white">—</p>
-            <p class="text-slate-500 text-xs mt-1">إجمالي العملاء</p>
+            <p id="kpiCustomers" class="text-xl font-bold text-purple-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">العملاء</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div class="w-9 h-9 bg-cyan-500/20 rounded-xl flex items-center justify-center"><i class="fa-solid fa-plug text-cyan-400 text-sm"></i></div>
+              <span class="text-slate-500 text-xs">متصل</span>
+            </div>
+            <p id="kpiChannels" class="text-xl font-bold text-cyan-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">القنوات النشطة</p>
+          </div>
+          <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <div id="kpiFailedIcon" class="w-9 h-9 bg-slate-700 rounded-xl flex items-center justify-center"><i class="fa-solid fa-triangle-exclamation text-slate-400 text-sm"></i></div>
+              <span class="text-slate-500 text-xs">24س</span>
+            </div>
+            <p id="kpiFailed" class="text-xl font-bold text-slate-400">—</p>
+            <p class="text-slate-500 text-xs mt-1">رسائل فاشلة</p>
+          </div>
+        </div>
+        <!-- Keep legacy kpiOrders for badge compatibility -->
+        <span id="kpiOrders" class="hidden"></span>
+
+        <!-- Health strip -->
+        <div id="dashHealthStrip" class="mb-5 hidden">
+          <div id="dashHealthContent" class="bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-3 flex flex-wrap gap-3 items-center text-xs"></div>
+        </div>
+
+        <!-- Quick actions -->
+        <div id="dashQuickActions" class="mb-5">
+          <p class="text-slate-500 text-xs font-semibold mb-3 uppercase tracking-wider">إجراءات سريعة</p>
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+            <button onclick="navigate('products');setTimeout(()=>openProductModal(),400)" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-indigo-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-plus text-indigo-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">إضافة منتج</p>
+            </button>
+            <button onclick="navigate('menu-images');setTimeout(()=>openMenuImageModal(),400)" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-purple-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-image text-purple-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">إضافة صورة منيو</p>
+            </button>
+            <button onclick="navigate('channels')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-cyan-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-plug text-cyan-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">ربط قناة</p>
+            </button>
+            <button onclick="navigate('conversations')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-blue-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-comments text-blue-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">المحادثات</p>
+            </button>
+            <button onclick="navigate('analytics')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-green-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-chart-line text-green-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">التحليلات</p>
+            </button>
+            <button onclick="navigate('settings')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-yellow-500/50 rounded-xl p-3 text-center transition group">
+              <i class="fa-solid fa-gear text-yellow-400 text-lg mb-1 group-hover:scale-110 transition-transform block"></i>
+              <p class="text-slate-300 text-xs">الإعدادات</p>
+            </button>
           </div>
         </div>
 
@@ -342,13 +406,23 @@
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <!-- Recent orders -->
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <p class="text-white font-semibold mb-4">آخر الطلبات</p>
-            <div id="recentOrders" class="space-y-2"></div>
+            <div class="flex items-center justify-between mb-4">
+              <p class="text-white font-semibold">آخر الطلبات</p>
+              <button onclick="navigate('orders')" class="text-indigo-400 hover:text-indigo-300 text-xs">عرض الكل</button>
+            </div>
+            <div id="recentOrders" class="space-y-2">
+              <p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات حتى الآن</p>
+            </div>
           </div>
           <!-- Top products -->
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
-            <p class="text-white font-semibold mb-4">أكثر المنتجات طلباً</p>
-            <div id="topProducts" class="space-y-2"></div>
+            <div class="flex items-center justify-between mb-4">
+              <p class="text-white font-semibold">أكثر المنتجات طلباً</p>
+              <button onclick="navigate('products')" class="text-indigo-400 hover:text-indigo-300 text-xs">إدارة</button>
+            </div>
+            <div id="topProducts" class="space-y-2">
+              <p class="text-slate-500 text-sm text-center py-4">لا توجد منتجات بعد</p>
+            </div>
           </div>
         </div>
       </div>
@@ -517,6 +591,30 @@
       <div id="prodsGrid" class="hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
     </section>
 
+    <!-- ═══ MENU IMAGES ═══ -->
+    <section id="sec-menu-images" class="section">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h2 class="text-lg font-semibold text-slate-100">صور المنيو</h2>
+          <p class="text-xs text-slate-400 mt-0.5">إذا الزبون كتب: دزلي المنيو — البوت يرسل هاي الصور تلقائياً</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="menuImgsCountBadge" class="hidden text-xs bg-slate-700 text-slate-300 px-2.5 py-1 rounded-lg"></span>
+          <button onclick="openMenuImageModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
+            <i class="fa-solid fa-plus"></i> إضافة صورة
+          </button>
+        </div>
+      </div>
+      <div id="menuImgsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
+      <div id="menuImgsEmpty" class="hidden text-center py-12 text-slate-500">
+        <i class="fa-solid fa-images text-4xl mb-3"></i>
+        <p class="mb-2">لا توجد صور منيو بعد</p>
+        <p class="text-xs">أضف صورة وسيرسلها البوت تلقائياً عند طلب المنيو</p>
+        <button onclick="openMenuImageModal()" class="mt-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition">إضافة أول صورة</button>
+      </div>
+      <div id="menuImgsGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"></div>
+    </section>
+
     <!-- ═══ CUSTOMERS ═══ -->
     <section id="sec-customers" class="section">
       <div class="flex items-center justify-between mb-5">
@@ -598,8 +696,26 @@
 
     <!-- ═══ ANALYTICS ═══ -->
     <section id="sec-analytics" class="section">
+      <!-- Date filter controls -->
+      <div class="flex flex-wrap items-center gap-3 mb-5">
+        <div class="flex items-center gap-2">
+          <label class="text-slate-400 text-xs">من:</label>
+          <input type="date" id="analyticsDateFrom" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-2 focus:border-indigo-500">
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-slate-400 text-xs">إلى:</label>
+          <input type="date" id="analyticsDateTo" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-2 focus:border-indigo-500">
+        </div>
+        <button onclick="loadAnalytics()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
+          <i class="fa-solid fa-magnifying-glass text-xs"></i> تطبيق
+        </button>
+        <button onclick="document.getElementById('analyticsDateFrom').value='';document.getElementById('analyticsDateTo').value='';loadAnalytics()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs px-3 py-2 rounded-lg transition">
+          مسح
+        </button>
+      </div>
       <div id="analyticsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="analyticsContent" class="hidden">
+        <!-- KPI Row -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 text-center">
             <p id="aKpiRevenue" class="text-2xl font-bold text-green-400">—</p>
@@ -618,6 +734,7 @@
             <p class="text-slate-500 text-xs mt-1">المنتجات</p>
           </div>
         </div>
+        <!-- Charts Row -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <div class="lg:col-span-2 bg-slate-800 rounded-2xl p-5 border border-slate-700">
             <p class="text-white font-semibold mb-4">الإيرادات الأسبوعية</p>
@@ -628,7 +745,8 @@
             <canvas id="analyticsChannelChart" height="180"></canvas>
           </div>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Top Products + Customers -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
             <p class="text-white font-semibold mb-4">أفضل المنتجات</p>
             <canvas id="analyticsTopProdsChart" height="160"></canvas>
@@ -636,6 +754,50 @@
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
             <p class="text-white font-semibold mb-4">أفضل العملاء</p>
             <div id="analyticsTopCusts" class="space-y-3"></div>
+          </div>
+        </div>
+        <!-- Voice Analytics (NUMBER 22/23) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">🎙️ تحليلات الرسائل الصوتية</p>
+            <div id="analyticsVoiceStats" class="space-y-3">
+              <div class="grid grid-cols-3 gap-3 text-center">
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aVoiceTotal" class="text-xl font-bold text-cyan-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">إجمالي الصوتيات</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aVoiceSuccess" class="text-xl font-bold text-green-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">تم التفريغ</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aVoiceRate" class="text-xl font-bold text-yellow-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">نسبة النجاح</p>
+                </div>
+              </div>
+              <div id="aVoiceByChannel" class="space-y-2 mt-2"></div>
+            </div>
+          </div>
+          <!-- Menu Images Analytics (NUMBER 21/23) -->
+          <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-white font-semibold mb-4">🖼️ تحليلات صور المنيو</p>
+            <div id="analyticsMenuImgStats" class="space-y-3">
+              <div class="grid grid-cols-3 gap-3 text-center">
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aImgTotal" class="text-xl font-bold text-purple-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">إجمالي الصور</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aImgActive" class="text-xl font-bold text-green-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">مفعّلة</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-xl p-3">
+                  <p id="aImgCats" class="text-xl font-bold text-orange-400">—</p>
+                  <p class="text-slate-500 text-xs mt-1">الفئات</p>
+                </div>
+              </div>
+              <div id="aImgByCategory" class="space-y-2 mt-2"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1110,6 +1272,161 @@
       </div>
     </section>
 
+    <!-- ══ NUMBER 25 — AI Training / Learning System ══════════════════════════ -->
+    <section id="sec-ai-training" class="section">
+      <div class="max-w-4xl mx-auto space-y-6">
+
+        <!-- Header -->
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-white font-bold text-xl">🧠 تدريب الذكاء الاصطناعي</h2>
+            <p class="text-slate-400 text-sm mt-1">راجع ردود البوت، أضف تصحيحات، وبني قاعدة معرفة مخصصة لمطعمك</p>
+          </div>
+          <button onclick="loadAiTraining()" class="text-slate-400 hover:text-white text-sm flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 transition">
+            <i class="fa-solid fa-rotate-right text-xs"></i> تحديث
+          </button>
+        </div>
+
+        <!-- Quality Summary KPIs -->
+        <div id="aiQualityKpis" class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 text-center">
+            <div id="aiKpiCorrections" class="text-2xl font-bold text-indigo-400">—</div>
+            <div class="text-slate-400 text-xs mt-1">تصحيحات نشطة</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 text-center">
+            <div id="aiKpiKnowledge" class="text-2xl font-bold text-emerald-400">—</div>
+            <div class="text-slate-400 text-xs mt-1">قاعدة المعرفة</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 text-center">
+            <div id="aiKpiFeedback" class="text-2xl font-bold text-amber-400">—</div>
+            <div class="text-slate-400 text-xs mt-1">تقييمات معلقة</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 text-center">
+            <div id="aiKpiSatisfaction" class="text-2xl font-bold text-green-400">—</div>
+            <div class="text-slate-400 text-xs mt-1">رضا العملاء</div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-2 border-b border-slate-700 pb-0">
+          <button onclick="aiTab('feedback')" id="aiTabFeedback" class="ai-tab-btn ai-tab-active px-4 py-2 text-sm rounded-t-lg">📬 التقييمات المعلقة</button>
+          <button onclick="aiTab('corrections')" id="aiTabCorrections" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">✏️ التصحيحات</button>
+          <button onclick="aiTab('knowledge')" id="aiTabKnowledge" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📚 قاعدة المعرفة</button>
+          <button onclick="aiTab('changelog')" id="aiTabChangelog" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📋 سجل التغييرات</button>
+          <button onclick="aiTab('settings')" id="aiTabSettings" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">⚙️ الإعدادات</button>
+        </div>
+
+        <!-- Tab: Feedback -->
+        <div id="aiPanelFeedback" class="ai-panel">
+          <div class="space-y-3">
+            <p class="text-slate-400 text-sm">التقييمات السلبية التي تحتاج مراجعة — وافق عليها أو ارفضها. يمكن تحويل الاقتراح إلى تصحيح تلقائياً.</p>
+            <div id="aiFeedbackList" class="space-y-3">
+              <div class="flex justify-center py-8"><div class="spinner"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Corrections -->
+        <div id="aiPanelCorrections" class="ai-panel hidden">
+          <!-- Add form -->
+          <div class="bg-slate-800/50 border border-slate-700 rounded-2xl p-4 mb-4">
+            <h3 class="text-white font-medium text-sm mb-3">إضافة تصحيح جديد</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="text-slate-400 text-xs block mb-1">إذا قال العميل (trigger)</label>
+                <input id="corrTrigger" type="text" placeholder="مثال: كم السعر؟" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs block mb-1">رد البوت الصحيح</label>
+                <input id="corrResponse" type="text" placeholder="مثال: الأسعار في المنيو أعلاه" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs block mb-1">تصنيف (اختياري)</label>
+                <input id="corrCategory" type="text" placeholder="مثال: أسعار، توصيل، ساعات العمل" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs block mb-1">الأولوية (0 = عادي، 10 = عالي)</label>
+                <input id="corrPriority" type="number" value="0" min="0" max="10" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+              </div>
+            </div>
+            <button onclick="addAiCorrection()" class="mt-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-xl transition">+ إضافة تصحيح</button>
+          </div>
+          <!-- List -->
+          <div id="aiCorrectionList" class="space-y-2">
+            <div class="flex justify-center py-8"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- Tab: Knowledge Base -->
+        <div id="aiPanelKnowledge" class="ai-panel hidden">
+          <!-- Add form -->
+          <div class="bg-slate-800/50 border border-slate-700 rounded-2xl p-4 mb-4">
+            <h3 class="text-white font-medium text-sm mb-3">إضافة معلومة جديدة لقاعدة المعرفة</h3>
+            <div class="space-y-3">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label class="text-slate-400 text-xs block mb-1">العنوان</label>
+                  <input id="knTitle" type="text" placeholder="مثال: سياسة الاسترجاع" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                  <label class="text-slate-400 text-xs block mb-1">التصنيف</label>
+                  <input id="knCategory" type="text" placeholder="مثال: سياسات، عروض، معلومات عامة" class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                </div>
+              </div>
+              <div>
+                <label class="text-slate-400 text-xs block mb-1">المحتوى (ما يجب أن يعرفه البوت)</label>
+                <textarea id="knContent" rows="3" placeholder="مثال: نقبل الاسترجاع خلال 30 دقيقة من استلام الطلب إذا كان هناك خطأ في التحضير..." class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+              </div>
+            </div>
+            <button onclick="addAiKnowledge()" class="mt-3 bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-xl transition">+ إضافة للمعرفة</button>
+          </div>
+          <!-- List -->
+          <div id="aiKnowledgeList" class="space-y-2">
+            <div class="flex justify-center py-8"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- Tab: Change Log -->
+        <div id="aiPanelChangelog" class="ai-panel hidden">
+          <p class="text-slate-400 text-sm mb-3">سجل كامل لكل إضافة أو تعديل أو حذف أو استعادة — غير قابل للحذف.</p>
+          <div id="aiChangelogList" class="space-y-2">
+            <div class="flex justify-center py-8"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- Tab: Settings (AI Learning Switch) -->
+        <div id="aiPanelSettings" class="ai-panel hidden">
+          <div class="bg-slate-800/50 border border-slate-700 rounded-2xl p-5 space-y-4">
+            <h3 class="text-white font-medium">إعدادات تدريب الذكاء الاصطناعي</h3>
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-slate-200 text-sm font-medium">تفعيل التدريب والمعرفة</p>
+                <p class="text-slate-400 text-xs mt-0.5">عند التعطيل: البوت يتجاهل التصحيحات وقاعدة المعرفة — ردوده العادية لا تتأثر</p>
+              </div>
+              <button id="aiLearningToggleBtn" onclick="toggleAiLearning()"
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition bg-slate-600">
+                <span id="aiLearningToggleKnob" class="inline-block h-4 w-4 translate-x-1 rounded-full bg-white transition"></span>
+              </button>
+            </div>
+            <p id="aiLearningStatus" class="text-slate-400 text-xs"></p>
+          </div>
+        </div>
+
+        <!-- Version History Modal -->
+        <div id="aiVersionModal" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div class="bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl p-5 w-full max-w-lg max-h-[80vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-white font-bold text-base" id="aiVersionModalTitle">سجل الإصدارات</h3>
+              <button onclick="closeVersionModal()" class="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <div id="aiVersionList" class="space-y-2"></div>
+          </div>
+        </div>
+
+        <div id="aiTrainingLoading" class="hidden flex justify-center py-10"><div class="spinner"></div></div>
+      </div>
+    </section>
+
   </div><!-- /content -->
 </main>
 
@@ -1370,6 +1687,7 @@ const PAGES = {
   orders:        { title: 'الطلبات',        load: loadOrders },
   conversations: { title: 'المحادثات',      load: loadConversations },
   products:      { title: 'المنتجات',       load: loadProducts },
+  'menu-images': { title: 'صور المنيو',     load: loadMenuImages },
   customers:     { title: 'العملاء',        load: loadCustomers },
   broadcast:     { title: 'بث الرسائل',     load: () => {} },
   team:          { title: 'الفريق',         load: loadTeam },
@@ -1378,6 +1696,7 @@ const PAGES = {
   activity:      { title: 'سجل النشاط',    load: loadActivity },
   settings:      { title: 'الإعدادات',      load: loadSettings },
   onboarding:    { title: 'تفعيل الحساب',  load: loadOnboarding },
+  'ai-training': { title: 'تدريب الذكاء',  load: loadAiTraining },
 };
 
 function navigate(page) {
@@ -1400,17 +1719,33 @@ async function loadDashboard() {
   document.getElementById('dashLoading').classList.remove('hidden');
   document.getElementById('dashContent').classList.add('hidden');
   try {
-    const [sum, weekly, channels, top] = await Promise.all([
+    const [sum, weekly, channelsData, top] = await Promise.all([
       api.get('/api/analytics/summary'),
       api.get('/api/analytics/weekly-revenue'),
       api.get('/api/analytics/channel-breakdown'),
       api.get('/api/analytics/top-products'),
     ]);
 
-    document.getElementById('kpiOrders').textContent = sum.total_orders;
-    document.getElementById('kpiRevenue').textContent = cur(sum.today_revenue);
-    document.getElementById('kpiChats').textContent = sum.open_chats;
+    // KPI cards
+    document.getElementById('kpiOrders').textContent   = sum.total_orders;
+    document.getElementById('kpiTodayOrders').textContent = sum.today_orders ?? 0;
+    document.getElementById('kpiRevenue').textContent  = cur(sum.today_revenue);
+    document.getElementById('kpiChats').textContent    = sum.open_chats;
     document.getElementById('kpiCustomers').textContent = sum.total_customers;
+    document.getElementById('kpiChannels').textContent  = sum.connected_channels ?? 0;
+
+    // Failed outbound KPI — red if > 0
+    const failedCount = sum.failed_outbound_24h ?? 0;
+    const kpiFailed = document.getElementById('kpiFailed');
+    const kpiFailedIcon = document.getElementById('kpiFailedIcon');
+    kpiFailed.textContent = failedCount;
+    if (failedCount > 0) {
+      kpiFailed.className = 'text-xl font-bold text-red-400';
+      kpiFailedIcon.className = 'w-9 h-9 bg-red-500/20 rounded-xl flex items-center justify-center';
+      kpiFailedIcon.querySelector('i').className = 'fa-solid fa-triangle-exclamation text-red-400 text-sm';
+    } else {
+      kpiFailed.className = 'text-xl font-bold text-slate-400';
+    }
 
     // Badges
     const pb = document.getElementById('badgePending');
@@ -1422,42 +1757,83 @@ async function loadDashboard() {
       document.getElementById('urgentCount').textContent = sum.urgent_chats;
     }
 
+    // Health strip
+    _renderDashHealthStrip(sum);
+
     // Weekly chart
     renderWeeklyChart('weeklyChart', weekly);
     // Channel chart
-    renderChannelChart('channelChart', channels);
+    renderChannelChart('channelChart', channelsData);
 
     // Recent orders
     const ro = document.getElementById('recentOrders');
-    ro.innerHTML = sum.recent_orders.length ? sum.recent_orders.map(o => `
+    ro.innerHTML = (sum.recent_orders || []).length ? sum.recent_orders.map(o => `
       <div class="flex items-center justify-between py-2 border-b border-slate-700/50 last:border-0">
         <div>
-          <p class="text-white text-sm font-medium">${o.customer_name}</p>
+          <p class="text-white text-sm font-medium">${h(o.customer_name)}</p>
           <p class="text-slate-500 text-xs">${channelIcon(o.channel)} ${o.channel}</p>
         </div>
         <div class="text-right">
           <p class="text-green-400 text-sm font-semibold">${cur(o.total)}</p>
           ${statusBadge(o.status)}
         </div>
-      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات</p>';
+      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات حتى الآن</p>';
 
     // Top products
     const tp = document.getElementById('topProducts');
-    tp.innerHTML = top.map((p, i) => `
+    tp.innerHTML = top.length ? top.map((p, i) => `
       <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
         <span class="text-slate-600 text-xs font-bold w-5">${i+1}</span>
-        <span class="text-lg">${p.icon}</span>
+        <span class="text-lg">${p.icon || '🍽️'}</span>
         <div class="flex-1">
-          <p class="text-white text-sm font-medium">${p.name}</p>
+          <p class="text-white text-sm font-medium">${h(p.name)}</p>
           <p class="text-slate-500 text-xs">${p.order_count} طلب</p>
         </div>
         <p class="text-green-400 text-sm">${cur(p.price)}</p>
-      </div>`).join('');
+      </div>`).join('')
+    : '<p class="text-slate-500 text-sm text-center py-4">لا توجد منتجات بعد — <button onclick="navigate(\'products\')" class="text-indigo-400 hover:underline">أضف منتجاً</button></p>';
 
     document.getElementById('dashLoading').classList.add('hidden');
     document.getElementById('dashContent').classList.remove('hidden');
     _loadDashboardOnboardingBanner();
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) {
+    document.getElementById('dashLoading').classList.add('hidden');
+    document.getElementById('dashContent').classList.remove('hidden');
+    toast('تعذر تحميل لوحة التحكم', 'error');
+  }
+}
+
+function _renderDashHealthStrip(sum) {
+  const strip = document.getElementById('dashHealthStrip');
+  const content = document.getElementById('dashHealthContent');
+  if (!strip || !content) return;
+
+  // Subscription pill
+  const sub = sum.subscription || {};
+  const planColor = { trial: 'text-yellow-400', starter: 'text-blue-400', professional: 'text-purple-400', enterprise: 'text-green-400' };
+  const planLabel = { trial: 'تجريبي', starter: 'مبتدئ', professional: 'محترف', enterprise: 'مؤسسة' };
+  const subPill = `<span class="flex items-center gap-1 ${planColor[sub.plan] || 'text-slate-400'}">
+    <i class="fa-solid fa-crown text-xs"></i> ${planLabel[sub.plan] || sub.plan || 'تجريبي'}
+  </span>`;
+
+  // Voice status
+  const voicePill = `<span class="flex items-center gap-1 text-cyan-400"><i class="fa-solid fa-microphone text-xs"></i> صوت مفعّل</span>`;
+
+  // Menu images
+  const imgCount = sum.menu_images_count ?? 0;
+  const imgPill = imgCount > 0
+    ? `<span class="flex items-center gap-1 text-purple-400"><i class="fa-solid fa-image text-xs"></i> ${imgCount} صورة منيو</span>`
+    : `<span class="flex items-center gap-1 text-slate-500"><i class="fa-solid fa-image text-xs"></i> بدون صور منيو</span>`;
+
+  // Failed outbound warning
+  const failed = sum.failed_outbound_24h ?? 0;
+  const failPill = failed > 0
+    ? `<span class="flex items-center gap-1 text-red-400"><i class="fa-solid fa-triangle-exclamation text-xs"></i> ${failed} رسالة فاشلة</span>`
+    : '';
+
+  const pills = [subPill, voicePill, imgPill, failPill].filter(Boolean);
+  content.innerHTML = pills.join('<span class="text-slate-700">|</span>');
+  strip.classList.remove('hidden');
 }
 
 async function _loadDashboardOnboardingBanner() {
@@ -1822,13 +2198,24 @@ function renderMessages(msgs, forceScroll = true) {
       </div>`;
     }
 
-    // Voice message indicator
+    // Voice message indicator (NUMBER 22)
     let voiceBadge = '';
     if (m.media_type === 'voice') {
-      voiceBadge = `<div class="mb-1 flex items-center gap-1 text-xs text-slate-400">
-        <i class="fa-solid fa-microphone text-indigo-400"></i>
+      const tStatus = m.transcription_status || '';
+      const tText   = m.voice_transcript || '';
+      let tBadgeColor = 'text-indigo-400';
+      let tStatusLabel = '';
+      if (tStatus === 'success' && tText) {
+        tBadgeColor  = 'text-emerald-400';
+        tStatusLabel = `<span class="text-slate-300 italic text-xs">"${tText}"</span>`;
+      } else if (tStatus === 'failed' || tStatus === 'skipped') {
+        tBadgeColor  = 'text-amber-400';
+        tStatusLabel = '<span class="text-slate-500 text-xs">لم يتم التفريغ</span>';
+      }
+      voiceBadge = `<div class="mb-1 flex flex-wrap items-center gap-1 text-xs ${tBadgeColor}">
+        <i class="fa-solid fa-microphone"></i>
         <span>رسالة صوتية</span>
-        ${m.voice_transcript ? `<span class="text-slate-500">— "${m.voice_transcript}"</span>` : ''}
+        ${tStatusLabel}
       </div>`;
     }
 
@@ -2438,6 +2825,130 @@ async function deleteProduct(id) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+// ── Menu Images ───────────────────────────────────────────────
+let _menuImages = [];
+
+async function loadMenuImages() {
+  document.getElementById('menuImgsLoading').classList.remove('hidden');
+  document.getElementById('menuImgsEmpty').classList.add('hidden');
+  document.getElementById('menuImgsGrid').classList.add('hidden');
+  try {
+    _menuImages = await api.get('/api/menu-images');
+    renderMenuImages();
+  } catch(e) {
+    toast(e.message, 'error');
+    document.getElementById('menuImgsLoading').classList.add('hidden');
+  }
+}
+
+function renderMenuImages() {
+  document.getElementById('menuImgsLoading').classList.add('hidden');
+  const grid = document.getElementById('menuImgsGrid');
+  const empty = document.getElementById('menuImgsEmpty');
+  const imgs = _menuImages;
+  // Count badge
+  const badge = document.getElementById('menuImgsCountBadge');
+  if (badge) {
+    const active = imgs.filter(i => i.is_active).length;
+    badge.textContent = `${active} نشطة / ${imgs.length} إجمالي`;
+    badge.classList.toggle('hidden', imgs.length === 0);
+  }
+  if (!imgs.length) { empty.classList.remove('hidden'); grid.classList.add('hidden'); return; }
+  empty.classList.add('hidden');
+  grid.classList.remove('hidden');
+  grid.innerHTML = imgs.map(img => `
+    <div class="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500 transition group">
+      <div class="relative aspect-square bg-slate-900">
+        <img src="${img.image_url}" alt="${img.title||img.category||'صورة'}"
+          class="w-full h-full object-cover"
+          onerror="this.parentElement.innerHTML='<div class=\'flex items-center justify-center h-full text-slate-600 text-xs\'>⚠ لا تتوفر صورة</div>'">
+        <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+          <button onclick="openMenuImageModal('${img.id}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg transition">تعديل</button>
+          <button onclick="deleteMenuImage('${img.id}')" class="bg-red-600 hover:bg-red-500 text-white text-xs px-3 py-1.5 rounded-lg transition">حذف</button>
+        </div>
+        ${!img.is_active ? '<span class="absolute top-2 right-2 bg-slate-700 text-slate-400 text-xs px-2 py-0.5 rounded">مخفية</span>' : ''}
+      </div>
+      <div class="p-2">
+        <p class="text-slate-200 text-xs font-medium truncate">${img.title||'—'}</p>
+        ${img.category ? `<p class="text-slate-500 text-xs truncate">${img.category}</p>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function openMenuImageModal(id) {
+  const img = id ? _menuImages.find(x => x.id === id) : null;
+  openModal(`
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-white font-bold">${img ? 'تعديل الصورة' : 'إضافة صورة منيو'}</h2>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="space-y-3">
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">رابط الصورة (URL) *</label>
+        <input id="miUrl" value="${img?.image_url||''}" placeholder="https://..." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+        ${img?.image_url ? `<img src="${img.image_url}" class="mt-2 rounded-lg h-24 w-full object-cover" onerror="this.remove()">` : ''}
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-slate-400 text-xs mb-1 block">العنوان</label>
+          <input id="miTitle" value="${img?.title||''}" placeholder="مثال: المنيو الكامل" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="text-slate-400 text-xs mb-1 block">الفئة</label>
+          <input id="miCategory" value="${img?.category||''}" placeholder="مثال: وجبات، مشروبات" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-slate-400 text-xs mb-1 block">الترتيب</label>
+          <input id="miOrder" type="number" value="${img?.sort_order||0}" min="0" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+        </div>
+        <div class="flex items-end pb-1">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="miActive" ${(!img || img.is_active) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
+            <span class="text-slate-400 text-sm">نشطة (تُرسل للعملاء)</span>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button onclick="saveMenuImage('${id||''}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition font-semibold">حفظ</button>
+      <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إلغاء</button>
+    </div>
+  `);
+}
+
+async function saveMenuImage(id) {
+  const url = document.getElementById('miUrl').value.trim();
+  if (!url) { toast('رابط الصورة مطلوب', 'error'); return; }
+  const data = {
+    image_url: url,
+    title: document.getElementById('miTitle').value.trim(),
+    category: document.getElementById('miCategory').value.trim(),
+    sort_order: parseInt(document.getElementById('miOrder').value) || 0,
+    is_active: document.getElementById('miActive').checked,
+  };
+  try {
+    if (id) await api.put(`/api/menu-images/${id}`, data);
+    else await api.post('/api/menu-images', data);
+    toast(id ? 'تم التعديل' : 'تمت الإضافة', 'success');
+    closeModal();
+    _menuImages = await api.get('/api/menu-images');
+    renderMenuImages();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteMenuImage(id) {
+  if (!confirm('حذف هذه الصورة؟')) return;
+  try {
+    await api.del(`/api/menu-images/${id}`);
+    toast('تم الحذف', 'success');
+    _menuImages = await api.get('/api/menu-images');
+    renderMenuImages();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
 // ── Customers ─────────────────────────────────────────────────
 async function loadCustomers() {
   const s = document.getElementById('custSearch')?.value || '';
@@ -2616,12 +3127,21 @@ async function loadAnalytics() {
   document.getElementById('analyticsLoading').classList.remove('hidden');
   document.getElementById('analyticsContent').classList.add('hidden');
   try {
-    const [sum, weekly, channels, topProds, topCusts] = await Promise.all([
+    const dateFrom = (document.getElementById('analyticsDateFrom') || {}).value || '';
+    const dateTo   = (document.getElementById('analyticsDateTo')   || {}).value || '';
+    const voiceQS  = new URLSearchParams();
+    if (dateFrom) voiceQS.set('date_from', dateFrom);
+    if (dateTo)   voiceQS.set('date_to', dateTo);
+    const voiceUrl = '/api/analytics/voice' + (voiceQS.toString() ? '?' + voiceQS : '');
+
+    const [sum, weekly, channels, topProds, topCusts, voice, menuImgs] = await Promise.all([
       api.get('/api/analytics/summary'),
       api.get('/api/analytics/weekly-revenue'),
       api.get('/api/analytics/channel-breakdown'),
       api.get('/api/analytics/top-products'),
       api.get('/api/analytics/top-customers'),
+      api.get(voiceUrl).catch(() => ({})),
+      api.get('/api/analytics/menu-images').catch(() => ({})),
     ]);
 
     document.getElementById('aKpiRevenue').textContent = cur(sum.total_revenue);
@@ -2656,6 +3176,32 @@ async function loadAnalytics() {
         <p class="text-green-400 font-semibold text-sm">${cur(c.total_spent)}</p>
         ${c.vip ? '<span class="badge bg-yellow-500/20 text-yellow-400">⭐</span>' : ''}
       </div>`).join('');
+
+    // Voice analytics
+    document.getElementById('aVoiceTotal').textContent = voice.total_voice_messages ?? 0;
+    document.getElementById('aVoiceSuccess').textContent = voice.success ?? 0;
+    document.getElementById('aVoiceRate').textContent = (voice.success_rate ?? 0) + '%';
+    const voiceCh = voice.by_channel || [];
+    document.getElementById('aVoiceByChannel').innerHTML = voiceCh.length
+      ? voiceCh.map(c => `
+          <div class="flex items-center justify-between text-xs py-1 border-b border-slate-700/30 last:border-0">
+            <span class="text-slate-400">${h(c.channel)}</span>
+            <span class="text-white font-semibold">${c.count} رسالة</span>
+          </div>`).join('')
+      : '<p class="text-slate-500 text-xs text-center py-2">لا توجد رسائل صوتية بعد</p>';
+
+    // Menu image analytics
+    document.getElementById('aImgTotal').textContent = menuImgs.total_images ?? 0;
+    document.getElementById('aImgActive').textContent = menuImgs.active_images ?? 0;
+    const cats = menuImgs.by_category || [];
+    document.getElementById('aImgCats').textContent = cats.length;
+    document.getElementById('aImgByCategory').innerHTML = cats.length
+      ? cats.map(c => `
+          <div class="flex items-center justify-between text-xs py-1 border-b border-slate-700/30 last:border-0">
+            <span class="text-slate-400">${h(c.category)}</span>
+            <span class="text-white font-semibold">${c.count} صورة</span>
+          </div>`).join('')
+      : '<p class="text-slate-500 text-xs text-center py-2">لا توجد صور بعد — أضف صوراً من قسم المنيو</p>';
 
     document.getElementById('analyticsLoading').classList.add('hidden');
     document.getElementById('analyticsContent').classList.remove('hidden');
@@ -5259,6 +5805,367 @@ async function runOnboardingBotTest() {
       toast('فشل اختبار البوت: ' + (d.issues || []).join(' | '), 'error');
     }
     loadOnboarding();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+// ── NUMBER 25 — AI Training / Learning System ─────────────────────────────────
+
+let _aiActiveTab = 'feedback';
+
+function aiTab(tab) {
+  _aiActiveTab = tab;
+  ['feedback', 'corrections', 'knowledge', 'changelog', 'settings'].forEach(t => {
+    const btn = document.getElementById('aiTab' + t.charAt(0).toUpperCase() + t.slice(1));
+    const panel = document.getElementById('aiPanel' + t.charAt(0).toUpperCase() + t.slice(1));
+    if (btn) btn.classList.toggle('ai-tab-active', t === tab);
+    if (panel) panel.classList.toggle('hidden', t !== tab);
+  });
+  if (tab === 'feedback') loadAiFeedback();
+  if (tab === 'corrections') loadAiCorrections();
+  if (tab === 'knowledge') loadAiKnowledge();
+  if (tab === 'changelog') loadChangelog();
+  if (tab === 'settings') loadAiSettingsTab();
+}
+
+async function loadAiTraining() {
+  try {
+    const s = await api.get('/api/ai/quality/summary');
+    const el = id => document.getElementById(id);
+    if (el('aiKpiCorrections')) el('aiKpiCorrections').textContent = s.active_corrections ?? '—';
+    if (el('aiKpiKnowledge'))   el('aiKpiKnowledge').textContent   = s.active_knowledge ?? '—';
+    if (el('aiKpiFeedback'))    el('aiKpiFeedback').textContent    = s.pending_feedback ?? '—';
+    if (el('aiKpiSatisfaction')) el('aiKpiSatisfaction').textContent =
+      s.satisfaction_rate != null ? s.satisfaction_rate + '%' : '—';
+    // Show badge if pending feedback
+    const badge = document.getElementById('badgeAiFeedback');
+    if (badge) badge.classList.toggle('hidden', !(s.pending_feedback > 0));
+  } catch(e) { /* non-critical */ }
+  aiTab(_aiActiveTab);
+}
+
+async function loadAiFeedback() {
+  const container = document.getElementById('aiFeedbackList');
+  if (!container) return;
+  container.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+  try {
+    const items = await api.get('/api/ai/feedback?status=pending');
+    if (!items.length) {
+      container.innerHTML = '<p class="text-slate-500 text-sm text-center py-6">لا توجد تقييمات معلقة ✅</p>';
+      return;
+    }
+    container.innerHTML = items.map(f => `
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-4" id="aiFb-${f.id}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs px-2 py-0.5 rounded-full ${f.rating === 'good' ? 'bg-green-500/20 text-green-400' : f.rating === 'needs_correction' ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}">
+                ${f.rating === 'good' ? '👍 جيد' : f.rating === 'needs_correction' ? '✏️ يحتاج تصحيح' : '👎 سيء'}
+              </span>
+              <span class="text-slate-500 text-xs">${(f.created_at || '').slice(0, 16)}</span>
+            </div>
+            ${f.reason ? `<p class="text-slate-300 text-sm mb-1">السبب: ${f.reason}</p>` : ''}
+            ${f.suggested_correction ? `<p class="text-indigo-300 text-sm">الاقتراح: ${f.suggested_correction}</p>` : ''}
+          </div>
+          <div class="flex gap-2 flex-shrink-0">
+            ${f.suggested_correction ? `<button onclick="approveFeedback('${f.id}', true)" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg transition">✅ وافق + أضف تصحيح</button>` : ''}
+            <button onclick="approveFeedback('${f.id}', false)" class="bg-emerald-700 hover:bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg transition">✅ وافق</button>
+            <button onclick="rejectFeedback('${f.id}')" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs px-3 py-1.5 rounded-lg transition">✖ ارفض</button>
+          </div>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+async function approveFeedback(fid, promote) {
+  try {
+    await api.put(`/api/ai/feedback/${fid}/approve`, { promote_correction: promote });
+    toast(promote ? 'تم الموافقة وإضافة التصحيح ✅' : 'تم الموافقة ✅', 'success');
+    const el = document.getElementById('aiFb-' + fid);
+    if (el) el.remove();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function rejectFeedback(fid) {
+  try {
+    await api.put(`/api/ai/feedback/${fid}/reject`, {});
+    toast('تم الرفض', 'info');
+    const el = document.getElementById('aiFb-' + fid);
+    if (el) el.remove();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function loadAiCorrections() {
+  const container = document.getElementById('aiCorrectionList');
+  if (!container) return;
+  container.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+  try {
+    const items = await api.get('/api/ai/corrections');
+    if (!items.length) {
+      container.innerHTML = '<p class="text-slate-500 text-sm text-center py-6">لا توجد تصحيحات — أضف تصحيحاً أعلاه</p>';
+      return;
+    }
+    container.innerHTML = items.map(c => `
+      <div class="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex items-center justify-between gap-3" id="aiCorr-${c.id}">
+        <div class="flex-1 min-w-0">
+          <p class="text-slate-200 text-sm truncate">
+            ${c.trigger_text ? `<span class="text-slate-400">إذا: </span>${c.trigger_text} <span class="text-indigo-400">→</span> ${c.correction_text}` : c.text}
+          </p>
+          ${c.category ? `<span class="text-xs text-slate-500">${c.category}</span>` : ''}
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span class="text-xs px-2 py-0.5 rounded-full ${c.is_active ? 'bg-green-500/20 text-green-400' : c.deleted_at ? 'bg-red-500/20 text-red-400' : 'bg-slate-600 text-slate-400'}">${c.is_active ? 'نشط' : c.deleted_at ? 'محذوف' : 'معطل'}</span>
+          <button onclick="showCorrectionVersions('${c.id}')" class="text-slate-400 hover:text-indigo-400 text-xs px-2 py-1 bg-slate-700 rounded-lg transition" title="سجل الإصدارات">📋</button>
+          <button onclick="toggleAiCorrection('${c.id}', ${c.is_active})" class="text-slate-400 hover:text-white text-xs px-2 py-1 bg-slate-700 rounded-lg transition">${c.is_active ? 'تعطيل' : 'تفعيل'}</button>
+          <button onclick="deleteAiCorrection('${c.id}')" class="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-slate-700 rounded-lg transition">حذف</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+async function addAiCorrection() {
+  const trigger = (document.getElementById('corrTrigger')?.value || '').trim();
+  const response = (document.getElementById('corrResponse')?.value || '').trim();
+  const category = (document.getElementById('corrCategory')?.value || '').trim();
+  const priority = parseInt(document.getElementById('corrPriority')?.value || '0');
+  if (!trigger || !response) { toast('أدخل العبارة المحفزة والرد الصحيح', 'error'); return; }
+  try {
+    await api.post('/api/ai/corrections', { trigger_text: trigger, correction_text: response, category, priority });
+    toast('تم إضافة التصحيح ✅', 'success');
+    ['corrTrigger','corrResponse','corrCategory'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
+    if (document.getElementById('corrPriority')) document.getElementById('corrPriority').value = '0';
+    loadAiCorrections();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function toggleAiCorrection(cid, isActive) {
+  try {
+    await api.patch(`/api/bot-config/corrections/${cid}`, { is_active: !isActive });
+    loadAiCorrections();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function deleteAiCorrection(cid) {
+  if (!confirm('حذف هذا التصحيح نهائياً؟')) return;
+  try {
+    await api.delete(`/api/ai/corrections/${cid}`);
+    toast('تم الحذف', 'success');
+    loadAiCorrections();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function loadAiKnowledge() {
+  const container = document.getElementById('aiKnowledgeList');
+  if (!container) return;
+  container.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+  try {
+    const items = await api.get('/api/ai/knowledge');
+    if (!items.length) {
+      container.innerHTML = '<p class="text-slate-500 text-sm text-center py-6">قاعدة المعرفة فارغة — أضف معلومات مفيدة للبوت</p>';
+      return;
+    }
+    container.innerHTML = items.map(k => `
+      <div class="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex items-start justify-between gap-3" id="aiKn-${k.id}">
+        <div class="flex-1 min-w-0">
+          <p class="text-slate-200 text-sm font-medium">${k.title}</p>
+          <p class="text-slate-400 text-xs mt-0.5 leading-relaxed line-clamp-2">${k.content}</p>
+          ${k.category ? `<span class="text-xs text-indigo-400 mt-1 inline-block">${k.category}</span>` : ''}
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span class="text-xs px-2 py-0.5 rounded-full ${k.is_active ? 'bg-green-500/20 text-green-400' : k.deleted_at ? 'bg-red-500/20 text-red-400' : 'bg-slate-600 text-slate-400'}">${k.is_active ? 'نشط' : k.deleted_at ? 'محذوف' : 'معطل'}</span>
+          <button onclick="showKnowledgeVersions('${k.id}')" class="text-slate-400 hover:text-indigo-400 text-xs px-2 py-1 bg-slate-700 rounded-lg transition" title="سجل الإصدارات">📋</button>
+          <button onclick="toggleAiKnowledge('${k.id}', ${k.is_active})" class="text-slate-400 hover:text-white text-xs px-2 py-1 bg-slate-700 rounded-lg transition">${k.is_active ? 'تعطيل' : 'تفعيل'}</button>
+          <button onclick="deleteAiKnowledge('${k.id}')" class="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-slate-700 rounded-lg transition">حذف</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+async function addAiKnowledge() {
+  const title = (document.getElementById('knTitle')?.value || '').trim();
+  const content = (document.getElementById('knContent')?.value || '').trim();
+  const category = (document.getElementById('knCategory')?.value || '').trim();
+  if (!title || !content) { toast('أدخل العنوان والمحتوى', 'error'); return; }
+  try {
+    await api.post('/api/ai/knowledge', { title, content, category, source: 'manual' });
+    toast('تمت الإضافة لقاعدة المعرفة ✅', 'success');
+    ['knTitle','knContent','knCategory'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
+    loadAiKnowledge();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function toggleAiKnowledge(kid, isActive) {
+  try {
+    await api.put(`/api/ai/knowledge/${kid}`, { is_active: !isActive });
+    loadAiKnowledge();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function deleteAiKnowledge(kid) {
+  if (!confirm('حذف هذه المعلومة نهائياً؟')) return;
+  try {
+    await api.delete(`/api/ai/knowledge/${kid}`);
+    toast('تم الحذف', 'success');
+    loadAiKnowledge();
+    loadAiTraining();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+// ── NUMBER 25B — Version History & Safety Controls ───────────────
+
+let _versionContext = { type: null, id: null };
+
+async function showCorrectionVersions(cid) {
+  _versionContext = { type: 'correction', id: cid };
+  const modal = document.getElementById('aiVersionModal');
+  const title = document.getElementById('aiVersionModalTitle');
+  const list  = document.getElementById('aiVersionList');
+  if (!modal) return;
+  title.textContent = 'سجل إصدارات التصحيح';
+  list.innerHTML = '<div class="flex justify-center py-6"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+  try {
+    const versions = await api.get(`/api/ai/corrections/${cid}/versions`);
+    if (!versions.length) {
+      list.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">لا توجد إصدارات سابقة</p>';
+      return;
+    }
+    list.innerHTML = versions.map(v => `
+      <div class="bg-slate-700/60 border border-slate-600 rounded-xl p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-indigo-400 text-xs font-semibold">الإصدار ${v.version_number}</span>
+          <span class="text-slate-400 text-xs">${(v.created_at || '').slice(0,16)}</span>
+        </div>
+        ${v.trigger_text ? `<p class="text-slate-300 text-xs mb-1">إذا: <span class="text-white">${v.trigger_text}</span> → <span class="text-indigo-300">${v.correction_text}</span></p>` : ''}
+        ${v.change_reason ? `<p class="text-slate-400 text-xs mb-1">السبب: ${v.change_reason}</p>` : ''}
+        <div class="flex items-center justify-between mt-2">
+          <span class="text-xs px-2 py-0.5 rounded-full ${v.is_active ? 'bg-green-500/20 text-green-400' : 'bg-slate-600 text-slate-400'}">${v.is_active ? 'نشط' : 'معطل'}</span>
+          <button onclick="restoreVersion('correction','${cid}','${v.id}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1 rounded-lg transition">↩ استعادة هذا الإصدار</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    list.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+async function showKnowledgeVersions(kid) {
+  _versionContext = { type: 'knowledge', id: kid };
+  const modal = document.getElementById('aiVersionModal');
+  const title = document.getElementById('aiVersionModalTitle');
+  const list  = document.getElementById('aiVersionList');
+  if (!modal) return;
+  title.textContent = 'سجل إصدارات المعرفة';
+  list.innerHTML = '<div class="flex justify-center py-6"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+  try {
+    const versions = await api.get(`/api/ai/knowledge/${kid}/versions`);
+    if (!versions.length) {
+      list.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">لا توجد إصدارات سابقة</p>';
+      return;
+    }
+    list.innerHTML = versions.map(v => `
+      <div class="bg-slate-700/60 border border-slate-600 rounded-xl p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-indigo-400 text-xs font-semibold">الإصدار ${v.version_number}</span>
+          <span class="text-slate-400 text-xs">${(v.created_at || '').slice(0,16)}</span>
+        </div>
+        <p class="text-white text-xs font-medium mb-0.5">${v.title || ''}</p>
+        <p class="text-slate-400 text-xs mb-1 line-clamp-2">${v.content || ''}</p>
+        ${v.change_reason ? `<p class="text-slate-400 text-xs mb-1">السبب: ${v.change_reason}</p>` : ''}
+        <div class="flex items-center justify-between mt-2">
+          <span class="text-xs px-2 py-0.5 rounded-full ${v.is_active ? 'bg-green-500/20 text-green-400' : 'bg-slate-600 text-slate-400'}">${v.is_active ? 'نشط' : 'معطل'}</span>
+          <button onclick="restoreVersion('knowledge','${kid}','${v.id}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1 rounded-lg transition">↩ استعادة هذا الإصدار</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    list.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+function closeVersionModal() {
+  const modal = document.getElementById('aiVersionModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function restoreVersion(entityType, entityId, versionId) {
+  if (!confirm('استعادة هذا الإصدار؟ سيتم حفظ الحالة الحالية في السجل أولاً.')) return;
+  try {
+    const url = entityType === 'correction'
+      ? `/api/ai/corrections/${entityId}/restore-version/${versionId}`
+      : `/api/ai/knowledge/${entityId}/restore-version/${versionId}`;
+    await api.post(url, {});
+    toast('تم استعادة الإصدار ✅', 'success');
+    closeVersionModal();
+    if (entityType === 'correction') loadAiCorrections();
+    else loadAiKnowledge();
+  } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+
+async function loadChangelog() {
+  const container = document.getElementById('aiChangelogList');
+  if (!container) return;
+  container.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+  try {
+    const logs = await api.get('/api/ai/change-logs?limit=50');
+    if (!logs.length) {
+      container.innerHTML = '<p class="text-slate-500 text-sm text-center py-6">لا توجد تغييرات مسجلة بعد</p>';
+      return;
+    }
+    const actionLabel = { create:'إضافة', update:'تعديل', delete:'حذف', restore:'استعادة', approve:'موافقة', reject:'رفض', disable:'تعطيل', enable:'تفعيل' };
+    const actionColor = { create:'text-green-400', update:'text-indigo-400', delete:'text-red-400', restore:'text-amber-400', approve:'text-emerald-400', reject:'text-slate-400', disable:'text-red-400', enable:'text-green-400' };
+    container.innerHTML = logs.map(l => `
+      <div class="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex items-center gap-3">
+        <span class="text-xs font-semibold min-w-[52px] ${actionColor[l.action] || 'text-slate-300'}">${actionLabel[l.action] || l.action}</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-slate-300 text-xs truncate">${l.entity_type} #${l.entity_id?.slice(0,8) || ''}</p>
+          ${l.actor_role ? `<p class="text-slate-500 text-xs">${l.actor_role === 'super' ? 'مشرف عام' : 'مستخدم'}</p>` : ''}
+        </div>
+        <span class="text-slate-500 text-xs flex-shrink-0">${(l.created_at || '').slice(0,16)}</span>
+      </div>`).join('');
+  } catch(e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">خطأ: ${e.message}</p>`;
+  }
+}
+
+let _aiLearningEnabled = true;
+
+async function loadAiSettingsTab() {
+  try {
+    const s = await api.get('/api/ai/settings');
+    _aiLearningEnabled = !!s.ai_learning_enabled;
+    _updateAiLearningToggle();
+  } catch(e) { /* non-critical */ }
+}
+
+function _updateAiLearningToggle() {
+  const btn  = document.getElementById('aiLearningToggleBtn');
+  const knob = document.getElementById('aiLearningToggleKnob');
+  const stat = document.getElementById('aiLearningStatus');
+  if (btn)  btn.classList.toggle('bg-indigo-600', _aiLearningEnabled);
+  if (btn)  btn.classList.toggle('bg-slate-600', !_aiLearningEnabled);
+  if (knob) knob.classList.toggle('translate-x-6', _aiLearningEnabled);
+  if (knob) knob.classList.toggle('translate-x-1', !_aiLearningEnabled);
+  if (stat) stat.textContent = _aiLearningEnabled
+    ? 'البوت يستخدم التصحيحات وقاعدة المعرفة حالياً ✅'
+    : 'التدريب معطل — البوت يرد بشكل طبيعي دون التصحيحات والمعرفة ⚠️';
+}
+
+async function toggleAiLearning() {
+  try {
+    const res = await api.put('/api/ai/settings', { ai_learning_enabled: !_aiLearningEnabled });
+    _aiLearningEnabled = !!res.ai_learning_enabled;
+    _updateAiLearningToggle();
+    toast(_aiLearningEnabled ? 'تم تفعيل تدريب الذكاء الاصطناعي ✅' : 'تم تعطيل تدريب الذكاء الاصطناعي ⚠️', _aiLearningEnabled ? 'success' : 'info');
   } catch(e) { toast('خطأ: ' + e.message, 'error'); }
 }
 </script>

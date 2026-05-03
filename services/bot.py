@@ -28,6 +28,16 @@ ORDER_KEYWORDS = [
     "اخذ", "اشتري", "طلب", "طلبي",
 ]
 
+# Menu image intent — triggers image delivery before OpenAI call
+MENU_IMAGE_PHRASES = [
+    "المنيو", "منيو", "menu", "المنو", "منو",
+    "دزلي المنيو", "ارسل المنيو", "أرسل المنيو", "وين المنيو",
+    "شنو عدكم", "شو عندكم", "شوعندكم",
+    "الصور", "صور الاكل", "صور الأكل", "صور المنيو",
+    "صور", "صورة المنيو", "show menu", "send menu",
+    "أكلاتكم", "اكلاتكم", "اشو عدكم", "وش عندكم",
+]
+
 # Algorithm 6 — banned phrases list for post-response validation
 BANNED_PHRASES = [
     "أنا هنا لمساعدتك",
@@ -147,6 +157,31 @@ def _get_client():
         return None
 
 
+# ── Menu image helpers ────────────────────────────────────────────────────────
+
+def _detect_menu_image_intent(message: str) -> bool:
+    """Return True if the customer is asking to see the menu or food photos."""
+    msg_lower = message.lower()
+    for phrase in MENU_IMAGE_PHRASES:
+        if phrase.lower() in msg_lower:
+            return True
+    return False
+
+
+def _get_menu_images(restaurant_id: str) -> list:
+    """Return active menu images for a restaurant, ordered by sort_order."""
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, image_url, category FROM menu_images "
+            "WHERE restaurant_id=? AND is_active=1 ORDER BY sort_order ASC, created_at ASC",
+            (restaurant_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def process_message(restaurant_id: str, conversation_id: str, customer_message: str) -> dict:
@@ -193,12 +228,44 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             (restaurant_id,)
         ).fetchall()
 
-        # Load active bot corrections (owner-defined word replacements)
-        correction_rows = conn.execute(
-            "SELECT text FROM bot_corrections WHERE restaurant_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 10",
-            (restaurant_id,)
-        ).fetchall()
-        corrections_list = [r["text"] for r in correction_rows]
+        # NUMBER 25B: respect per-restaurant AI learning kill switch
+        _ai_learning_on = bool(
+            (restaurant["ai_learning_enabled"] if restaurant and hasattr(restaurant, "keys") else 1)
+            if restaurant else 1
+        )
+
+        # Load active bot corrections (NUMBER 25: trigger/correction format + legacy text)
+        corrections_list = []
+        if _ai_learning_on:
+            correction_rows = conn.execute(
+                "SELECT text, trigger_text, correction_text, category, priority FROM bot_corrections "
+                "WHERE restaurant_id=? AND is_active=1 AND (deleted_at IS NULL OR deleted_at='') "
+                "ORDER BY priority DESC, created_at DESC LIMIT 20",
+                (restaurant_id,)
+            ).fetchall()
+            for r in correction_rows:
+                trigger = (r["trigger_text"] if hasattr(r, "keys") else r[1]) or ""
+                correction = (r["correction_text"] if hasattr(r, "keys") else r[2]) or ""
+                legacy = (r["text"] if hasattr(r, "keys") else r[0]) or ""
+                if trigger and correction:
+                    corrections_list.append(f"إذا قال العميل '{trigger}' → رد بـ: {correction}")
+                elif legacy:
+                    corrections_list.append(legacy)
+
+        # Load active knowledge base entries (NUMBER 25)
+        knowledge_list = []
+        if _ai_learning_on:
+            knowledge_rows = conn.execute(
+                "SELECT title, content, category FROM restaurant_knowledge "
+                "WHERE restaurant_id=? AND is_active=1 AND (deleted_at IS NULL OR deleted_at='') "
+                "ORDER BY priority DESC, created_at DESC LIMIT 15",
+                (restaurant_id,)
+            ).fetchall()
+            for k in knowledge_rows:
+                title = (k["title"] if hasattr(k, "keys") else k[0]) or ""
+                content = (k["content"] if hasattr(k, "keys") else k[1]) or ""
+                if title and content:
+                    knowledge_list.append(f"**{title}**: {content}")
 
         # Load customer memory with timestamps for staleness awareness
         memory_rows = conn.execute(
@@ -248,6 +315,26 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         )
         return {"reply": fallback, "action": "escalate", "extracted_order": None}
 
+    # Menu image intent — serve images before calling OpenAI
+    if _detect_menu_image_intent(customer_message):
+        menu_imgs = _get_menu_images(restaurant_id)
+        if menu_imgs:
+            reply_text = "تفضل 🌷 هذا منيونا:"
+            return {
+                "reply": reply_text,
+                "action": "reply",
+                "extracted_order": None,
+                "media": [
+                    {
+                        "type": "image",
+                        "url": img["image_url"],
+                        "caption": img.get("title") or img.get("category") or "",
+                    }
+                    for img in menu_imgs
+                ],
+            }
+        # No images uploaded yet — fall through to normal OpenAI reply
+
     # Read channel/platform from conversation record
     _platform = (conv["channel"] if conv and "channel" in conv.keys() else "") or "unknown"
 
@@ -261,6 +348,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         memory_ages=memory_ages,
         customer=dict(customer) if customer else {},
         corrections=corrections_list,
+        knowledge=knowledge_list,
         platform=_platform,
     )
 
@@ -539,6 +627,7 @@ def _build_system_prompt(
     customer: dict,
     memory_ages: dict = None,
     corrections: list = None,
+    knowledge: list = None,
     platform: str = "unknown",
 ) -> str:
     """Build the full system prompt for the AI bot."""
@@ -1709,6 +1798,11 @@ def _build_system_prompt(
         prompt += "\n## تصحيحات من صاحب المطعم — التزم بها دائماً\n"
         for c in corrections:
             prompt += f"- {c}\n"
+
+    if knowledge:
+        prompt += "\n## معلومات المطعم المهمة — استخدمها عند الإجابة\n"
+        for k in knowledge:
+            prompt += f"- {k}\n"
 
     # ── NUMBER 5 — Voice Handling ─────────────────────────────────────────────
     prompt += """
