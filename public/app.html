@@ -166,7 +166,7 @@
     #printArea { display: block !important; font-family: Arial, sans-serif; direction: rtl; }
   }
 </style>
-<script src="/config.js"></script>
+<script src="/config.js?v=26"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-200">
@@ -1545,6 +1545,42 @@
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
+// ── App version — bump to bust browser cache on deploy ────────
+const APP_VERSION = '26.0';
+
+// ── Global error handler — shows banner instead of blank screen ──
+window.onerror = function(msg, src, line, col, err) {
+  console.error('[app error]', msg, src, line, col, err);
+  _showErrorBanner(String(msg));
+  return false;
+};
+window.onunhandledrejection = function(e) {
+  const msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason || 'Unhandled rejection');
+  console.error('[app unhandled rejection]', msg, e.reason);
+  _showErrorBanner(msg);
+};
+function _showErrorBanner(msg) {
+  const existing = document.getElementById('_appErrBanner');
+  if (existing) { existing.querySelector('span').textContent = msg; return; }
+  const el = document.createElement('div');
+  el.id = '_appErrBanner';
+  el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fca5a5;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:10px;direction:ltr;';
+  el.innerHTML = `<strong>App Error:</strong><span>${msg}</span><button onclick="this.parentElement.remove()" style="margin-left:auto;background:none;border:none;color:#fca5a5;cursor:pointer;font-size:16px;">✕</button>`;
+  document.body ? document.body.prepend(el) : document.addEventListener('DOMContentLoaded', () => document.body.prepend(el));
+}
+
+// ── Safe DOM helpers — never crash on missing element ────────
+function safeSetText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = (value === null || value === undefined) ? '—' : value;
+}
+function safeHTML(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+function safeShow(id) { const el = document.getElementById(id); if (el) el.classList.remove('hidden'); }
+function safeHide(id) { const el = document.getElementById(id); if (el) el.classList.add('hidden'); }
+
 // ── Theme ─────────────────────────────────────────────────────
 (function initTheme() {
   const saved = localStorage.getItem('theme') || 'dark';
@@ -1604,19 +1640,33 @@ const api = {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${S.token}` },
     };
     if (data) opts.body = JSON.stringify(data);
-    const r = await fetch((window.API_BASE || '') + url, opts);
-    if (r.status === 401) { logout(); return; }
+    let r;
+    try {
+      r = await fetch((window.API_BASE || '') + url, opts);
+    } catch(netErr) {
+      throw new Error('تعذر الاتصال بالخادم — تحقق من الإنترنت');
+    }
+    if (r.status === 401 || r.status === 403) {
+      if (r.status === 401) { logout(); return; }
+      const e403 = await r.json().catch(() => ({}));
+      throw new Error(e403.detail || 'غير مصرح');
+    }
+    if (r.status >= 500) {
+      const e5 = await r.json().catch(() => ({}));
+      throw new Error(e5.detail || `خطأ في الخادم (${r.status})`);
+    }
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       throw new Error(e.detail || `HTTP ${r.status}`);
     }
-    return r.json();
+    return r.json().catch(() => ({}));
   },
-  get: (u) => api.req('GET', u),
-  post: (u, d) => api.req('POST', u, d),
-  put: (u, d) => api.req('PUT', u, d),
-  patch: (u, d) => api.req('PATCH', u, d),
-  del: (u) => api.req('DELETE', u),
+  get:    (u)    => api.req('GET',    u),
+  post:   (u, d) => api.req('POST',   u, d),
+  put:    (u, d) => api.req('PUT',    u, d),
+  patch:  (u, d) => api.req('PATCH',  u, d),
+  del:    (u)    => api.req('DELETE', u),
+  delete: (u)    => api.req('DELETE', u),
 };
 
 // ── Utils ─────────────────────────────────────────────────────
@@ -1703,10 +1753,12 @@ function navigate(page) {
   if (!PAGES[page]) page = 'dashboard';
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById(`sec-${page}`).classList.add('active');
-  document.querySelector(`a[href="#${page}"]`).classList.add('active');
-  document.getElementById('pageTitle').textContent = PAGES[page].title;
-  PAGES[page].load();
+  const sec = document.getElementById(`sec-${page}`);
+  if (sec) sec.classList.add('active');
+  const navLink = document.querySelector(`a[href="#${page}"]`);
+  if (navLink) navLink.classList.add('active');
+  safeSetText('pageTitle', PAGES[page].title);
+  try { PAGES[page].load(); } catch(e) { console.error('[navigate] load error for', page, e); }
 }
 
 window.addEventListener('hashchange', () => {
@@ -1716,91 +1768,108 @@ window.addEventListener('hashchange', () => {
 
 // ── Dashboard ─────────────────────────────────────────────────
 async function loadDashboard() {
-  document.getElementById('dashLoading').classList.remove('hidden');
-  document.getElementById('dashContent').classList.add('hidden');
+  safeShow('dashLoading');
+  safeHide('dashContent');
+  let sum = {}, weekly = [], channelsData = [], top = [];
+  let loadErr = false;
   try {
-    const [sum, weekly, channelsData, top] = await Promise.all([
-      api.get('/api/analytics/summary'),
-      api.get('/api/analytics/weekly-revenue'),
-      api.get('/api/analytics/channel-breakdown'),
-      api.get('/api/analytics/top-products'),
+    [sum, weekly, channelsData, top] = await Promise.all([
+      api.get('/api/analytics/summary').catch(() => ({})),
+      api.get('/api/analytics/weekly-revenue').catch(() => []),
+      api.get('/api/analytics/channel-breakdown').catch(() => []),
+      api.get('/api/analytics/top-products').catch(() => []),
     ]);
-
-    // KPI cards
-    document.getElementById('kpiOrders').textContent   = sum.total_orders;
-    document.getElementById('kpiTodayOrders').textContent = sum.today_orders ?? 0;
-    document.getElementById('kpiRevenue').textContent  = cur(sum.today_revenue);
-    document.getElementById('kpiChats').textContent    = sum.open_chats;
-    document.getElementById('kpiCustomers').textContent = sum.total_customers;
-    document.getElementById('kpiChannels').textContent  = sum.connected_channels ?? 0;
-
-    // Failed outbound KPI — red if > 0
-    const failedCount = sum.failed_outbound_24h ?? 0;
-    const kpiFailed = document.getElementById('kpiFailed');
-    const kpiFailedIcon = document.getElementById('kpiFailedIcon');
-    kpiFailed.textContent = failedCount;
-    if (failedCount > 0) {
-      kpiFailed.className = 'text-xl font-bold text-red-400';
-      kpiFailedIcon.className = 'w-9 h-9 bg-red-500/20 rounded-xl flex items-center justify-center';
-      kpiFailedIcon.querySelector('i').className = 'fa-solid fa-triangle-exclamation text-red-400 text-sm';
-    } else {
-      kpiFailed.className = 'text-xl font-bold text-slate-400';
-    }
-
-    // Badges
-    const pb = document.getElementById('badgePending');
-    if (sum.pending_orders > 0) { pb.textContent = sum.pending_orders; pb.classList.remove('hidden'); }
-    const cb = document.getElementById('badgeChats');
-    if (sum.open_chats > 0) { cb.textContent = sum.open_chats; cb.classList.remove('hidden'); }
-    if (sum.urgent_chats > 0) {
-      document.getElementById('headerUrgent').classList.remove('hidden');
-      document.getElementById('urgentCount').textContent = sum.urgent_chats;
-    }
-
-    // Health strip
-    _renderDashHealthStrip(sum);
-
-    // Weekly chart
-    renderWeeklyChart('weeklyChart', weekly);
-    // Channel chart
-    renderChannelChart('channelChart', channelsData);
-
-    // Recent orders
-    const ro = document.getElementById('recentOrders');
-    ro.innerHTML = (sum.recent_orders || []).length ? sum.recent_orders.map(o => `
-      <div class="flex items-center justify-between py-2 border-b border-slate-700/50 last:border-0">
-        <div>
-          <p class="text-white text-sm font-medium">${h(o.customer_name)}</p>
-          <p class="text-slate-500 text-xs">${channelIcon(o.channel)} ${o.channel}</p>
-        </div>
-        <div class="text-right">
-          <p class="text-green-400 text-sm font-semibold">${cur(o.total)}</p>
-          ${statusBadge(o.status)}
-        </div>
-      </div>`).join('') : '<p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات حتى الآن</p>';
-
-    // Top products
-    const tp = document.getElementById('topProducts');
-    tp.innerHTML = top.length ? top.map((p, i) => `
-      <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
-        <span class="text-slate-600 text-xs font-bold w-5">${i+1}</span>
-        <span class="text-lg">${p.icon || '🍽️'}</span>
-        <div class="flex-1">
-          <p class="text-white text-sm font-medium">${h(p.name)}</p>
-          <p class="text-slate-500 text-xs">${p.order_count} طلب</p>
-        </div>
-        <p class="text-green-400 text-sm">${cur(p.price)}</p>
-      </div>`).join('')
-    : '<p class="text-slate-500 text-sm text-center py-4">لا توجد منتجات بعد — <button onclick="navigate(\'products\')" class="text-indigo-400 hover:underline">أضف منتجاً</button></p>';
-
-    document.getElementById('dashLoading').classList.add('hidden');
-    document.getElementById('dashContent').classList.remove('hidden');
-    _loadDashboardOnboardingBanner();
+    if (!sum || typeof sum !== 'object') sum = {};
   } catch(e) {
-    document.getElementById('dashLoading').classList.add('hidden');
-    document.getElementById('dashContent').classList.remove('hidden');
-    toast('تعذر تحميل لوحة التحكم', 'error');
+    console.error('[dashboard] load error', e);
+    loadErr = true;
+    sum = {};
   }
+
+  // Always show content regardless of API result
+  safeHide('dashLoading');
+  safeShow('dashContent');
+
+  if (loadErr) {
+    toast('تعذر تحميل لوحة التحكم — تحقق من الاتصال', 'error');
+  }
+
+  // KPI cards — safe, default to 0
+  safeSetText('kpiOrders',     sum.total_orders     ?? 0);
+  safeSetText('kpiTodayOrders',sum.today_orders     ?? 0);
+  safeSetText('kpiRevenue',    cur(sum.today_revenue ?? 0));
+  safeSetText('kpiChats',      sum.open_chats        ?? 0);
+  safeSetText('kpiCustomers',  sum.total_customers   ?? 0);
+  safeSetText('kpiChannels',   sum.connected_channels ?? 0);
+
+  // Failed outbound KPI — safe null-checks
+  const failedCount = sum.failed_outbound_24h ?? 0;
+  const kpiFailed     = document.getElementById('kpiFailed');
+  const kpiFailedIcon = document.getElementById('kpiFailedIcon');
+  if (kpiFailed) {
+    kpiFailed.textContent = failedCount;
+    kpiFailed.className = failedCount > 0
+      ? 'text-xl font-bold text-red-400'
+      : 'text-xl font-bold text-slate-400';
+  }
+  if (kpiFailedIcon && failedCount > 0) {
+    kpiFailedIcon.className = 'w-9 h-9 bg-red-500/20 rounded-xl flex items-center justify-center';
+    const icon = kpiFailedIcon.querySelector('i');
+    if (icon) icon.className = 'fa-solid fa-triangle-exclamation text-red-400 text-sm';
+  }
+
+  // Badges
+  const pb = document.getElementById('badgePending');
+  if (pb && (sum.pending_orders ?? 0) > 0) { pb.textContent = sum.pending_orders; pb.classList.remove('hidden'); }
+  const cb = document.getElementById('badgeChats');
+  if (cb && (sum.open_chats ?? 0) > 0) { cb.textContent = sum.open_chats; cb.classList.remove('hidden'); }
+  const hu = document.getElementById('headerUrgent');
+  if (hu && (sum.urgent_chats ?? 0) > 0) {
+    hu.classList.remove('hidden');
+    safeSetText('urgentCount', sum.urgent_chats);
+  }
+
+  // Health strip
+  try { _renderDashHealthStrip(sum); } catch(e) { /* non-critical */ }
+
+  // Charts
+  try { renderWeeklyChart('weeklyChart', weekly); } catch(e) { /* non-critical */ }
+  try { renderChannelChart('channelChart', channelsData); } catch(e) { /* non-critical */ }
+
+  // Recent orders
+  safeHTML('recentOrders',
+    (sum.recent_orders || []).length
+      ? (sum.recent_orders || []).map(o => `
+          <div class="flex items-center justify-between py-2 border-b border-slate-700/50 last:border-0">
+            <div>
+              <p class="text-white text-sm font-medium">${h(o.customer_name)}</p>
+              <p class="text-slate-500 text-xs">${channelIcon(o.channel)} ${o.channel}</p>
+            </div>
+            <div class="text-right">
+              <p class="text-green-400 text-sm font-semibold">${cur(o.total)}</p>
+              ${statusBadge(o.status)}
+            </div>
+          </div>`).join('')
+      : '<p class="text-slate-500 text-sm text-center py-4">لا توجد طلبات حتى الآن</p>'
+  );
+
+  // Top products
+  safeHTML('topProducts',
+    (top || []).length
+      ? (top || []).map((p, i) => `
+          <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
+            <span class="text-slate-600 text-xs font-bold w-5">${i+1}</span>
+            <span class="text-lg">${p.icon || '🍽️'}</span>
+            <div class="flex-1">
+              <p class="text-white text-sm font-medium">${h(p.name)}</p>
+              <p class="text-slate-500 text-xs">${p.order_count} طلب</p>
+            </div>
+            <p class="text-green-400 text-sm">${cur(p.price)}</p>
+          </div>`).join('')
+      : '<p class="text-slate-500 text-sm text-center py-4">لا توجد منتجات بعد — <button onclick="navigate(\'products\')" class="text-indigo-400 hover:underline">أضف منتجاً</button></p>'
+  );
+
+  try { _loadDashboardOnboardingBanner(); } catch(e) { /* non-critical */ }
 }
 
 function _renderDashHealthStrip(sum) {
@@ -4755,14 +4824,16 @@ async function init() {
 
   try {
     const user = await api.get('/api/auth/me');
+    if (!user || !user.id) { logout(); return; }
     S.user = user;
-    document.getElementById('sideRestName').textContent = user.restaurant_name;
-    document.getElementById('sidePlan').textContent = user.plan;
-    document.getElementById('userName').textContent = user.name;
-    document.getElementById('userEmail').textContent = user.email;
-    document.getElementById('userInitial').textContent = user.name?.[0] || 'أ';
+    safeSetText('sideRestName', user.restaurant_name);
+    safeSetText('sidePlan',     user.plan);
+    safeSetText('userName',     user.name);
+    safeSetText('userEmail',    user.email);
+    safeSetText('userInitial',  user.name?.[0] || 'أ');
     localStorage.setItem('user', JSON.stringify(user));
   } catch(e) {
+    console.error('[init] /api/auth/me failed', e);
     logout(); return;
   }
 
@@ -4820,7 +4891,12 @@ async function init() {
 
 // Bot config is loaded inside loadSettings() above
 
-init();
+// Guard init() with DOMContentLoaded in case script runs before body is parsed
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => init().catch(e => { console.error('[init]', e); _showErrorBanner(e.message); }));
+} else {
+  init().catch(e => { console.error('[init]', e); _showErrorBanner(e.message); });
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ── MENU IMPORT ────────────────────────────────────────────────────────────
