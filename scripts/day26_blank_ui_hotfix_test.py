@@ -376,6 +376,51 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════
+print("\n═══ K — loadOnboarding + cross-block loader fix ═══")
+
+# loadOnboarding must be defined (in any script block)
+if re.search(r"(async\s+)?function\s+loadOnboarding\s*\(", src):
+    ok("K01 — loadOnboarding() function defined in app.html")
+else:
+    fail("K01 — loadOnboarding() not defined — will crash on navigation")
+
+# loadAiTraining must be defined
+if re.search(r"(async\s+)?function\s+loadAiTraining\s*\(", src):
+    ok("K02 — loadAiTraining() function defined in app.html")
+else:
+    fail("K02 — loadAiTraining() not defined — will crash on navigation")
+
+# PAGES loaders must use arrow functions (lazy resolution) so cross-block refs work
+pages_m2 = re.search(r"const PAGES\s*=\s*\{(.+?)\n\};", src, re.DOTALL)
+if pages_m2:
+    map_src2 = pages_m2.group(1)
+    # All loaders should be arrow functions `() =>` not bare function refs `load: loadXxx`
+    bare_refs = re.findall(r"load\s*:\s*(load[A-Z][a-zA-Z]+)\b", map_src2)
+    if bare_refs:
+        fail(f"K03 — bare function references in PAGES (not lazy): {bare_refs}")
+    else:
+        ok("K03 — all PAGES loaders use arrow functions (lazy cross-block resolution)")
+
+    # onboarding and ai-training entries use typeof guard
+    if "typeof loadOnboarding" in map_src2:
+        ok("K04 — PAGES.onboarding uses typeof guard")
+    else:
+        warn("K04 — PAGES.onboarding missing typeof guard (still safe if same block)")
+    if "typeof loadAiTraining" in map_src2:
+        ok("K05 — PAGES['ai-training'] uses typeof guard")
+    else:
+        warn("K05 — PAGES['ai-training'] missing typeof guard")
+else:
+    fail("K03 — PAGES map not found")
+
+# navigate() wraps loader in try/catch — already verified in C03, spot-check here
+if "try { PAGES[page].load()" in src or re.search(r"try\s*\{[^}]*PAGES\[page\]\.load\(\)", src, re.DOTALL):
+    ok("K06 — navigate() loader call is inside try/catch")
+else:
+    fail("K06 — navigate() loader call not try/catch protected")
+
+
+# ══════════════════════════════════════════════════════════════
 print(f"""
 ╔══════════════════════════════════╗
 ║  NUMBER 26 — BLANK UI HOTFIX     ║

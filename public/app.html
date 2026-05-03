@@ -1733,20 +1733,20 @@ function updateClock() {
 
 // ── Router ────────────────────────────────────────────────────
 const PAGES = {
-  dashboard:     { title: 'لوحة التحكم',   load: loadDashboard },
-  orders:        { title: 'الطلبات',        load: loadOrders },
-  conversations: { title: 'المحادثات',      load: loadConversations },
-  products:      { title: 'المنتجات',       load: loadProducts },
-  'menu-images': { title: 'صور المنيو',     load: loadMenuImages },
-  customers:     { title: 'العملاء',        load: loadCustomers },
+  dashboard:     { title: 'لوحة التحكم',   load: () => loadDashboard() },
+  orders:        { title: 'الطلبات',        load: () => loadOrders() },
+  conversations: { title: 'المحادثات',      load: () => loadConversations() },
+  products:      { title: 'المنتجات',       load: () => loadProducts() },
+  'menu-images': { title: 'صور المنيو',     load: () => loadMenuImages() },
+  customers:     { title: 'العملاء',        load: () => loadCustomers() },
   broadcast:     { title: 'بث الرسائل',     load: () => {} },
-  team:          { title: 'الفريق',         load: loadTeam },
-  analytics:     { title: 'التحليلات',      load: loadAnalytics },
-  channels:      { title: 'القنوات',        load: loadChannels },
-  activity:      { title: 'سجل النشاط',    load: loadActivity },
-  settings:      { title: 'الإعدادات',      load: loadSettings },
-  onboarding:    { title: 'تفعيل الحساب',  load: loadOnboarding },
-  'ai-training': { title: 'تدريب الذكاء',  load: loadAiTraining },
+  team:          { title: 'الفريق',         load: () => loadTeam() },
+  analytics:     { title: 'التحليلات',      load: () => loadAnalytics() },
+  channels:      { title: 'القنوات',        load: () => loadChannels() },
+  activity:      { title: 'سجل النشاط',    load: () => loadActivity() },
+  settings:      { title: 'الإعدادات',      load: () => loadSettings() },
+  onboarding:    { title: 'تفعيل الحساب',  load: () => typeof loadOnboarding === 'function' ? loadOnboarding() : null },
+  'ai-training': { title: 'تدريب الذكاء',  load: () => typeof loadAiTraining  === 'function' ? loadAiTraining()  : null },
 };
 
 function navigate(page) {
