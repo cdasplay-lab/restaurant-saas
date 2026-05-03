@@ -9056,7 +9056,8 @@ async def production_readiness(admin=Depends(current_super_admin)):
     _voice_ok = True
     _voice_fields_ok = False
     try:
-        from services import voice_service as _vs
+        import importlib as _il
+        _vs = _il.import_module("services.voice_service")
         _voice_enabled = _vs.VOICE_TRANSCRIPTION_ENABLED
         _voice_provider = _vs.VOICE_TRANSCRIPTION_PROVIDER
         _voice_key_ok   = bool(_vs._OPENAI_API_KEY)
@@ -9104,8 +9105,8 @@ async def production_readiness(admin=Depends(current_super_admin)):
     # 12. Analytics service (NUMBER 23) — must import cleanly
     _analytics_ok = False
     try:
-        from services import analytics_service as _as
-        # Verify at least one function is callable
+        import importlib as _il
+        _as = _il.import_module("services.analytics_service")
         callable(_as.get_voice_analytics)
         callable(_as.get_menu_image_analytics)
         callable(_as.get_super_overview_analytics)
@@ -9171,7 +9172,8 @@ async def production_readiness(admin=Depends(current_super_admin)):
 
     _ai_learning_ok = False
     try:
-        from services import analytics_service as _as25
+        import importlib as _il
+        _as25 = _il.import_module("services.analytics_service")
         callable(_as25.get_ai_learning_metrics)
         callable(_as25.get_super_ai_overview)
         _ai_learning_ok = True
