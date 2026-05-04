@@ -12,6 +12,16 @@ import database
 
 logger = logging.getLogger("restaurant-saas")
 
+# NUMBER 27 — OrderBrain (safe import; falls back gracefully if unavailable)
+try:
+    from services.order_brain import OrderBrain, detect_frustration
+    _ORDER_BRAIN_ENABLED = True
+except Exception as _ob_err:
+    logger.warning(f"[order_brain] import failed — deterministic session tracking disabled: {_ob_err}")
+    OrderBrain = None  # type: ignore[assignment,misc]
+    detect_frustration = lambda _m: False  # type: ignore[assignment]
+    _ORDER_BRAIN_ENABLED = False
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ESCALATION_PHRASES_AR = [
@@ -286,6 +296,21 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     finally:
         conn.close()
 
+    # NUMBER 27 — OrderBrain: get/create session and update from customer message
+    _ob_session = None
+    if _ORDER_BRAIN_ENABLED and OrderBrain is not None:
+        try:
+            _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
+            OrderBrain.update_from_message(
+                _ob_session,
+                customer_message,
+                [dict(p) for p in products],
+                is_bot_reply=False,
+            )
+        except Exception as _ob_exc:
+            logger.warning(f"[order_brain] update failed: {_ob_exc}")
+            _ob_session = None
+
     # Check escalation conditions
     custom_keywords = []
     if bot_cfg and bot_cfg.get("escalation_keywords"):
@@ -338,7 +363,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # Read channel/platform from conversation record
     _platform = (conv["channel"] if conv and "channel" in conv.keys() else "") or "unknown"
 
-    # Build system prompt
+    # Build system prompt (NUMBER 27: pass order session for state injection)
     system_prompt = _build_system_prompt(
         restaurant=dict(restaurant) if restaurant else {},
         settings=dict(settings) if settings else {},
@@ -350,6 +375,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         corrections=corrections_list,
         knowledge=knowledge_list,
         platform=_platform,
+        order_session=_ob_session,
     )
 
     # Call OpenAI
@@ -420,6 +446,25 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # Update customer memory
     if customer and bot_cfg and bot_cfg.get("memory_enabled", 1):
         _update_memory_from_conversation(restaurant_id, conv["customer_id"], customer_message)
+
+    # NUMBER 27 — update OrderBrain from bot reply; clear on terminal states
+    if _ORDER_BRAIN_ENABLED and _ob_session is not None:
+        try:
+            OrderBrain.update_from_message(
+                _ob_session,
+                reply_text,
+                [dict(p) for p in products],
+                is_bot_reply=True,
+            )
+            # Clear frustration flag after bot has acknowledged it
+            if _ob_session.customer_frustrated:
+                _ob_session.reset_frustration()
+            # Clean up terminal sessions
+            if _ob_session.confirmation_status in ("confirmed", "cancelled"):
+                OrderBrain.clear_session(conversation_id)
+                logger.info(f"[order_brain] session closed: conv={conversation_id} status={_ob_session.confirmation_status}")
+        except Exception as _ob_exc2:
+            logger.warning(f"[order_brain] post-reply update failed: {_ob_exc2}")
 
     return {
         "reply": reply_text,
@@ -629,6 +674,7 @@ def _build_system_prompt(
     corrections: list = None,
     knowledge: list = None,
     platform: str = "unknown",
+    order_session=None,
 ) -> str:
     """Build the full system prompt for the AI bot."""
     bot_name = settings.get("bot_name") or "مساعد ذكي"
@@ -1615,6 +1661,15 @@ def _build_system_prompt(
 مثال: زبون قال "كاش" → رد "أكيد 🌷" وانتظر — لا ترسل ✅ طلبك.
 """
 
+    # NUMBER 27 — Prepend order state at the beginning of the prompt for maximum LLM attention
+    if order_session is not None:
+        try:
+            _state_section = order_session.to_prompt_section()
+            if _state_section:
+                prompt = _state_section + "\n---\n\n" + prompt
+        except Exception:
+            pass
+
     # Emoji handling
     prompt += """
 ## التعامل مع الإيموجيات
@@ -2227,6 +2282,15 @@ def _build_system_prompt(
 6. لا صفات مبالغ (مميز/رائع/لذيذ جداً)؟
 7. لهجة عراقية دارجة؟
 """
+
+    # NUMBER 27 — Also inject order state at the END for recency (highest attention)
+    if order_session is not None:
+        try:
+            _state_end = order_session.to_prompt_section()
+            if _state_end:
+                prompt += f"\n{_state_end}\n"
+        except Exception:
+            pass
 
     # ── Final Reminder — highest attention position ────────────────────────────
     product_names = "، ".join(p["name"] for p in products if p.get("available", True))
