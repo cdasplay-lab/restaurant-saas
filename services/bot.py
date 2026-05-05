@@ -296,17 +296,33 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     finally:
         conn.close()
 
-    # NUMBER 27 — OrderBrain: get/create session and update from customer message
+    # NUMBER 27/29 — OrderBrain: restore from DB (survives server restarts), then update
     _ob_session = None
     if _ORDER_BRAIN_ENABLED and OrderBrain is not None:
         try:
             _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
+            _is_fresh = not _ob_session.has_items() and _ob_session.order_type is None
+            # NUMBER 29 — if session is fresh but DB has saved state, restore it
+            if _is_fresh:
+                _saved_state = (conv["order_brain_state"] if "order_brain_state" in conv.keys() else None) or ""
+                if _saved_state:
+                    try:
+                        _restored = OrderBrain.restore_from_dict(
+                            conversation_id, json.loads(_saved_state)
+                        )
+                        if _restored:
+                            _ob_session = _restored
+                            logger.info(f"[order_brain] restored from DB conv={conversation_id}")
+                    except Exception as _re:
+                        logger.warning(f"[order_brain] DB restore failed: {_re}")
             OrderBrain.update_from_message(
                 _ob_session,
                 customer_message,
                 [dict(p) for p in products],
                 is_bot_reply=False,
             )
+            # Save updated state to DB immediately (so restarts don't lose it)
+            _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc:
             logger.warning(f"[order_brain] update failed: {_ob_exc}")
             _ob_session = None
@@ -432,6 +448,25 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
 
+    # NUMBER 29 — single-word response guard during active order
+    # If the session is active with items and the bot gave a ≤20-char reply with no question,
+    # append the next required question so the flow never stalls.
+    if (
+        _ob_session is not None
+        and _ob_session.has_items()
+        and _ob_session.confirmation_status == "collecting"
+        and len(reply_text.strip()) <= 20
+        and "؟" not in reply_text
+        and "?" not in reply_text
+    ):
+        try:
+            _next_q = _ob_session.generate_next_directive([dict(p) for p in products])
+            if _next_q and _next_q not in reply_text:
+                reply_text = reply_text.rstrip(" .،") + " 🌷 " + _next_q
+                logger.info(f"[order_brain] appended next directive to short reply conv={conversation_id}")
+        except Exception:
+            pass
+
     # Extract order if enabled (keyword-based, from customer message)
     extracted_order = None
     order_enabled = (bot_cfg["order_extraction_enabled"] if bot_cfg else 1)
@@ -447,22 +482,35 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if customer and bot_cfg and bot_cfg.get("memory_enabled", 1):
         _update_memory_from_conversation(restaurant_id, conv["customer_id"], customer_message)
 
-    # NUMBER 27 — update OrderBrain from bot reply; clear on terminal states
+    # NUMBER 27/29 — update OrderBrain from bot reply; generate confirmation; clear terminal
     if _ORDER_BRAIN_ENABLED and _ob_session is not None:
         try:
-            OrderBrain.update_from_message(
-                _ob_session,
-                reply_text,
-                [dict(p) for p in products],
-                is_bot_reply=True,
-            )
-            # Clear frustration flag after bot has acknowledged it
-            if _ob_session.customer_frustrated:
-                _ob_session.reset_frustration()
-            # Clean up terminal sessions
-            if _ob_session.confirmation_status in ("confirmed", "cancelled"):
+            # NUMBER 30 — if session just confirmed, override reply with formatted confirmation
+            if _ob_session.confirmation_status == "confirmed" and _ob_session.is_complete():
+                import uuid as _uuid_mod
+                _order_num = str(_uuid_mod.uuid4())[:6].upper()
+                reply_text = _ob_session.generate_confirmation_message(order_number=_order_num)
                 OrderBrain.clear_session(conversation_id)
-                logger.info(f"[order_brain] session closed: conv={conversation_id} status={_ob_session.confirmation_status}")
+                _ob_clear_state(conversation_id)
+                logger.info(f"[order_brain] NUMBER 30 confirmation sent conv={conversation_id} order={_order_num}")
+            else:
+                OrderBrain.update_from_message(
+                    _ob_session,
+                    reply_text,
+                    [dict(p) for p in products],
+                    is_bot_reply=True,
+                )
+                # Clear frustration flag after bot has acknowledged it
+                if _ob_session.customer_frustrated:
+                    _ob_session.reset_frustration()
+                # Clean up terminal sessions
+                if _ob_session.confirmation_status in ("confirmed", "cancelled"):
+                    OrderBrain.clear_session(conversation_id)
+                    _ob_clear_state(conversation_id)
+                    logger.info(f"[order_brain] session closed: conv={conversation_id} status={_ob_session.confirmation_status}")
+                else:
+                    # Save latest state after bot reply processing
+                    _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc2:
             logger.warning(f"[order_brain] post-reply update failed: {_ob_exc2}")
 
@@ -475,6 +523,38 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+def _ob_save_state(conversation_id: str, session) -> None:
+    """Persist OrderBrain session to DB so it survives server restarts."""
+    try:
+        conn = database.get_db()
+        try:
+            conn.execute(
+                "UPDATE conversations SET order_brain_state=? WHERE id=?",
+                (json.dumps(session.to_dict()), conversation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as _e:
+        logger.debug(f"[order_brain] save_state failed: {_e}")
+
+
+def _ob_clear_state(conversation_id: str) -> None:
+    """Clear persisted OrderBrain session from DB."""
+    try:
+        conn = database.get_db()
+        try:
+            conn.execute(
+                "UPDATE conversations SET order_brain_state=NULL WHERE id=?",
+                (conversation_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as _e:
+        logger.debug(f"[order_brain] clear_state failed: {_e}")
+
 
 def _detect_escalation(message: str, custom_keywords: list) -> bool:
     """Return True if the message contains any escalation phrase."""
@@ -2283,15 +2363,6 @@ def _build_system_prompt(
 7. لهجة عراقية دارجة؟
 """
 
-    # NUMBER 27 — Also inject order state at the END for recency (highest attention)
-    if order_session is not None:
-        try:
-            _state_end = order_session.to_prompt_section()
-            if _state_end:
-                prompt += f"\n{_state_end}\n"
-        except Exception:
-            pass
-
     # ── Final Reminder — highest attention position ────────────────────────────
     product_names = "، ".join(p["name"] for p in products if p.get("available", True))
     prompt += f"\n## ⚠️ تذكير أخير قبل كل رد\n"
@@ -2301,6 +2372,23 @@ def _build_system_prompt(
         prompt += f"سياسة المطعم: {rest_description}\n"
         if "فقط" in rest_description:
             prompt += "❌ لا تقل 'نعم' أو 'أكيد' لأي منطقة أو خيار غير مذكور صراحةً في السياسة أعلاه.\n"
+
+    # NUMBER 29 — IMPERATIVE DIRECTIVE at absolute end (highest GPT-4o-mini attention)
+    # This overrides everything: bot MUST ask the specific next question, never greet fresh
+    if order_session is not None:
+        try:
+            _state_section = order_session.to_prompt_section()
+            _next_q = order_session.generate_next_directive(products)
+            if _state_section:
+                prompt += f"\n{'='*55}\n"
+                prompt += "⛔ أمر صارم غير قابل للتجاوز — الجلسة نشطة:\n\n"
+                prompt += _state_section
+                prompt += f"\n➤ رسالتك التالية للعميل يجب أن تكون:\n"
+                prompt += f"   «{_next_q}»\n"
+                prompt += "لا تقل 'هلا بيك' ولا 'أهلين' ولا أي ترحيب — الجلسة قائمة.\n"
+                prompt += f"{'='*55}\n"
+        except Exception:
+            pass
 
     return prompt
 

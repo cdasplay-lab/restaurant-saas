@@ -1,9 +1,17 @@
 """
-services/order_brain.py — NUMBER 27: Deterministic Order State Machine
+services/order_brain.py — NUMBER 27/29: Deterministic Order State Machine
 
 Tracks per-conversation order state so the bot never loses context mid-flow.
 The session state is injected into the LLM system prompt so GPT-4o-mini always
 knows exactly what was collected and what the next step is.
+
+NUMBER 29 fixes:
+- phone added as required slot
+- Arabic-Indic digit normalization for phone extraction
+- Arabic number word AFTER product for qty extraction (فرايز اثنين)
+- generate_next_directive() — injects exact next question as imperative
+- generate_confirmation_message() — NUMBER 30 formatted confirmation
+- to_dict() / from_dict() — DB persistence survives server restarts
 """
 from __future__ import annotations
 
@@ -54,6 +62,8 @@ CONFIRMATION_KEYWORDS = [
     "ثبت", "أكمل", "تمام ثبته", "أكمله", "ثبته",
     "خلاص ثبت", "نعم ثبت", "اكمل", "ثبتها", "نثبتها",
     "تمام أكمل", "نعم أكمل", "تمام نكمل",
+    # Iraqi Arabic affirmations when session is complete
+    "اي ثبت", "صح ثبت", "اقفل الطلب", "أغلق الطلب", "اختم الطلب",
 ]
 
 CANCELLATION_KEYWORDS = [
@@ -79,7 +89,35 @@ _IRAQ_AREAS = [
     "المحمودية", "اليرموك", "الحيدرخانة", "الوزيرية", "البتاوين",
     "الشرطة الخامسة", "السيدية", "الشعلة", "الحبيبية", "زيونة",
     "بغداد الجديدة", "النهضة", "الطالبية", "القاهرة",
+    "أحمد أغا", "الأمين", "الشماعية", "الدواسة", "الجهاد",
+    "الشعلة", "الحسينية", "الطارمية", "السيدية",
 ]
+
+# Map next missing field → Iraqi Arabic question text
+_FIELD_QUESTION = {
+    "items":          "شنو تحب تطلب؟",
+    "order_type":     "توصيل لو استلام؟",
+    "address":        "وين العنوان؟",
+    "customer_name":  "شسمك؟",
+    "phone":          "شنو رقم هاتفك؟",
+    "payment_method": "كاش لو كي كارد؟",
+}
+
+_FIELD_NEXT = {
+    "items":          "اسأل عن المنتج المطلوب",
+    "order_type":     "اسأل: توصيل لو استلام؟",
+    "address":        "اسأل: وين العنوان؟",
+    "customer_name":  "اسأل: شسمك؟",
+    "phone":          "اسأل: شنو رقم هاتفك؟",
+    "payment_method": "اسأل: كاش لو كي كارد؟",
+}
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _normalize_digits(s: str) -> str:
+    """Convert Arabic-Indic digits (٠١٢...) to ASCII digits (012...)."""
+    return s.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
 
 
 # ── Data classes ───────────────────────────────────────────────────────────────
@@ -91,6 +129,15 @@ class OrderItem:
     price: float
     product_id: Optional[str] = None
     notes: str = ""
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "qty": self.qty, "price": self.price,
+                "product_id": self.product_id, "notes": self.notes}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OrderItem":
+        return cls(name=d["name"], qty=d["qty"], price=d["price"],
+                   product_id=d.get("product_id"), notes=d.get("notes", ""))
 
 
 @dataclass
@@ -138,6 +185,8 @@ class OrderSession:
             missing.append("address")
         if not self.customer_name:
             missing.append("customer_name")
+        if not self.phone:                       # NUMBER 29 — phone is required
+            missing.append("phone")
         if not self.payment_method:
             missing.append("payment_method")
         return missing
@@ -156,26 +205,73 @@ class OrderSession:
             return "—"
         return "، ".join(f"{item.name} × {item.qty}" for item in self.items)
 
+    def generate_next_directive(self, products: List[dict] = None) -> str:
+        """
+        Returns the EXACT next message the bot must send.
+        Injected at end of system prompt as imperative instruction.
+        """
+        next_f = self.next_missing_field()
+
+        if next_f == "items":
+            names = []
+            for p in (products or []):
+                if p.get("name") and p.get("available", 1):
+                    names.append(p["name"])
+            menu_str = "، ".join(names[:8])
+            if menu_str:
+                return f"شنو تحب تطلب؟ عندنا: {menu_str}"
+            return _FIELD_QUESTION["items"]
+
+        if next_f in _FIELD_QUESTION:
+            return _FIELD_QUESTION[next_f]
+
+        # All complete — request confirmation
+        summary = self.items_summary()
+        order_t = "توصيل" if self.order_type == "delivery" else "استلام"
+        addr_part = f" — {self.address}" if self.address else ""
+        return (
+            f"طلبك: {summary}، {order_t}{addr_part}، "
+            f"{self.customer_name}، {self.phone}، {self.payment_method}. تثبت؟"
+        )
+
+    def generate_confirmation_message(self, order_number: str = "") -> str:
+        """NUMBER 30 — Generate the final formatted order confirmation."""
+        lines = ["✅ طلبك وصلنا!"]
+        lines.append("━━━━━━━━━━━━━")
+        for item in self.items:
+            lines.append(f"• {item.name} × {item.qty}")
+        lines.append("━━━━━━━━━━━━━")
+        if self.order_type == "delivery":
+            lines.append(f"🚗 توصيل — {self.address or '—'}")
+        else:
+            lines.append("🏪 استلام من المطعم")
+        lines.append(f"👤 {self.customer_name or '—'}")
+        if self.phone:
+            lines.append(f"📞 {self.phone}")
+        lines.append(f"💵 {self.payment_method or 'كاش'}")
+        if order_number:
+            lines.append("━━━━━━━━━━━━━")
+            lines.append(f"رقم طلبك: #{order_number}")
+        lines.append("")
+        lines.append("يوصلك قريب إن شاء الله 🌷")
+        return "\n".join(lines)
+
     def to_prompt_section(self) -> str:
         """
-        Returns the ORDER STATE block to prepend to the system prompt.
-        Returns empty string if no active session data.
+        Returns the ORDER STATE block injected into the system prompt.
+        Always returned if session has any data — never returns "" if items exist.
         """
-        if not self.has_items() and self.order_type is None and not self.customer_name:
+        has_any = (
+            self.has_items() or self.order_type is not None
+            or self.customer_name or self.phone
+        )
+        if not has_any:
             return ""
-
-        _FIELD_NEXT = {
-            "items":          "اسأل عن المنتج المطلوب",
-            "order_type":     "اسأل: توصيل لو استلام؟",
-            "address":        "اسأل: وين العنوان؟",
-            "customer_name":  "اسأل: شسمك؟",
-            "payment_method": "اسأل: كاش لو كي كارد؟",
-        }
 
         lines = [
             "## 🔴 حالة الطلب الجارية — اقرأ أولاً قبل أي رد",
             "",
-            "⚠️ لا تبدأ من الصفر — لا تقل 'هلا بيك' — واصل من حيث توقفت",
+            "⚠️ لا تبدأ من الصفر — لا تقل 'هلا بيك' أو أي ترحيب — واصل من حيث توقفت",
             "",
         ]
 
@@ -188,6 +284,7 @@ class OrderSession:
             lines.append("✅ العنوان: لا يُحتاج (استلام)")
 
         lines.append(f"{'✅' if self.customer_name else '⬜'} الاسم: {self.customer_name or 'لم يُذكر'}")
+        lines.append(f"{'✅' if self.phone else '⬜'} الهاتف: {self.phone or 'لم يُذكر'}")
         lines.append(f"{'✅' if self.payment_method else '⬜'} الدفع: {self.payment_method or 'لم يُذكر'}")
 
         missing = self.missing_fields()
@@ -198,16 +295,52 @@ class OrderSession:
             lines.append("لا تسأل عن أي خطوة سبق إجابتها — اسأل عن الخطوة التالية فقط")
         else:
             lines.append("")
-            lines.append("⏭️ كل المعلومات مكتملة — انتظر 'ثبت' من العميل قبل إرسال الملخص")
-            lines.append("لا ترسل الملخص حتى يقول العميل 'ثبت' أو ما يعادلها")
+            lines.append("⏭️ كل المعلومات مكتملة — اطلب التأكيد بملخص قصير")
 
         if self.customer_frustrated:
             lines.append("")
             lines.append("⚠️ العميل أبدى إحباطاً — اعتذر بجملة واحدة قصيرة ثم واصل من الخطوة التالية مباشرة")
-            lines.append("لا توقف الطلب — لا تبدأ من الصفر — فقط اعتذر وكمّل")
 
         lines.append("")
         return "\n".join(lines)
+
+    # ── Serialization (DB persistence) ────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        return {
+            "conversation_id": self.conversation_id,
+            "restaurant_id": self.restaurant_id,
+            "items": [i.to_dict() for i in self.items],
+            "order_type": self.order_type,
+            "address": self.address,
+            "customer_name": self.customer_name,
+            "phone": self.phone,
+            "payment_method": self.payment_method,
+            "confirmation_status": self.confirmation_status,
+            "last_question_asked": self.last_question_asked,
+            "customer_frustrated": self.customer_frustrated,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OrderSession":
+        sess = cls(
+            conversation_id=d["conversation_id"],
+            restaurant_id=d["restaurant_id"],
+        )
+        sess.items = [OrderItem.from_dict(i) for i in d.get("items", [])]
+        sess.order_type = d.get("order_type")
+        sess.address = d.get("address")
+        sess.customer_name = d.get("customer_name")
+        sess.phone = d.get("phone")
+        sess.payment_method = d.get("payment_method")
+        sess.confirmation_status = d.get("confirmation_status", "collecting")
+        sess.last_question_asked = d.get("last_question_asked")
+        sess.customer_frustrated = d.get("customer_frustrated", False)
+        sess.created_at = d.get("created_at", time.time())
+        sess.updated_at = d.get("updated_at", time.time())
+        return sess
 
 
 # ── OrderBrain singleton ───────────────────────────────────────────────────────
@@ -242,6 +375,20 @@ class OrderBrain:
         return sess
 
     @classmethod
+    def restore_from_dict(cls, conversation_id: str, data: dict) -> Optional[OrderSession]:
+        """Restore a session from a serialized dict (loaded from DB)."""
+        try:
+            sess = OrderSession.from_dict(data)
+            if sess.is_expired():
+                return None
+            cls._sessions[conversation_id] = sess
+            logger.debug(f"[order_brain] session restored from DB: conv={conversation_id}")
+            return sess
+        except Exception as e:
+            logger.warning(f"[order_brain] restore failed: {e}")
+            return None
+
+    @classmethod
     def clear_session(cls, conversation_id: str) -> None:
         cls._sessions.pop(conversation_id, None)
 
@@ -270,7 +417,7 @@ class OrderBrain:
 
         if is_bot_reply:
             # Detect confirmation receipt sent by bot
-            if any(p in message for p in ["✅ طلبك:", "✅ طلبك :", "المجموع:"]):
+            if any(p in message for p in ["✅ طلبك", "✅ طلبك:", "المجموع:", "طلبك وصلنا"]):
                 if session.confirmation_status == "collecting":
                     session.confirmation_status = "awaiting_confirm"
                     updated.append("confirmation_status=awaiting_confirm")
@@ -309,12 +456,12 @@ class OrderBrain:
                 session.customer_name = name
                 updated.append(f"customer_name={name}")
 
-        # 5. Phone
+        # 5. Phone — normalize Arabic-Indic digits before matching
         if not session.phone:
             phone = _extract_phone(msg)
             if phone:
                 session.phone = phone
-                updated.append(f"phone={phone[:12]}")
+                updated.append(f"phone={phone[:14]}")
 
         # 6. Payment method — use word-boundary regex to avoid "زين" matching "زينجر"
         if not session.payment_method:
@@ -329,7 +476,6 @@ class OrderBrain:
             if session.is_complete():
                 session.confirmation_status = "confirmed"
                 updated.append("confirmation_status=confirmed")
-            # If not complete, do nothing — let LLM ask for remaining fields
 
         # 8. Cancellation
         if any(kw in msg for kw in CANCELLATION_KEYWORDS):
@@ -393,9 +539,14 @@ def _extract_qty(msg: str, product_name: str) -> int:
     if m:
         return int(m.group(1))
 
-    # Arabic word before product
+    # Arabic word before product: "اثنين برجر"
     for ar_word, ar_val in _AR_NUMBERS.items():
         if re.search(ar_word + r'\s+' + re.escape(product_name), msg):
+            return ar_val
+
+    # Arabic word AFTER product: "برجر اثنين" / "فرايز اثنين"  ← NUMBER 29 fix
+    for ar_word, ar_val in _AR_NUMBERS.items():
+        if re.search(re.escape(product_name) + r'\s+' + ar_word + r'(?!\w)', msg):
             return ar_val
 
     return 1
@@ -420,7 +571,6 @@ def _extract_name(msg: str) -> Optional[str]:
 
 def _extract_address(msg: str) -> Optional[str]:
     """Extract delivery address/area from message."""
-    # Strip Arabic question marks and punctuation from candidate
     _PUNCT = re.compile(r'^[\s؟?،.:!]+|[\s؟?،.:!]+$')
 
     # Labeled address patterns — exclude ؟ from captured chars
@@ -444,17 +594,23 @@ def _extract_address(msg: str) -> Optional[str]:
 
 
 def _extract_phone(msg: str) -> Optional[str]:
-    """Extract phone number from message."""
-    # Iraqi phone: 07xxxxxxxxx
-    m = re.search(r'07[0-9]{9}', msg)
+    """
+    Extract phone number from message.
+    Normalizes Arabic-Indic digits (٠١٢...) to ASCII before matching.
+    Supports 10-13 digit numbers (Iraqi local + international formats).
+    """
+    norm = _normalize_digits(msg)
+
+    # Iraqi phone: 07xxxxxxxxx (11 digits)
+    m = re.search(r'07[0-9]{9}', norm)
     if m:
         return m.group(0)
-    # Phone without country prefix: 7xxxxxxxxx
-    m = re.search(r'\b7[0-9]{9}\b', msg)
+    # Phone starting with 7: 7xxxxxxxxx (10 digits)
+    m = re.search(r'\b7[0-9]{9}\b', norm)
     if m:
         return m.group(0)
-    # Generic 10-11 digit number
-    m = re.search(r'\b\d{10,11}\b', msg)
+    # Generic 10-13 digit number (handles international formats like +964...)
+    m = re.search(r'\b\d{10,13}\b', norm)
     if m:
         return m.group(0)
     return None

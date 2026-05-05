@@ -77,9 +77,9 @@ print("\n── A. OrderSession basics ──")
 def test_A01_empty_missing_fields():
     sess = OrderSession(conversation_id="cx", restaurant_id="rx")
     mf = sess.missing_fields()
-    expected = ["items", "order_type", "customer_name", "payment_method"]
+    expected = ["items", "order_type", "customer_name", "phone", "payment_method"]
     if mf == expected:
-        ok("A01 empty session → correct missing_fields")
+        ok("A01 empty session → correct missing_fields (includes phone)")
     else:
         fail("A01 empty missing_fields", f"got {mf}")
 
@@ -100,6 +100,7 @@ def test_A03_pickup_excludes_address():
     sess.items.append(OrderItem(name="برجر", qty=1, price=8000))
     sess.order_type = "pickup"
     sess.customer_name = "علي"
+    sess.phone = "07901234567"
     sess.payment_method = "كاش"
     mf = sess.missing_fields()
     if "address" not in mf and mf == []:
@@ -113,6 +114,7 @@ def test_A04_is_complete_delivery():
     sess.order_type = "delivery"
     sess.address = "الكرادة"
     sess.customer_name = "علي"
+    sess.phone = "07901234567"
     sess.payment_method = "كاش"
     if sess.is_complete():
         ok("A04 full delivery session → is_complete=True")
@@ -267,6 +269,7 @@ def test_B14_confirmation_when_complete():
     sess.items.append(OrderItem(name="برجر", qty=1, price=8000))
     sess.order_type = "pickup"
     sess.customer_name = "علي"
+    sess.phone = "07901234567"
     sess.payment_method = "كاش"
     OrderBrain.update_from_message(sess, "ثبت", PRODUCTS)
     if sess.confirmation_status == "confirmed":
@@ -507,6 +510,7 @@ def test_E01_complete_delivery_flow():
         "توصيل",
         "العنوان الكرادة",
         "اسمي علي",
+        "هذا رقمي 07901234567",
         "كاش",
         "ثبت",
     ], "e01")
@@ -531,6 +535,7 @@ def test_E02_complete_pickup_flow():
         "أريد زينجر",
         "استلام",
         "اسمي أحمد",
+        "07901234567",
         "كارد",
         "ثبت",
     ], "e02")
@@ -838,10 +843,12 @@ def test_I05_next_missing_field_order():
     sess.address = "الكرادة"
     assert sess.next_missing_field() == "customer_name", f"expected customer_name"
     sess.customer_name = "علي"
+    assert sess.next_missing_field() == "phone", f"expected phone, got {sess.next_missing_field()}"
+    sess.phone = "07901234567"
     assert sess.next_missing_field() == "payment_method", f"expected payment_method"
     sess.payment_method = "كاش"
     assert sess.next_missing_field() is None, f"expected None, got {sess.next_missing_field()}"
-    ok("I05 next_missing_field priority order: items → order_type → address → name → payment → None")
+    ok("I05 next_missing_field priority order: items → order_type → address → name → phone → payment → None")
 
 def test_I06_pickup_skips_address_slot():
     sess = OrderSession(conversation_id="i06", restaurant_id="r1")

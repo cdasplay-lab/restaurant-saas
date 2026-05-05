@@ -527,6 +527,7 @@ def _migrate_db(conn):
         ("conversations", "bot_turn_count",   "INTEGER DEFAULT 0"),
         ("conversations", "handoff_reason",   "TEXT DEFAULT ''"),
         ("conversations", "escalated_at",     "TEXT"),
+        ("conversations", "order_brain_state","TEXT DEFAULT NULL"),
         # users new columns
         ("users", "last_login",               "TEXT"),
         # messages new columns (media + voice + story reply)
