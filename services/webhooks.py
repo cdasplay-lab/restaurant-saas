@@ -674,7 +674,11 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
             "phone_number_id": phone_number_id,
             "to": external_id,
         }
-        extra = {"media_type": media_type, "media_url": media_url}
+        extra = {
+            "media_type": media_type,
+            "media_url": media_url,
+            "voice_transcript": voice_transcript,
+        }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
         conn.close()
@@ -742,11 +746,13 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
 
     media_type = ""
     media_url_ig = ""
+    voice_transcript_ig = ""
 
-    # Handle image attachments
+    # Handle attachments — image first, then audio/voice
     attachments = message.get("attachments", [])
     for att in attachments:
-        if att.get("type") == "image":
+        att_type = att.get("type", "")
+        if att_type == "image":
             media_type = "image"
             img_url = att.get("payload", {}).get("url", "")
             if img_url:
@@ -757,6 +763,28 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
                     text = image_text
                 else:
                     text = text + " " + image_text
+            break
+        elif att_type == "audio":
+            media_type = "voice"
+            audio_url = att.get("payload", {}).get("url", "")
+            media_url_ig = audio_url
+            if audio_url:
+                try:
+                    from services import voice_service as _vs
+                    audio_bytes = _vs.download_audio_from_url(audio_url)
+                    if audio_bytes:
+                        tr = _vs.transcribe_voice_message(
+                            audio_bytes, filename="voice.mp4", mime_type="audio/mp4",
+                            channel="instagram", restaurant_id=restaurant_id,
+                        )
+                        voice_transcript_ig = tr["text"]
+                        logger.info(
+                            f"[ig-voice] transcription status={tr['transcription_status']} "
+                            f"len={len(voice_transcript_ig)} restaurant={restaurant_id[:8]}"
+                        )
+                except Exception as _ve:
+                    logger.error(f"[ig-voice] transcription error: {_ve}")
+            text = voice_transcript_ig or "[رسالة صوتية]"
             break
 
     # Detect story reply context
@@ -834,6 +862,7 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         extra = {
             "media_type": media_type,
             "media_url": media_url_ig,
+            "voice_transcript": voice_transcript_ig,
             "replied_story_id": replied_story_id,
             "replied_story_text": replied_story_text,
             "replied_story_media_url": replied_story_media_url,
@@ -903,14 +932,16 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
 
     media_type_fb = ""
     media_url_fb = ""
+    voice_transcript_fb = ""
     replied_story_id_fb = ""
     replied_story_media_url_fb = ""
     story_context_fb = ""
 
-    # Handle image attachments
+    # Handle attachments — image first, then audio/voice
     attachments = message.get("attachments", [])
     for att in attachments:
-        if att.get("type") == "image":
+        att_type = att.get("type", "")
+        if att_type == "image":
             media_type_fb = "image"
             img_url = att.get("payload", {}).get("url", "")
             if img_url:
@@ -921,6 +952,28 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
                     text = image_text
                 else:
                     text = text + " " + image_text
+            break
+        elif att_type == "audio":
+            media_type_fb = "voice"
+            audio_url = att.get("payload", {}).get("url", "")
+            media_url_fb = audio_url
+            if audio_url:
+                try:
+                    from services import voice_service as _vs
+                    audio_bytes = _vs.download_audio_from_url(audio_url)
+                    if audio_bytes:
+                        tr = _vs.transcribe_voice_message(
+                            audio_bytes, filename="voice.mp4", mime_type="audio/mp4",
+                            channel="facebook", restaurant_id=restaurant_id,
+                        )
+                        voice_transcript_fb = tr["text"]
+                        logger.info(
+                            f"[fb-voice] transcription status={tr['transcription_status']} "
+                            f"len={len(voice_transcript_fb)} restaurant={restaurant_id[:8]}"
+                        )
+                except Exception as _ve:
+                    logger.error(f"[fb-voice] transcription error: {_ve}")
+            text = voice_transcript_fb or "[رسالة صوتية]"
             break
 
     # Detect story reply (Facebook uses same structure as Instagram)
@@ -983,11 +1036,13 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
         channel_data = {
             "platform": "facebook",
             "page_token": page_token,
+            "access_token": page_token,
             "recipient_id": sender_id,
         }
         extra = {
             "media_type": media_type_fb,
             "media_url": media_url_fb,
+            "voice_transcript": voice_transcript_fb,
             "replied_story_id": replied_story_id_fb,
             "replied_story_media_url": replied_story_media_url_fb,
             "story_context": story_context_fb,
@@ -1028,19 +1083,32 @@ def _process_incoming(
 
         # 1. Save customer message with optional media/story metadata
         msg_id = str(uuid.uuid4())
+        _is_voice = extra.get("media_type") == "voice"
+        _vt       = extra.get("voice_transcript", "")
+        if not _is_voice:
+            _t_status = "not_required"
+        elif _vt:
+            _t_status = "success"
+        else:
+            _t_status = "failed"
         conn.execute(
             """INSERT INTO messages
                (id, conversation_id, role, content, media_type, media_url, voice_transcript,
-                replied_story_id, replied_story_text, replied_story_media_url)
-               VALUES (?, ?, 'customer', ?, ?, ?, ?, ?, ?, ?)""",
+                replied_story_id, replied_story_text, replied_story_media_url,
+                transcription_status, transcription_error, transcription_provider, transcribed_at)
+               VALUES (?, ?, 'customer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg_id, conv_id, content,
                 extra.get("media_type", ""),
                 extra.get("media_url", ""),
-                extra.get("voice_transcript", ""),
+                _vt,
                 extra.get("replied_story_id", ""),
                 extra.get("replied_story_text", ""),
                 extra.get("replied_story_media_url", ""),
+                _t_status,
+                extra.get("transcription_error", ""),
+                extra.get("transcription_provider", "openai_whisper" if _is_voice and _vt else ""),
+                extra.get("transcribed_at", ""),
             )
         )
         conn.execute(
@@ -1099,16 +1167,41 @@ def _process_incoming(
             mode = conv_row["mode"] if conv_row else "bot"
 
             if mode == "bot":
+                # Voice failed transcription — send safe Arabic fallback, skip OpenAI
+                if extra.get("media_type") == "voice" and content == "[رسالة صوتية]":
+                    from services.voice_service import VOICE_FALLBACK_AR
+                    _vfb_reply = VOICE_FALLBACK_AR
+                    logger.info(
+                        f"[voice-fallback] req={req_id} conv={conv_id} "
+                        f"sending safe fallback (transcription failed)"
+                    )
+                    _send_reply(channel_data, _vfb_reply)
+                    recipient_id = (
+                        channel_data.get("chat_id") or
+                        channel_data.get("to") or
+                        channel_data.get("recipient_id") or ""
+                    )
+                    conn.execute(
+                        """INSERT INTO outbound_messages
+                           (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                           VALUES (?, ?, ?, ?, ?, ?, 'sent', '')""",
+                        (str(uuid.uuid4()), restaurant_id, conv_id, platform, recipient_id, _vfb_reply[:500])
+                    )
+                    conn.execute(
+                        "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
+                        (str(uuid.uuid4()), conv_id, _vfb_reply)
+                    )
+                    conn.commit()
+                    return
+
                 # Build context for bot — use rich story_context if available
                 bot_input = content
                 if extra.get("replied_story_id"):
                     story_ctx = extra.get("story_context") or "[العميل يرد على ستوري للمطعم]"
                     bot_input = f"{story_ctx}\nرد العميل: {content}"
                 elif extra.get("media_type") == "voice":
-                    if content == "[رسالة صوتية]":
-                        bot_input = "[فويس غير واضح]"
-                    else:
-                        bot_input = f"[فويس] {content}"
+                    # Transcription succeeded — pass text directly; [فويس] prefix keeps bot context
+                    bot_input = f"[فويس] {content}"
 
                 logger.info(f"[bot-call] req={req_id} conv={conv_id} restaurant={restaurant_id}")
                 # Run AI bot
@@ -1159,6 +1252,17 @@ def _process_incoming(
 
                 # Send reply via platform + log result
                 send_ok, send_err = _send_reply(channel_data, reply_text)
+
+                # Send menu images if bot returned media (menu image intent)
+                for _img in result.get("media", []):
+                    _img_ok, _img_err = _send_image_via_channel(
+                        channel_data,
+                        _img.get("url", ""),
+                        _img.get("caption", ""),
+                    )
+                    if not _img_ok:
+                        logger.warning(f"[image-send] failed for conv={conv_id}: {_img_err}")
+
                 recipient_id = (
                     channel_data.get("chat_id") or
                     channel_data.get("to") or
@@ -1392,6 +1496,89 @@ def _send_facebook_messenger(page_token: str, recipient_id: str, text: str) -> N
             raise Exception(friendly)
     except Exception:
         raise
+
+
+def _send_image_via_channel(channel_data: dict, image_url: str, caption: str = "") -> tuple:
+    """Send a single image via the appropriate channel. Returns (success, error)."""
+    platform = channel_data.get("platform", "")
+    try:
+        if platform == "telegram":
+            bot_token = channel_data.get("bot_token")
+            chat_id = channel_data.get("chat_id")
+            if not bot_token or not chat_id:
+                return False, "bot_token or chat_id missing"
+            tg_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            payload = {"chat_id": chat_id, "photo": image_url}
+            if caption:
+                payload["caption"] = caption
+            with httpx.Client(timeout=15) as client:
+                r = client.post(tg_url, json=payload)
+            result = r.json()
+            if result.get("ok"):
+                logger.info(f"[telegram] sendPhoto OK → chat_id={chat_id}")
+                return True, ""
+            description = result.get("description", str(result))
+            friendly = _classify_telegram_error(r.status_code, description)
+            logger.warning(f"[telegram] sendPhoto FAILED → {friendly}")
+            return False, friendly
+
+        elif platform == "whatsapp":
+            access_token = channel_data.get("access_token")
+            phone_number_id = channel_data.get("phone_number_id")
+            to = channel_data.get("to")
+            if not access_token or not phone_number_id or not to:
+                return False, "WhatsApp credentials missing"
+            wa_url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
+            headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "image",
+                "image": {"link": image_url, "caption": caption},
+            }
+            with httpx.Client(timeout=15) as client:
+                r = client.post(wa_url, headers=headers, json=payload)
+            result = r.json()
+            if r.status_code == 200:
+                logger.info(f"[whatsapp] sendImage OK → to={to}")
+                return True, ""
+            friendly = _classify_meta_error(r.status_code, result)
+            logger.warning(f"[whatsapp] sendImage FAILED → {friendly}")
+            return False, friendly
+
+        elif platform in ("instagram", "facebook"):
+            page_token = channel_data.get("access_token") or channel_data.get("page_token")
+            recipient_id = channel_data.get("recipient_id")
+            if not page_token or not recipient_id:
+                return False, "page_token or recipient_id missing"
+            fb_url = "https://graph.facebook.com/v19.0/me/messages"
+            params = {"access_token": page_token}
+            payload = {
+                "recipient": {"id": recipient_id},
+                "message": {
+                    "attachment": {
+                        "type": "image",
+                        "payload": {"url": image_url, "is_reusable": True},
+                    }
+                },
+            }
+            with httpx.Client(timeout=15) as client:
+                r = client.post(fb_url, params=params, json=payload)
+            result = r.json()
+            if r.status_code == 200:
+                logger.info(f"[messenger] sendImage OK → recipient={recipient_id}")
+                return True, ""
+            friendly = _classify_meta_error(r.status_code, result)
+            logger.warning(f"[messenger] sendImage FAILED → {friendly}")
+            return False, friendly
+
+        else:
+            # Unknown platform — skip silently, text reply already sent
+            return True, ""
+    except Exception as e:
+        logger.error(f"[webhooks] sendImage error on {platform}: {e}")
+        return False, str(e)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
