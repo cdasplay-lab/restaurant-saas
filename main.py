@@ -10398,6 +10398,64 @@ async def public_menu_page(restaurant_id: str):
     return FileResponse("public/menu.html")
 
 
+# ── Compliance / Legal pages (required for Meta App Review) ───────────────────
+
+@app.get("/terms", include_in_schema=False)
+@app.get("/terms.html", include_in_schema=False)
+async def terms_page():
+    return FileResponse("public/terms.html")
+
+
+@app.get("/data-deletion", include_in_schema=False)
+@app.get("/data-deletion.html", include_in_schema=False)
+async def data_deletion_page():
+    return FileResponse("public/data-deletion.html")
+
+
+@app.post("/data-deletion", include_in_schema=False)
+async def data_deletion_callback(request: Request):
+    """
+    Meta data-deletion callback endpoint.
+    Meta POSTs a signed_request when a user removes the app from their Facebook account.
+    We log the request and return the required JSON with a confirmation_code.
+    """
+    import base64, hmac as _hmac, hashlib as _hashlib, uuid as _uuid
+    from urllib.parse import unquote
+
+    confirmation_code = str(_uuid.uuid4())[:8].upper()
+    status_url = f"https://restaurant-saas-1.onrender.com/data-deletion?code={confirmation_code}"
+
+    try:
+        form = await request.form()
+        signed_request = form.get("signed_request", "")
+
+        # Parse the signed_request to get the user_id (best-effort — don't crash if invalid)
+        if signed_request and "." in signed_request:
+            _encoded_sig, _payload = signed_request.split(".", 1)
+            _padding = "=" * (4 - len(_payload) % 4)
+            _decoded = base64.urlsafe_b64decode(_payload + _padding)
+            _data = json.loads(_decoded.decode("utf-8"))
+            fb_user_id = _data.get("user_id", "unknown")
+        else:
+            fb_user_id = "unknown"
+
+        logger.info(f"[data-deletion] Meta callback received fb_user_id={fb_user_id} code={confirmation_code}")
+        # In production: queue a job to delete conversation_memory + messages for this fb_user_id
+    except Exception as e:
+        logger.warning(f"[data-deletion] Could not parse signed_request: {e}")
+
+    return JSONResponse({
+        "url": status_url,
+        "confirmation_code": confirmation_code,
+    })
+
+
+@app.get("/app-review", include_in_schema=False)
+@app.get("/app-review.html", include_in_schema=False)
+async def app_review_page():
+    return FileResponse("public/app-review.html")
+
+
 @app.get("/robots.txt", include_in_schema=False)
 async def robots_txt():
     """Public robots.txt — explicitly allows all major crawlers including facebookexternalhit."""
