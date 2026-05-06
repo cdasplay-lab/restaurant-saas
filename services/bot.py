@@ -325,6 +325,22 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 [dict(p) for p in products],
                 is_bot_reply=False,
             )
+            # NUMBER 36 — Repeat last order: DB lookup after detection flag is set
+            if _ob_session.repeat_order_detected and not _ob_session.has_items():
+                _last_items = _get_last_order_items(conn, restaurant_id, conv["customer_id"])
+                if _last_items:
+                    _ob_session.prefill_from_items(_last_items)
+                    logger.info(
+                        f"[order_brain36] repeat: loaded {len(_last_items)} items "
+                        f"conv={conversation_id}"
+                    )
+                else:
+                    _ob_session.repeat_order_failed = True
+                    _ob_session.repeat_order_detected = False
+                    logger.info(
+                        f"[order_brain36] repeat: no previous order found "
+                        f"conv={conversation_id}"
+                    )
             # Save updated state to DB immediately (so restarts don't lose it)
             _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc:
@@ -537,6 +553,27 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+def _get_last_order_items(conn, restaurant_id: str, customer_id: str) -> list:
+    """NUMBER 36 — Return items from the customer's most recent non-cancelled order."""
+    try:
+        order = conn.execute(
+            """SELECT id FROM orders
+               WHERE restaurant_id=? AND customer_id=? AND status!='cancelled'
+               ORDER BY created_at DESC LIMIT 1""",
+            (restaurant_id, customer_id),
+        ).fetchone()
+        if not order:
+            return []
+        items = conn.execute(
+            "SELECT name, quantity AS qty, price FROM order_items WHERE order_id=?",
+            (order["id"],),
+        ).fetchall()
+        return [dict(it) for it in items]
+    except Exception as _e:
+        logger.warning(f"[order_brain36] last order lookup failed: {_e}")
+        return []
+
 
 def _ob_save_state(conversation_id: str, session) -> None:
     """Persist OrderBrain session to DB so it survives server restarts."""

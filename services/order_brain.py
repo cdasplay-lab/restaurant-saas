@@ -71,6 +71,14 @@ CANCELLATION_KEYWORDS = [
     "احذف الطلب", "ما أريده", "شلت الطلب", "لا ما أريد الطلب",
 ]
 
+# NUMBER 36 — Repeat last order phrases
+REPEAT_ORDER_PHRASES = [
+    "نفس الطلب السابق", "نفس الطلبة السابقة", "نفس طلبتي",
+    "رجعلي نفس الطلب", "رجعلي طلبتي", "اعيد نفس الطلب",
+    "أعيد نفس الطلب", "نفس الطلب", "كرر طلبي", "كرر نفس الطلب",
+    "نفس الطلبة", "اكرر الطلب", "أكرر الطلب",
+]
+
 # NUMBER 35 — Order Edit Engine
 # Prefixes that signal item removal ("شيل الكولا", "احذف البطاطا", "ما أريد الكولا")
 REMOVE_PREFIXES = [
@@ -212,6 +220,8 @@ class OrderSession:
     customer_frustrated: bool = False
     order_intent_detected: bool = False      # NUMBER 32 — customer wants to order but no product matched
     upsell_offered: bool = False             # NUMBER 33 — upsell was offered this session (offer once only)
+    repeat_order_detected: bool = False      # NUMBER 36 — customer asked to repeat last order (DB lookup pending)
+    repeat_order_failed: bool = False        # NUMBER 36 — repeat requested but no previous order found in DB
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -249,6 +259,22 @@ class OrderSession:
         self.confirmation_status = "collecting"
         self.upsell_offered = False
         self.order_intent_detected = False
+
+    def prefill_from_items(self, prev_items: List[dict]) -> None:
+        """
+        NUMBER 36 — Pre-fill session items from a previous order.
+        prev_items: list of dicts with keys: name, qty/quantity, price.
+        Sets upsell_offered=True (customer wants exact repeat — skip upsell).
+        """
+        self.items.clear()
+        for d in prev_items:
+            name  = (d.get("name") or "").strip()
+            qty   = int(d.get("qty") or d.get("quantity") or 1)
+            price = float(d.get("price") or 0)
+            if name:
+                self.items.append(OrderItem(name=name, qty=qty, price=price))
+        self.upsell_offered = True    # exact repeat — skip upsell
+        self.repeat_order_detected = False
 
     # ── Slot logic ─────────────────────────────────────────────────────────────
 
@@ -386,6 +412,7 @@ class OrderSession:
             self.has_items() or self.order_type is not None
             or self.customer_name or self.phone
             or self.order_intent_detected
+            or self.repeat_order_failed
         )
         if not has_any:
             return ""
@@ -423,6 +450,10 @@ class OrderSession:
             lines.append("")
             lines.append("⚠️ العميل أعرب عن نية الطلب لكن ما ذكر منتجاً من القائمة — اذكر 3-4 أصناف متاحة واسأله أيهم يريد")
 
+        if self.repeat_order_failed:
+            lines.append("")
+            lines.append("⚠️ العميل طلب تكرار الطلب السابق لكن ما في طلب سابق — اخبره بلطف واسأل شنو يحب يطلب اليوم")
+
         if self.customer_frustrated:
             lines.append("")
             lines.append("⚠️ العميل أبدى إحباطاً — اعتذر بجملة واحدة قصيرة ثم واصل من الخطوة التالية مباشرة")
@@ -451,6 +482,8 @@ class OrderSession:
             "customer_frustrated": self.customer_frustrated,
             "order_intent_detected": self.order_intent_detected,
             "upsell_offered": self.upsell_offered,
+            "repeat_order_detected": self.repeat_order_detected,
+            "repeat_order_failed": self.repeat_order_failed,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -472,6 +505,8 @@ class OrderSession:
         sess.customer_frustrated = d.get("customer_frustrated", False)
         sess.order_intent_detected = d.get("order_intent_detected", False)
         sess.upsell_offered = d.get("upsell_offered", False)
+        sess.repeat_order_detected = d.get("repeat_order_detected", False)
+        sess.repeat_order_failed = d.get("repeat_order_failed", False)
         sess.created_at = d.get("created_at", time.time())
         sess.updated_at = d.get("updated_at", time.time())
         return sess
@@ -568,6 +603,13 @@ class OrderBrain:
             return updated
 
         msg = message.strip()
+
+        # NUMBER 36 — Repeat last order detection (DB lookup handled in bot.py)
+        if any(phrase in msg for phrase in REPEAT_ORDER_PHRASES) and not session.has_items():
+            session.repeat_order_detected = True
+            updated.append("repeat_order_detected=True")
+            session.touch()
+            return updated  # bot.py will handle DB lookup before proceeding
 
         # NUMBER 35 — Order Edit: clear / swap / remove BEFORE adding new items
         if any(phrase in msg for phrase in CLEAR_ORDER_PHRASES):
