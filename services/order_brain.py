@@ -71,6 +71,14 @@ CANCELLATION_KEYWORDS = [
     "احذف الطلب", "ما أريده", "شلت الطلب", "لا ما أريد الطلب",
 ]
 
+# NUMBER 37 — Item notes / special instructions
+# Words that signal a customization note on the preceding product
+_NOTE_MODIFIERS = [
+    "بدون", "مع ", "حار", "بارد", "ساخن", "إضافي", "extra",
+    "medium", "well done", "rare", "زيادة", "أقل", "ناعم",
+    "مقرمش", "طازج", "مطبوخ", "بدون صوص", "بدون بصل",
+]
+
 # NUMBER 36 — Repeat last order phrases
 REPEAT_ORDER_PHRASES = [
     "نفس الطلب السابق", "نفس الطلبة السابقة", "نفس طلبتي",
@@ -385,6 +393,8 @@ class OrderSession:
             total += item_total
             price_str = f" — {item_total:,} د.ع" if item.price else ""
             lines.append(f"• {item.name} × {item.qty}{price_str}")
+            if item.notes:
+                lines.append(f"  ↳ {item.notes}")
         lines.append("━━━━━━━━━━━━━")
         if total > 0:
             lines.append(f"💰 المجموع: {total:,} د.ع")
@@ -722,6 +732,33 @@ def _fuzzy_product_match(msg: str, products: List[dict]) -> Optional[dict]:
     return None
 
 
+def _extract_item_note(msg: str, product_name: str, all_product_names: List[str] = None) -> str:
+    """
+    NUMBER 37 — Extract a special-instruction note that follows a product name.
+    Returns the note text (≤35 chars) if a known modifier keyword is present, else "".
+    Examples: "برجر بدون بصل" → "بدون بصل",  "زينجر حار زيادة" → "حار زيادة"
+    """
+    idx = msg.find(product_name)
+    if idx < 0:
+        return ""
+    after = msg[idx + len(product_name):idx + len(product_name) + 50]
+    # Stop at natural sentence boundaries
+    stop = re.search(r'[،,\.\n]|(?<=\s)و\s', after)
+    if stop:
+        after = after[:stop.start()]
+    after = after.strip()
+    if not after:
+        return ""
+    # Don't treat another product name as a note
+    for pname in (all_product_names or []):
+        if pname != product_name and pname in after:
+            after = after[:after.find(pname)].strip()
+    # Keep only if it contains a known modifier
+    if after and any(mod in after for mod in _NOTE_MODIFIERS):
+        return after[:35].strip()
+    return ""
+
+
 def _extract_items(
     session: OrderSession,
     msg: str,
@@ -732,6 +769,7 @@ def _extract_items(
     """Match product names in message and update session items (exact + fuzzy)."""
     skip_names = skip_names or set()
     matched_ids: set = set()
+    all_names = [(p.get("name") or "").strip() for p in products]
 
     for p in products:
         name = (p.get("name") or "").strip()
@@ -746,14 +784,20 @@ def _extract_items(
                 if existing.qty != qty:
                     existing.qty = qty
                     updated.append(f"qty_update:{name}×{qty}")
+                # NUMBER 37 — update note if a new instruction detected
+                note = _extract_item_note(msg, name, all_names)
+                if note and not existing.notes:
+                    existing.notes = note
             else:
+                note = _extract_item_note(msg, name, all_names)
                 session.items.append(OrderItem(
                     name=name,
                     qty=qty,
                     price=float(p.get("price") or 0),
                     product_id=str(p.get("id") or ""),
+                    notes=note,
                 ))
-                updated.append(f"item_added:{name}×{qty}")
+                updated.append(f"item_added:{name}×{qty}" + (f"[note:{note[:15]}]" if note else ""))
             matched_ids.add(str(p.get("id") or name))
 
     # NUMBER 32 — fuzzy fallback: try alias/ال-strip if no exact match found yet
@@ -766,11 +810,13 @@ def _extract_items(
             existing = next((it for it in session.items if it.name == fname), None)
             if not existing:
                 qty = _extract_qty(msg, fname)
+                note = _extract_item_note(msg, fname, all_names)
                 session.items.append(OrderItem(
                     name=fname,
                     qty=qty,
                     price=float(fuzzy_p.get("price") or 0),
                     product_id=str(fuzzy_p.get("id") or ""),
+                    notes=note,
                 ))
                 updated.append(f"item_added_fuzzy:{fname}×{qty}")
                 logger.info(f"[order_brain32] fuzzy match: msg_excerpt={msg[:30]!r} → product={fname!r}")

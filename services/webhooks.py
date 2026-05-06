@@ -1756,12 +1756,13 @@ def _auto_create_order(
 
     for item in items:
         conn.execute("""
-            INSERT INTO order_items (id, order_id, product_id, name, price, quantity)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO order_items (id, order_id, product_id, name, price, quantity, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             str(uuid.uuid4()), order_id,
             item.get("product_id"), item.get("name", ""),
             item.get("price", 0), item.get("quantity", 1),
+            item.get("notes", ""),
         ))
         if item.get("product_id"):
             conn.execute(

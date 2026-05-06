@@ -665,6 +665,8 @@ def _migrate_db(conn):
         ("bot_corrections",        "deleted_at",        "TEXT DEFAULT ''"),
         ("restaurant_knowledge",   "deleted_at",        "TEXT DEFAULT ''"),
         ("restaurants",            "ai_learning_enabled", "INTEGER DEFAULT 1"),
+        # NUMBER 37 — item special instructions / notes
+        ("order_items", "notes", "TEXT DEFAULT ''"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────
