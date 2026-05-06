@@ -1204,7 +1204,7 @@ def _process_incoming(
                     bot_input = f"[فويس] {content}"
 
                 logger.info(f"[bot-call] req={req_id} conv={conv_id} restaurant={restaurant_id}")
-                # Run AI bot
+                # Run AI bot (sync; timeout=30s is set on the OpenAI client)
                 result = bot.process_message(restaurant_id, conv_id, bot_input)
                 reply_text = result.get("reply", "")
                 action = result.get("action", "reply")

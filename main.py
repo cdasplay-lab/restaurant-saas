@@ -676,8 +676,8 @@ def log_activity(conn, restaurant_id, action, entity_type="", entity_id="", desc
             "VALUES (?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), restaurant_id, user_id, user_name, action, entity_type, entity_id, description)
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[log_activity] failed action={action} restaurant={restaurant_id}: {_e}")
 
 
 def create_notification(conn, restaurant_id, ntype, title, message, entity_type="", entity_id=""):
@@ -687,8 +687,8 @@ def create_notification(conn, restaurant_id, ntype, title, message, entity_type=
             "VALUES (?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), restaurant_id, ntype, title, message, entity_type, entity_id)
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[create_notification] failed type={ntype} restaurant={restaurant_id}: {_e}")
 
 
 def record_channel_error(conn, channel_id: str, restaurant_id: str, platform: str,
@@ -3872,6 +3872,90 @@ async def create_order(data: OrderCreate, user=Depends(current_user)):
     return dict(row)
 
 
+_STATUS_MESSAGES = {
+    "confirmed":  "✅ طلبك وصلنا وصار بالتجهيز! نشوفك قريب 😊",
+    "preparing":  "👨‍🍳 طلبك عم يتجهز الحين — ما يطول!",
+    "on_way":     "🛵 طلبك طلع من المطعم وعلى الطريق إليك!",
+    "delivered":  "✅ وصل طلبك! بالعافية وشكراً لاختيارك 🌷",
+    "cancelled":  "❌ تم إلغاء طلبك. إذا عندك استفسار تواصل معنا.",
+}
+
+
+async def _notify_customer_status_change(order: dict, restaurant_id: str, new_status: str) -> None:
+    """Send an order-status update to the customer on their platform (non-fatal)."""
+    message_text = _STATUS_MESSAGES.get(new_status)
+    if not message_text:
+        return
+    try:
+        import httpx as _httpx
+        conn = database.get_db()
+        try:
+            customer_id = order.get("customer_id", "")
+            cust_row = conn.execute(
+                "SELECT platform, phone FROM customers WHERE id=?", (customer_id,)
+            ).fetchone()
+            if not cust_row:
+                return
+            platform = cust_row["platform"] or ""
+            mem_row = conn.execute(
+                "SELECT memory_value FROM conversation_memory "
+                "WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
+                (restaurant_id, customer_id)
+            ).fetchone()
+            external_id = mem_row["memory_value"] if mem_row else cust_row["phone"] or ""
+            if not external_id:
+                return
+
+            if platform == "telegram":
+                ch = conn.execute(
+                    "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'",
+                    (restaurant_id,)
+                ).fetchone()
+                if not ch or not ch["token"]:
+                    return
+                async with _httpx.AsyncClient(timeout=10) as _cl:
+                    await _cl.post(
+                        f"https://api.telegram.org/bot{ch['token']}/sendMessage",
+                        json={"chat_id": external_id, "text": message_text}
+                    )
+
+            elif platform == "whatsapp":
+                ch = conn.execute(
+                    "SELECT token, phone_number_id FROM channels WHERE restaurant_id=? AND type='whatsapp'",
+                    (restaurant_id,)
+                ).fetchone()
+                if not ch or not ch["token"]:
+                    return
+                pn_id = ch["phone_number_id"] if "phone_number_id" in ch.keys() else ""
+                if not pn_id:
+                    return
+                async with _httpx.AsyncClient(timeout=10) as _cl:
+                    await _cl.post(
+                        f"https://graph.facebook.com/v19.0/{pn_id}/messages",
+                        headers={"Authorization": f"Bearer {ch['token']}", "Content-Type": "application/json"},
+                        json={"messaging_product": "whatsapp", "to": external_id,
+                              "type": "text", "text": {"body": message_text}}
+                    )
+
+            elif platform in ("instagram", "facebook"):
+                ch = conn.execute(
+                    "SELECT token FROM channels WHERE restaurant_id=? AND type=?",
+                    (restaurant_id, platform)
+                ).fetchone()
+                if not ch or not ch["token"]:
+                    return
+                async with _httpx.AsyncClient(timeout=10) as _cl:
+                    await _cl.post(
+                        "https://graph.facebook.com/v19.0/me/messages",
+                        params={"access_token": ch["token"]},
+                        json={"recipient": {"id": external_id}, "message": {"text": message_text}}
+                    )
+        finally:
+            conn.close()
+    except Exception as _e:
+        logger.warning(f"[notify_status] {new_status} notify failed order={order.get('id','?')}: {_e}")
+
+
 async def _notify_customer_confirmed(order: dict, restaurant_id: str) -> None:
     """Send a confirmation message to the customer on their platform (non-fatal)."""
     try:
@@ -4019,10 +4103,13 @@ async def update_order_status(oid: str, req: Request, background_tasks: Backgrou
                             "طلب جديد في الانتظار",
                             f"الطلب #{oid[:8]} في انتظار التأكيد", "order", oid)
 
-    # Notify customer when order is confirmed
-    if new_status == "confirmed":
+    # Notify customer on status changes that matter to them
+    _NOTIFY_STATUSES = {"confirmed", "preparing", "on_way", "delivered", "cancelled"}
+    if new_status in _NOTIFY_STATUSES:
         order_dict = dict(order)
-        background_tasks.add_task(_notify_customer_confirmed, order_dict, user["restaurant_id"])
+        background_tasks.add_task(
+            _notify_customer_status_change, order_dict, user["restaurant_id"], new_status
+        )
 
     conn.commit()
     conn.close()
@@ -4715,8 +4802,8 @@ async def integrations_oauth_callback(
                         (f"OAuth فشل: {err_str[:200]}", _ch["id"])
                     )
                     conn.commit()
-            except Exception:
-                pass
+            except Exception as _oe:
+                logger.warning(f"[oauth_callback] channel error update failed: {_oe}")
             from urllib.parse import quote as _quote
             hint = _quote(err_str[:120], safe="")
             return _Redirect(f"{frontend_base}/app?oauth_error=exchange_failed&hint={hint}#channels")
@@ -5659,8 +5746,8 @@ def _ai_log(conn, restaurant_id: str, actor_id: str, actor_role: str,
                 json.dumps(new_val or {}, ensure_ascii=False),
             )
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[ai_log] failed action={action} restaurant={restaurant_id}: {_e}")
 
 
 def _snap_correction(conn, row: dict, changed_by: str, reason: str = ""):
@@ -5681,8 +5768,8 @@ def _snap_correction(conn, row: dict, changed_by: str, reason: str = ""):
                 row.get("is_active",1), int(last) + 1, changed_by or "", reason or "",
             )
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[snap_correction] failed correction_id={row.get('id','?')}: {_e}")
 
 
 def _snap_knowledge(conn, row: dict, changed_by: str, reason: str = ""):
@@ -5703,8 +5790,8 @@ def _snap_knowledge(conn, row: dict, changed_by: str, reason: str = ""):
                 row.get("is_active",1), int(last) + 1, changed_by or "", reason or "",
             )
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[snap_knowledge] failed knowledge_id={row.get('id','?')}: {_e}")
 
 
 def _correction_row(conn, cid: str) -> dict:
@@ -8254,8 +8341,8 @@ def _sa_log(conn, admin_id: str, admin_name: str, action: str,
             "VALUES (?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), admin_id, admin_name, action, target_type, target_id, description, ip)
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[sa_log] failed action={action} admin={admin_id}: {_e}")
 
 
 # ── Super Admin Auth ──────────────────────────────────────────────────────────
