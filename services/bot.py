@@ -577,6 +577,62 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
+def _is_restaurant_open_now(working_hours_raw, now=None):
+    """
+    NUMBER 39 — Time-based working hours check (Iraq UTC+3).
+    Returns (is_open: bool, closed_msg: str, next_open_info: str).
+    Fails-open: returns (True, "", "") if hours not configured or parsing fails.
+    """
+    try:
+        from datetime import datetime as _ddt, timedelta as _tdelta, time as _dtime
+        import json as _j
+        wh = _j.loads(working_hours_raw) if isinstance(working_hours_raw, str) else (working_hours_raw or {})
+        if not wh:
+            return True, "", ""
+        if now is None:
+            now = _ddt.utcnow() + _tdelta(hours=3)
+        day_keys   = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        day_labels = {"mon": "الاثنين", "tue": "الثلاثاء", "wed": "الأربعاء",
+                      "thu": "الخميس",  "fri": "الجمعة",   "sat": "السبت", "sun": "الأحد"}
+        today_key   = day_keys[now.weekday()]
+        today_label = day_labels[today_key]
+        day_info    = wh.get(today_key, {})
+        # Day marked closed
+        if not day_info or not day_info.get("open"):
+            next_open = _find_next_open_day(wh, day_keys, day_labels, now.weekday())
+            return False, f"اليوم ({today_label}) مغلقون.", next_open
+        open_t  = day_info.get("from", "")
+        close_t = day_info.get("to", "")
+        if not open_t or not close_t:
+            return True, f"اليوم ({today_label}) مفتوحون.", ""
+        oh, om = map(int, open_t.split(":"))
+        ch, cm = map(int, close_t.split(":"))
+        open_time  = _dtime(oh, om)
+        close_time = _dtime(ch, cm)
+        now_time   = now.time()
+        # Handle midnight crossover (e.g., 20:00–02:00)
+        if close_time < open_time:
+            in_hours = (now_time >= open_time or now_time <= close_time)
+        else:
+            in_hours = (open_time <= now_time <= close_time)
+        if in_hours:
+            return True, f"اليوم ({today_label}) مفتوحون من {open_t} إلى {close_t}.", ""
+        next_open = _find_next_open_day(wh, day_keys, day_labels, now.weekday())
+        return False, f"اليوم ({today_label}) ساعات العمل {open_t}–{close_t}، مغلقون حالياً.", next_open
+    except Exception:
+        return True, "", ""   # fail-open
+
+
+def _find_next_open_day(wh, day_keys, day_labels, current_weekday):
+    """Return human-readable string for the next open day/time."""
+    for i in range(1, 8):
+        nk = day_keys[(current_weekday + i) % 7]
+        nd = wh.get(nk, {})
+        if nd and nd.get("open"):
+            return f"{day_labels[nk]} من {nd.get('from', '')} إلى {nd.get('to', '')}"
+    return ""
+
+
 def _get_last_order_items(conn, restaurant_id: str, customer_id: str) -> list:
     """NUMBER 36 — Return items from the customer's most recent non-cancelled order."""
     try:
@@ -931,23 +987,19 @@ def _build_system_prompt(
         today_key   = day_keys[now.weekday()]
         today_label = day_labels[today_key]
         day_info = wh.get(today_key, {})
-        if day_info and day_info.get("open"):
-            open_t = day_info.get("from", "")
-            close_t = day_info.get("to", "")
+        # NUMBER 39 — use time-accurate open check (Iraq UTC+3, handles crossover)
+        _wh_open, _wh_msg, _wh_next = _is_restaurant_open_now(working_hours_raw, now=now)
+        if _wh_open:
+            open_t  = day_info.get("from", "") if day_info else ""
+            close_t = day_info.get("to", "")   if day_info else ""
             if open_t and close_t:
                 working_hours_status = f"اليوم ({today_label}) مفتوحون من {open_t} إلى {close_t}."
             else:
                 working_hours_status = f"اليوم ({today_label}) مفتوحون."
-        elif day_info and not day_info.get("open"):
-            working_hours_status = f"اليوم ({today_label}) مغلقون."
-            is_currently_closed = True
-            # Find next open day
-            for i in range(1, 8):
-                next_key = day_keys[(now.weekday() + i) % 7]
-                nd = wh.get(next_key, {})
-                if nd.get("open"):
-                    next_open_info = f"{day_labels[next_key]} من {nd.get('from','')} إلى {nd.get('to','')}"
-                    break
+        else:
+            working_hours_status = _wh_msg
+            is_currently_closed  = True
+            next_open_info       = _wh_next
         # Build full schedule text
         schedule_lines = []
         for k in day_keys:
