@@ -302,6 +302,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
     # NUMBER 27/29 — OrderBrain: restore from DB (survives server restarts), then update
     _ob_session = None
+    _ob_invalid_pm_reply = None
     if _ORDER_BRAIN_ENABLED and OrderBrain is not None:
         try:
             _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
@@ -341,11 +342,30 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                         f"[order_brain36] repeat: no previous order found "
                         f"conv={conversation_id}"
                     )
+            # NUMBER 41 — Payment method validation against restaurant settings
+            _pm_allowed_raw = str((settings["payment_methods"] if settings else None) or "")
+            if _ob_session.invalid_payment_method(_pm_allowed_raw):
+                from services.order_brain import parse_allowed_payment_methods as _ppm
+                _bad_pm = _ob_session.payment_method
+                _ob_session.payment_method = None
+                _allowed_list = _ppm(_pm_allowed_raw)
+                _allowed_str = "، ".join(_allowed_list)
+                _ob_invalid_pm_reply = (
+                    f"عذراً 🙏 طريقة الدفع '{_bad_pm}' غير متاحة. "
+                    f"الطرق المتاحة: {_allowed_str}."
+                )
+                logger.info(
+                    f"[order_brain41] invalid payment '{_bad_pm}' "
+                    f"allowed={_allowed_list} conv={conversation_id}"
+                )
+            else:
+                _ob_invalid_pm_reply = None
             # Save updated state to DB immediately (so restarts don't lose it)
             _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc:
             logger.warning(f"[order_brain] update failed: {_ob_exc}")
             _ob_session = None
+            _ob_invalid_pm_reply = None
 
     # Check escalation conditions
     custom_keywords = []
@@ -475,6 +495,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
+
+    # NUMBER 41 — Override reply with payment validation rejection if needed
+    if _ob_invalid_pm_reply:
+        reply_text = _ob_invalid_pm_reply
 
     # NUMBER 31 — Persona Engine: confirm+ask guarantee during active order
     # Any reply ≤100 chars with no question mark during slot-filling gets the next directive appended.

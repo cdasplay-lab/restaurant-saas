@@ -58,6 +58,23 @@ PAYMENT_MAP = {
     "فلوس": "كاش",
 }
 
+# All canonical payment method names (values of PAYMENT_MAP).
+_CANONICAL_METHODS = set(PAYMENT_MAP.values())
+
+
+def parse_allowed_payment_methods(raw: str) -> list:
+    """Split a settings string like 'كاش، كارد' into a list of canonical names."""
+    if not raw:
+        return []
+    import re as _re
+    parts = _re.split(r"[،,/\|]+", raw)
+    result = []
+    for p in parts:
+        p = p.strip()
+        if p in _CANONICAL_METHODS:
+            result.append(p)
+    return result
+
 CONFIRMATION_KEYWORDS = [
     "ثبت", "أكمل", "تمام ثبته", "أكمله", "ثبته",
     "خلاص ثبت", "نعم ثبت", "اكمل", "ثبتها", "نثبتها",
@@ -308,6 +325,15 @@ class OrderSession:
 
     def is_complete(self) -> bool:
         return len(self.missing_fields()) == 0
+
+    def invalid_payment_method(self, allowed_raw: str) -> bool:
+        """True if payment_method is set but not in the restaurant's allowed list."""
+        if not self.payment_method:
+            return False
+        allowed = parse_allowed_payment_methods(allowed_raw)
+        if not allowed:
+            return False
+        return self.payment_method not in allowed
 
     # ── Prompt section ─────────────────────────────────────────────────────────
 
