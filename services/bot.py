@@ -303,6 +303,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # NUMBER 27/29 — OrderBrain: restore from DB (survives server restarts), then update
     _ob_session = None
     _ob_invalid_pm_reply = None
+    _ob_soldout_reply = None
     if _ORDER_BRAIN_ENABLED and OrderBrain is not None:
         try:
             _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
@@ -360,12 +361,26 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 )
             else:
                 _ob_invalid_pm_reply = None
+            # NUMBER 42 — Sold-out guard reply
+            if _ob_session.sold_out_rejected:
+                _blocked = _ob_session.sold_out_rejected
+                if len(_blocked) == 1:
+                    _ob_soldout_reply = f"عذراً 😔 {_blocked[0]} نافد حالياً. تريد تختار شيء ثاني؟"
+                else:
+                    _blocked_str = "، ".join(_blocked)
+                    _ob_soldout_reply = f"عذراً 😔 هذه المنتجات نافدة حالياً: {_blocked_str}. تريد تختار شيء ثاني؟"
+                logger.info(
+                    f"[order_brain42] sold-out blocked={_blocked} conv={conversation_id}"
+                )
+            else:
+                _ob_soldout_reply = None
             # Save updated state to DB immediately (so restarts don't lose it)
             _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc:
             logger.warning(f"[order_brain] update failed: {_ob_exc}")
             _ob_session = None
             _ob_invalid_pm_reply = None
+            _ob_soldout_reply = None
 
     # Check escalation conditions
     custom_keywords = []
@@ -499,6 +514,9 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # NUMBER 41 — Override reply with payment validation rejection if needed
     if _ob_invalid_pm_reply:
         reply_text = _ob_invalid_pm_reply
+    # NUMBER 42 — Override reply with sold-out guard message if needed
+    if _ob_soldout_reply:
+        reply_text = _ob_soldout_reply
 
     # NUMBER 31 — Persona Engine: confirm+ask guarantee during active order
     # Any reply ≤100 chars with no question mark during slot-filling gets the next directive appended.

@@ -247,6 +247,7 @@ class OrderSession:
     upsell_offered: bool = False             # NUMBER 33 — upsell was offered this session (offer once only)
     repeat_order_detected: bool = False      # NUMBER 36 — customer asked to repeat last order (DB lookup pending)
     repeat_order_failed: bool = False        # NUMBER 36 — repeat requested but no previous order found in DB
+    sold_out_rejected: List[str] = field(default_factory=list)  # NUMBER 42 — transient, not persisted
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -655,6 +656,9 @@ class OrderBrain:
 
         msg = message.strip()
 
+        # NUMBER 42 — Reset transient sold-out list each message
+        session.sold_out_rejected = []
+
         # NUMBER 36 — Repeat last order detection (DB lookup handled in bot.py)
         if any(phrase in msg for phrase in REPEAT_ORDER_PHRASES) and not session.has_items():
             session.repeat_order_detected = True
@@ -819,6 +823,12 @@ def _extract_items(
         if name in skip_names:
             continue
         if name in msg:
+            # NUMBER 42 — Sold-out guard: skip and record blocked item
+            if p.get("sold_out_date"):
+                if name not in session.sold_out_rejected:
+                    session.sold_out_rejected.append(name)
+                    updated.append(f"soldout_blocked:{name}")
+                continue
             qty = _extract_qty(msg, name)
             existing = next((it for it in session.items if it.name == name), None)
             if existing:
@@ -847,6 +857,12 @@ def _extract_items(
         if fuzzy_p:
             fname = (fuzzy_p.get("name") or "").strip()
             if fname in skip_names:
+                return
+            # NUMBER 42 — Sold-out guard on fuzzy match too
+            if fuzzy_p.get("sold_out_date"):
+                if fname not in session.sold_out_rejected:
+                    session.sold_out_rejected.append(fname)
+                    updated.append(f"soldout_blocked_fuzzy:{fname}")
                 return
             existing = next((it for it in session.items if it.name == fname), None)
             if not existing:
