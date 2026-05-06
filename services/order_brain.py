@@ -391,8 +391,8 @@ class OrderSession:
         """NUMBER 38 — True if items total is below the restaurant's minimum order amount."""
         return min_order > 0 and self.items_total() < min_order
 
-    def generate_confirmation_message(self, order_number: str = "", delivery_fee: int = 0) -> str:
-        """NUMBER 30/32/38 — Generate the final formatted order confirmation with total."""
+    def generate_confirmation_message(self, order_number: str = "", delivery_fee: int = 0, delivery_time: str = "") -> str:
+        """NUMBER 30/32/38/40 — Generate the final formatted order confirmation with total."""
         lines = ["✅ طلبك وصلنا!"]
         lines.append("━━━━━━━━━━━━━")
         items_sum = 0
@@ -413,6 +413,8 @@ class OrderSession:
             lines.append(f"💰 المجموع: {grand_total:,} د.ع")
         if self.order_type == "delivery":
             lines.append(f"🚗 توصيل — {self.address or '—'}")
+            if delivery_time:
+                lines.append(f"🕐 وقت التوصيل: {delivery_time}")
         else:
             lines.append("🏪 استلام من المطعم")
         lines.append(f"👤 {self.customer_name or '—'}")

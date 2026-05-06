@@ -537,8 +537,11 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     )
                 else:
                     _fee_for_delivery = _df if _ob_session.order_type == "delivery" else 0
+                    _dt_str = str((settings["delivery_time"] if settings else None) or "")
                     reply_text = _ob_session.generate_confirmation_message(
-                        order_number=_order_num, delivery_fee=_fee_for_delivery
+                        order_number=_order_num,
+                        delivery_fee=_fee_for_delivery,
+                        delivery_time=_dt_str,
                     )
                     OrderBrain.clear_session(conversation_id)
                     _ob_clear_state(conversation_id)
