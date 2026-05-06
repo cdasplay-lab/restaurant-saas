@@ -26,6 +26,9 @@ logger = logging.getLogger("restaurant-saas")
 # Session expires after 2 hours of inactivity
 _SESSION_TTL = 7200.0
 
+# NUMBER 43 — Quantity sanity check: cap unreasonable quantities
+MAX_QTY = 20
+
 # ── Keyword lists ──────────────────────────────────────────────────────────────
 
 FRUSTRATION_PHRASES = [
@@ -248,6 +251,7 @@ class OrderSession:
     repeat_order_detected: bool = False      # NUMBER 36 — customer asked to repeat last order (DB lookup pending)
     repeat_order_failed: bool = False        # NUMBER 36 — repeat requested but no previous order found in DB
     sold_out_rejected: List[str] = field(default_factory=list)  # NUMBER 42 — transient, not persisted
+    qty_capped: List[str] = field(default_factory=list)         # NUMBER 43 — transient: items whose qty was capped
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -656,8 +660,9 @@ class OrderBrain:
 
         msg = message.strip()
 
-        # NUMBER 42 — Reset transient sold-out list each message
+        # NUMBER 42/43 — Reset transient lists each message
         session.sold_out_rejected = []
+        session.qty_capped = []
 
         # NUMBER 36 — Repeat last order detection (DB lookup handled in bot.py)
         if any(phrase in msg for phrase in REPEAT_ORDER_PHRASES) and not session.has_items():
@@ -830,6 +835,12 @@ def _extract_items(
                     updated.append(f"soldout_blocked:{name}")
                 continue
             qty = _extract_qty(msg, name)
+            # NUMBER 43 — Quantity sanity check: cap unreasonable values
+            if qty > MAX_QTY:
+                session.qty_capped.append(name)
+                updated.append(f"qty_capped:{name}:{qty}→{MAX_QTY}")
+                logger.info(f"[order_brain43] qty capped: {name} {qty}→{MAX_QTY}")
+                qty = MAX_QTY
             existing = next((it for it in session.items if it.name == name), None)
             if existing:
                 if existing.qty != qty:
@@ -867,6 +878,12 @@ def _extract_items(
             existing = next((it for it in session.items if it.name == fname), None)
             if not existing:
                 qty = _extract_qty(msg, fname)
+                # NUMBER 43 — Quantity sanity check on fuzzy path too
+                if qty > MAX_QTY:
+                    session.qty_capped.append(fname)
+                    updated.append(f"qty_capped:{fname}:{qty}→{MAX_QTY}")
+                    logger.info(f"[order_brain43] qty capped (fuzzy): {fname} {qty}→{MAX_QTY}")
+                    qty = MAX_QTY
                 note = _extract_item_note(msg, fname, all_names)
                 session.items.append(OrderItem(
                     name=fname,
