@@ -187,6 +187,7 @@ class OrderSession:
     last_question_asked: Optional[str] = None
     customer_frustrated: bool = False
     order_intent_detected: bool = False      # NUMBER 32 — customer wants to order but no product matched
+    upsell_offered: bool = False             # NUMBER 33 — upsell was offered this session (offer once only)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -239,6 +240,37 @@ class OrderSession:
             return "—"
         return "، ".join(f"{item.name} × {item.qty}" for item in self.items)
 
+    def _get_upsell_suggestion(self, products: List[dict]) -> str:
+        """
+        NUMBER 33 — Return a one-line upsell suggestion based on current items.
+        Returns '' if no suitable upsell exists or session already has both main + drink + side.
+        """
+        if not self.items:
+            return ""
+
+        _MAIN_KW  = ["برجر", "زينجر", "بروستد", "شاورما", "دجاج", "لحم", "ستيك", "سندويش"]
+        _DRINK_KW = ["كولا", "بيبسي", "جوس", "عصير", "ماء", "مشروب", "شاي", "قهوة", "ليمون"]
+        _SIDE_KW  = ["بطاطا", "فرايز", "بطاطس", "سلطة", "خبز"]
+
+        has_main  = any(any(kw in it.name for kw in _MAIN_KW) for it in self.items)
+        has_drink = any(any(kw in it.name for kw in _DRINK_KW) for it in self.items)
+        has_side  = any(any(kw in it.name for kw in _SIDE_KW) for it in self.items)
+
+        if has_main and not has_drink:
+            for p in (products or []):
+                pname = (p.get("name") or "")
+                if any(kw in pname for kw in _DRINK_KW):
+                    return f"تريد نضيف {pname} وياه؟ 🥤"
+            return "نضيف مشروب وياه؟ 🥤"
+
+        if has_main and has_drink and not has_side:
+            for p in (products or []):
+                pname = (p.get("name") or "")
+                if any(kw in pname for kw in _SIDE_KW):
+                    return f"نضيف {pname} وياها؟ 🍟"
+
+        return ""
+
     def generate_next_directive(self, products: List[dict] = None) -> str:
         """
         Returns the EXACT next message the bot must send.
@@ -255,6 +287,13 @@ class OrderSession:
             if menu_str:
                 return f"شنو تحب تطلب؟ عندنا: {menu_str}"
             return _FIELD_QUESTION["items"]
+
+        # NUMBER 33 — Upsell Engine: intercept order_type step with one upsell offer
+        if next_f == "order_type" and not self.upsell_offered:
+            suggestion = self._get_upsell_suggestion(products or [])
+            if suggestion:
+                self.upsell_offered = True
+                return suggestion
 
         if next_f in _FIELD_QUESTION:
             return _FIELD_QUESTION[next_f]
@@ -365,6 +404,7 @@ class OrderSession:
             "last_question_asked": self.last_question_asked,
             "customer_frustrated": self.customer_frustrated,
             "order_intent_detected": self.order_intent_detected,
+            "upsell_offered": self.upsell_offered,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -385,6 +425,7 @@ class OrderSession:
         sess.last_question_asked = d.get("last_question_asked")
         sess.customer_frustrated = d.get("customer_frustrated", False)
         sess.order_intent_detected = d.get("order_intent_detected", False)
+        sess.upsell_offered = d.get("upsell_offered", False)
         sess.created_at = d.get("created_at", time.time())
         sess.updated_at = d.get("updated_at", time.time())
         return sess
@@ -472,6 +513,11 @@ class OrderBrain:
             if any(kw in message for kw in ["شلنا الطلب", "الغيت الطلب", "الطلب ملغي", "ألغيت الطلب"]):
                 session.confirmation_status = "cancelled"
                 updated.append("confirmation_status=cancelled")
+            # NUMBER 33 — detect upsell in bot reply → mark as offered
+            _UPSELL_SIGNALS = ["تريد نضيف", "نضيف", "تريد تضيف", "تحب تضيف", "تبي تضيف"]
+            if not session.upsell_offered and any(sig in message for sig in _UPSELL_SIGNALS):
+                session.upsell_offered = True
+                updated.append("upsell_offered=True")
             session.touch()
             return updated
 

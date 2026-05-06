@@ -383,6 +383,11 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # Read channel/platform from conversation record
     _platform = (conv["channel"] if conv and "channel" in conv.keys() else "") or "unknown"
 
+    # NUMBER 34 — Order Status Query: detect and inject latest order context
+    _order_status_context = _get_order_status_context(
+        restaurant_id, conv["customer_id"], customer_message
+    )
+
     # Build system prompt (NUMBER 27: pass order session for state injection)
     system_prompt = _build_system_prompt(
         restaurant=dict(restaurant) if restaurant else {},
@@ -398,6 +403,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         order_session=_ob_session,
         history=[dict(h) if not isinstance(h, dict) else h for h in history],
         customer_message=customer_message,
+        order_status_context=_order_status_context,
     )
 
     # Call OpenAI
@@ -562,6 +568,61 @@ def _ob_clear_state(conversation_id: str) -> None:
             conn.close()
     except Exception as _e:
         logger.debug(f"[order_brain] clear_state failed: {_e}")
+
+
+# NUMBER 34 — order status query phrases
+_ORDER_STATUS_PHRASES = [
+    "وين طلبي", "وين الطلب", "وصل طلبي", "وصل الطلب",
+    "متى يجي الطلب", "متى يوصل", "كم باقي", "شلون الطلب",
+    "حالة الطلب", "اشيك الطلب", "شيكلي الطلب", "تأكيد الطلب",
+    "مكو طلب", "ما وصل الطلب", "طلبي وين", "أين طلبي",
+]
+
+_ORDER_STATUS_LABELS = {
+    "pending":    "قيد التحضير 🍳",
+    "confirmed":  "تم تأكيده ✅",
+    "preparing":  "جاري التحضير 👨‍🍳",
+    "ready":      "جاهز للتسليم 🎉",
+    "delivered":  "تم التوصيل ✅",
+    "cancelled":  "ملغي ❌",
+}
+
+
+def _get_order_status_context(restaurant_id: str, customer_id: str, message: str) -> str:
+    """
+    NUMBER 34 — If message is an order status query, return a formatted latest-order
+    summary to inject into the system prompt. Returns '' otherwise.
+    """
+    if not any(phrase in message for phrase in _ORDER_STATUS_PHRASES):
+        return ""
+    try:
+        conn = database.get_db()
+        try:
+            order = conn.execute(
+                """SELECT o.id, o.status, o.total, o.type, o.address, o.created_at,
+                          GROUP_CONCAT(oi.name || ' ×' || oi.quantity, '، ') AS items_str
+                   FROM orders o
+                   LEFT JOIN order_items oi ON oi.order_id = o.id
+                   WHERE o.restaurant_id=? AND o.customer_id=?
+                   GROUP BY o.id
+                   ORDER BY o.created_at DESC LIMIT 1""",
+                (restaurant_id, customer_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not order:
+            return "[لا يوجد طلب سابق مسجل لهذا العميل]"
+        status_label = _ORDER_STATUS_LABELS.get(order["status"] or "pending", order["status"])
+        items_str = order["items_str"] or "—"
+        total_str = f"{int(order['total']):,} د.ع" if order["total"] else "—"
+        order_type = "توصيل" if (order["type"] or "").lower() in ("delivery", "توصيل") else "استلام"
+        return (
+            f"[معلومة طلب العميل الأخير — استخدمها للرد على سؤاله عن الطلب:\n"
+            f"الحالة: {status_label} | المنتجات: {items_str} | المجموع: {total_str} | {order_type}]"
+        )
+    except Exception as _e:
+        logger.debug(f"[order_status34] lookup failed: {_e}")
+        return ""
 
 
 def _detect_escalation(message: str, custom_keywords: list) -> bool:
@@ -775,6 +836,7 @@ def _build_system_prompt(
     order_session=None,
     history: list = None,
     customer_message: str = "",
+    order_status_context: str = "",
 ) -> str:
     """Build the full system prompt for the AI bot."""
     bot_name = settings.get("bot_name") or "مساعد ذكي"
@@ -2390,6 +2452,10 @@ def _build_system_prompt(
 6. لا صفات مبالغ (مميز/رائع/لذيذ جداً)؟
 7. لهجة عراقية دارجة؟
 """
+
+    # ── NUMBER 34 — Order Status Context ─────────────────────────────────────
+    if order_status_context:
+        prompt += f"\n## NUMBER 34 — حالة طلب العميل\n{order_status_context}\n"
 
     # ── NUMBER 31 — Arabic Persona Engine ────────────────────────────────────
     prompt += """
