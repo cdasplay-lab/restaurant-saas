@@ -71,6 +71,39 @@ CANCELLATION_KEYWORDS = [
     "احذف الطلب", "ما أريده", "شلت الطلب", "لا ما أريد الطلب",
 ]
 
+# NUMBER 32 — order intent keywords (customer wants to order but may not name a product)
+ORDER_INTENT_KEYWORDS = [
+    "أريد", "اريد", "ابي", "أبي", "أبغى", "ابغى", "عايز", "بدي",
+    "أطلب", "اطلب", "خذلي", "جيبلي", "أخذ", "أشتري", "أجيب",
+    "حابب آخذ", "حابب أطلب", "أوصيلي", "وصّلي",
+]
+
+# NUMBER 32 — common product name aliases / dialectal variations
+# Map fuzzy name → canonical name substring to look for in products list
+_PRODUCT_ALIASES: Dict[str, str] = {
+    "بركر":     "برجر",
+    "بيرجر":    "برجر",
+    "بوركر":    "برجر",
+    "بورغر":    "برجر",
+    "زنجر":     "زينجر",
+    "زينگر":    "زينجر",
+    "بروستد":   "بروستد",   # exact but common misspelling target
+    "مبروستد":  "بروستد",
+    "برستد":    "بروستد",
+    "كوكاكولا": "كولا",
+    "كوكا":     "كولا",
+    "ببسي":     "بيبسي",
+    "شاورمة":   "شاورما",
+    "شورما":    "شاورما",
+    "فريز":     "فرايز",
+    "فرايس":    "فرايز",
+    "بطاطس":    "بطاطا",
+    "بطاطيس":   "بطاطا",
+    "دجاجة":    "دجاج",
+    "فراخ":     "دجاج",
+    "وجبة دجاج": "دجاج",
+}
+
 # Arabic number words → int
 _AR_NUMBERS = {
     "واحد": 1, "وحدة": 1, "وحده": 1, "اثنين": 2, "ثنتين": 2,
@@ -153,6 +186,7 @@ class OrderSession:
     confirmation_status: str = "collecting"   # collecting | awaiting_confirm | confirmed | cancelled
     last_question_asked: Optional[str] = None
     customer_frustrated: bool = False
+    order_intent_detected: bool = False      # NUMBER 32 — customer wants to order but no product matched
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -235,12 +269,18 @@ class OrderSession:
         )
 
     def generate_confirmation_message(self, order_number: str = "") -> str:
-        """NUMBER 30 — Generate the final formatted order confirmation."""
+        """NUMBER 30/32 — Generate the final formatted order confirmation with total."""
         lines = ["✅ طلبك وصلنا!"]
         lines.append("━━━━━━━━━━━━━")
+        total = 0
         for item in self.items:
-            lines.append(f"• {item.name} × {item.qty}")
+            item_total = int(item.price) * item.qty
+            total += item_total
+            price_str = f" — {item_total:,} د.ع" if item.price else ""
+            lines.append(f"• {item.name} × {item.qty}{price_str}")
         lines.append("━━━━━━━━━━━━━")
+        if total > 0:
+            lines.append(f"💰 المجموع: {total:,} د.ع")
         if self.order_type == "delivery":
             lines.append(f"🚗 توصيل — {self.address or '—'}")
         else:
@@ -264,6 +304,7 @@ class OrderSession:
         has_any = (
             self.has_items() or self.order_type is not None
             or self.customer_name or self.phone
+            or self.order_intent_detected
         )
         if not has_any:
             return ""
@@ -297,6 +338,10 @@ class OrderSession:
             lines.append("")
             lines.append("⏭️ كل المعلومات مكتملة — اطلب التأكيد بملخص قصير")
 
+        if self.order_intent_detected and not self.has_items():
+            lines.append("")
+            lines.append("⚠️ العميل أعرب عن نية الطلب لكن ما ذكر منتجاً من القائمة — اذكر 3-4 أصناف متاحة واسأله أيهم يريد")
+
         if self.customer_frustrated:
             lines.append("")
             lines.append("⚠️ العميل أبدى إحباطاً — اعتذر بجملة واحدة قصيرة ثم واصل من الخطوة التالية مباشرة")
@@ -319,6 +364,7 @@ class OrderSession:
             "confirmation_status": self.confirmation_status,
             "last_question_asked": self.last_question_asked,
             "customer_frustrated": self.customer_frustrated,
+            "order_intent_detected": self.order_intent_detected,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -338,6 +384,7 @@ class OrderSession:
         sess.confirmation_status = d.get("confirmation_status", "collecting")
         sess.last_question_asked = d.get("last_question_asked")
         sess.customer_frustrated = d.get("customer_frustrated", False)
+        sess.order_intent_detected = d.get("order_intent_detected", False)
         sess.created_at = d.get("created_at", time.time())
         sess.updated_at = d.get("updated_at", time.time())
         return sess
@@ -430,8 +477,15 @@ class OrderBrain:
 
         msg = message.strip()
 
-        # 1. Items — match product names
+        # 1. Items — match product names (exact + fuzzy)
+        _items_before = len(session.items)
         _extract_items(session, msg, products, updated)
+
+        # NUMBER 32 — detect order intent without a matched product
+        _has_intent = any(kw in msg for kw in ORDER_INTENT_KEYWORDS)
+        _items_added = len(session.items) > _items_before
+        if _has_intent and not _items_added and not session.has_items():
+            session.order_intent_detected = True
 
         # 2. Order type
         if session.order_type is None:
@@ -496,13 +550,40 @@ class OrderBrain:
 
 # ── Slot extraction helpers ────────────────────────────────────────────────────
 
+def _fuzzy_product_match(msg: str, products: List[dict]) -> Optional[dict]:
+    """
+    NUMBER 32 — Find a product approximately mentioned via dialect alias or ال-stripping.
+    Returns first matching product dict, or None.
+    """
+    # Check alias table first (e.g. "بركر" → "برجر")
+    for alias, canonical in _PRODUCT_ALIASES.items():
+        if alias in msg:
+            for p in products:
+                name = (p.get("name") or "").strip()
+                if canonical in name:
+                    return p
+
+    # Strip ال prefix from each word in msg and try again
+    words = msg.split()
+    stripped_words = {re.sub(r'^ال', '', w) for w in words if len(w) >= 4}
+    for p in products:
+        name = (p.get("name") or "").strip()
+        name_noal = re.sub(r'^ال', '', name)
+        if len(name_noal) >= 3 and name_noal in stripped_words:
+            return p
+
+    return None
+
+
 def _extract_items(
     session: OrderSession,
     msg: str,
     products: List[dict],
     updated: List[str],
 ) -> None:
-    """Match product names in message and update session items."""
+    """Match product names in message and update session items (exact + fuzzy)."""
+    matched_ids: set = set()
+
     for p in products:
         name = (p.get("name") or "").strip()
         if not name:
@@ -522,6 +603,24 @@ def _extract_items(
                     product_id=str(p.get("id") or ""),
                 ))
                 updated.append(f"item_added:{name}×{qty}")
+            matched_ids.add(str(p.get("id") or name))
+
+    # NUMBER 32 — fuzzy fallback: try alias/ال-strip if no exact match found yet
+    if not matched_ids:
+        fuzzy_p = _fuzzy_product_match(msg, products)
+        if fuzzy_p:
+            fname = (fuzzy_p.get("name") or "").strip()
+            existing = next((it for it in session.items if it.name == fname), None)
+            if not existing:
+                qty = _extract_qty(msg, fname)
+                session.items.append(OrderItem(
+                    name=fname,
+                    qty=qty,
+                    price=float(fuzzy_p.get("price") or 0),
+                    product_id=str(fuzzy_p.get("id") or ""),
+                ))
+                updated.append(f"item_added_fuzzy:{fname}×{qty}")
+                logger.info(f"[order_brain32] fuzzy match: msg_excerpt={msg[:30]!r} → product={fname!r}")
 
 
 def _extract_qty(msg: str, product_name: str) -> int:
