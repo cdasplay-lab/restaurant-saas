@@ -71,6 +71,30 @@ CANCELLATION_KEYWORDS = [
     "احذف الطلب", "ما أريده", "شلت الطلب", "لا ما أريد الطلب",
 ]
 
+# NUMBER 35 — Order Edit Engine
+# Prefixes that signal item removal ("شيل الكولا", "احذف البطاطا", "ما أريد الكولا")
+REMOVE_PREFIXES = [
+    "شيل", "اشيل", "شيله", "شيلها", "شيلهم",
+    "احذف", "حذف", "حذفه", "حذفها",
+    "ما أريد", "ما اريد", "ما ابي",
+    "امسح", "مسح",
+    "لا أريد", "لا اريد",
+]
+
+# Patterns that signal full order reset
+CLEAR_ORDER_PHRASES = [
+    "ابدأ من جديد", "ابدأ من الأول", "من أول وجديد",
+    "امسح الطلب كله", "امسح الطلب",
+    "ابدأ طلب جديد", "أبدأ من الصفر", "أبدأ من جديد",
+    "الغ كل شي وابدأ",
+]
+
+# Regex for item swap: "بدل الكولا بسفن أب" / "غير البرجر لزينجر"
+_SWAP_RE = re.compile(
+    r'(?:بدل|غيّر|غير|بدّل)\s+(.{2,20}?)\s+(?:بـ?|لـ?|إلى\s*|الى\s*|على\s*)\s*(.{2,20})',
+    re.UNICODE,
+)
+
 # NUMBER 32 — order intent keywords (customer wants to order but may not name a product)
 ORDER_INTENT_KEYWORDS = [
     "أريد", "اريد", "ابي", "أبي", "أبغى", "ابغى", "عايز", "بدي",
@@ -207,6 +231,24 @@ class OrderSession:
 
     def reset_frustration(self) -> None:
         self.customer_frustrated = False
+
+    # ── NUMBER 35 — Order Edit ─────────────────────────────────────────────────
+
+    def remove_item(self, product_name: str) -> bool:
+        """Remove item by name. Returns True if removed."""
+        before = len(self.items)
+        self.items = [it for it in self.items if it.name != product_name]
+        return len(self.items) < before
+
+    def clear_order(self) -> None:
+        """Reset all order fields except customer identity (name + phone)."""
+        self.items.clear()
+        self.order_type = None
+        self.address = None
+        self.payment_method = None
+        self.confirmation_status = "collecting"
+        self.upsell_offered = False
+        self.order_intent_detected = False
 
     # ── Slot logic ─────────────────────────────────────────────────────────────
 
@@ -385,6 +427,10 @@ class OrderSession:
             lines.append("")
             lines.append("⚠️ العميل أبدى إحباطاً — اعتذر بجملة واحدة قصيرة ثم واصل من الخطوة التالية مباشرة")
 
+        if self.has_items() and self.confirmation_status == "collecting":
+            lines.append("")
+            lines.append("ℹ️ العميل يقدر يقول 'شيل [منتج]' أو 'بدل [أ] بـ[ب]' أو 'ابدأ من جديد' لتعديل الطلب")
+
         lines.append("")
         return "\n".join(lines)
 
@@ -523,9 +569,22 @@ class OrderBrain:
 
         msg = message.strip()
 
+        # NUMBER 35 — Order Edit: clear / swap / remove BEFORE adding new items
+        if any(phrase in msg for phrase in CLEAR_ORDER_PHRASES):
+            session.clear_order()
+            updated.append("order_cleared")
+            session.touch()
+            return updated
+
+        _names_before_edit = {it.name for it in session.items}
+        _apply_swap(session, msg, products, updated)
+        _apply_remove(session, msg, products, updated)
+        # Items removed/swapped away must not be re-added by _extract_items()
+        _edit_removed = _names_before_edit - {it.name for it in session.items}
+
         # 1. Items — match product names (exact + fuzzy)
         _items_before = len(session.items)
-        _extract_items(session, msg, products, updated)
+        _extract_items(session, msg, products, updated, skip_names=_edit_removed)
 
         # NUMBER 32 — detect order intent without a matched product
         _has_intent = any(kw in msg for kw in ORDER_INTENT_KEYWORDS)
@@ -626,13 +685,17 @@ def _extract_items(
     msg: str,
     products: List[dict],
     updated: List[str],
+    skip_names: set = None,
 ) -> None:
     """Match product names in message and update session items (exact + fuzzy)."""
+    skip_names = skip_names or set()
     matched_ids: set = set()
 
     for p in products:
         name = (p.get("name") or "").strip()
         if not name:
+            continue
+        if name in skip_names:
             continue
         if name in msg:
             qty = _extract_qty(msg, name)
@@ -656,6 +719,8 @@ def _extract_items(
         fuzzy_p = _fuzzy_product_match(msg, products)
         if fuzzy_p:
             fname = (fuzzy_p.get("name") or "").strip()
+            if fname in skip_names:
+                return
             existing = next((it for it in session.items if it.name == fname), None)
             if not existing:
                 qty = _extract_qty(msg, fname)
@@ -759,6 +824,101 @@ def _extract_phone(msg: str) -> Optional[str]:
     if m:
         return m.group(0)
     return None
+
+
+# ── NUMBER 35 — Order Edit helpers ────────────────────────────────────────────
+
+def _apply_remove(
+    session: OrderSession,
+    msg: str,
+    products: List[dict],
+    updated: List[str],
+) -> None:
+    """
+    NUMBER 35 — Remove items explicitly named with a removal prefix.
+    Handles: "شيل الكولا", "احذف البطاطا", "ما أريد الكولا", "بدون الكولا"
+    Only removes items that are already in the session.
+    """
+    for item in list(session.items):
+        name = item.name
+
+        # "بدون [name]" pattern
+        if f"بدون {name}" in msg or f"بدون ال{name}" in msg:
+            if session.remove_item(name):
+                updated.append(f"item_removed:{name}")
+            continue
+
+        # REMOVE_PREFIXES + product name both present in message
+        for prefix in REMOVE_PREFIXES:
+            if prefix in msg and name in msg:
+                if session.remove_item(name):
+                    updated.append(f"item_removed:{name}")
+                break
+
+
+def _apply_swap(
+    session: OrderSession,
+    msg: str,
+    products: List[dict],
+    updated: List[str],
+) -> None:
+    """
+    NUMBER 35 — Swap an item for another.
+    Handles: "بدل الكولا بسفن أب", "غير البرجر لزينجر"
+    Removes old item; adds new item if found in products (exact or fuzzy).
+    """
+    m = _SWAP_RE.search(msg)
+    if not m:
+        return
+
+    from_text = m.group(1).strip()
+    to_text   = m.group(2).strip()
+
+    # Find existing item matching from_text
+    removed_item = None
+    for item in list(session.items):
+        if item.name in from_text:
+            removed_item = item
+            break
+        # Try alias reverse-lookup
+        for alias, canonical in _PRODUCT_ALIASES.items():
+            if alias in from_text and canonical in item.name:
+                removed_item = item
+                break
+        if removed_item:
+            break
+
+    if not removed_item:
+        return
+
+    # Find new product matching to_text (exact then fuzzy)
+    new_product = None
+    for p in products:
+        pname = (p.get("name") or "")
+        if pname and pname in to_text:
+            new_product = p
+            break
+    if not new_product:
+        new_product = _fuzzy_product_match(to_text, products)
+
+    qty = removed_item.qty
+    session.remove_item(removed_item.name)
+    updated.append(f"item_removed:{removed_item.name}")
+
+    if new_product:
+        fname = (new_product.get("name") or "").strip()
+        if fname and not any(it.name == fname for it in session.items):
+            session.items.append(OrderItem(
+                name=fname,
+                qty=qty,
+                price=float(new_product.get("price") or 0),
+                product_id=str(new_product.get("id") or ""),
+            ))
+            updated.append(f"item_swapped:{removed_item.name}→{fname}")
+            logger.info(
+                f"[order_brain35] swap: {removed_item.name!r} → {fname!r} "
+                f"conv={session.conversation_id}"
+            )
 
 
 # ── Public utility ─────────────────────────────────────────────────────────────
