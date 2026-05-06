@@ -519,10 +519,33 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             if _ob_session.confirmation_status == "confirmed" and _ob_session.is_complete():
                 import uuid as _uuid_mod
                 _order_num = str(_uuid_mod.uuid4())[:6].upper()
-                reply_text = _ob_session.generate_confirmation_message(order_number=_order_num)
-                OrderBrain.clear_session(conversation_id)
-                _ob_clear_state(conversation_id)
-                logger.info(f"[order_brain] NUMBER 30 confirmation sent conv={conversation_id} order={_order_num}")
+                # NUMBER 38 — read delivery fee + min order from settings
+                _df = int((settings["delivery_fee"] if settings else None) or 0)
+                _mo = int((settings["min_order"]    if settings else None) or 0)
+                if _ob_session.is_below_min_order(_mo):
+                    # Reject confirmation — tell customer the minimum
+                    _ob_session.confirmation_status = "collecting"
+                    _items_t = _ob_session.items_total()
+                    reply_text = (
+                        f"عذراً 🙏 الحد الأدنى للطلب {_mo:,} د.ع — "
+                        f"مجموعك الحالي {_items_t:,} د.ع. تريد تضيف شيء؟"
+                    )
+                    _ob_save_state(conversation_id, _ob_session)
+                    logger.info(
+                        f"[order_brain38] below min_order={_mo} total={_items_t} "
+                        f"conv={conversation_id}"
+                    )
+                else:
+                    _fee_for_delivery = _df if _ob_session.order_type == "delivery" else 0
+                    reply_text = _ob_session.generate_confirmation_message(
+                        order_number=_order_num, delivery_fee=_fee_for_delivery
+                    )
+                    OrderBrain.clear_session(conversation_id)
+                    _ob_clear_state(conversation_id)
+                    logger.info(
+                        f"[order_brain] NUMBER 30 confirmation sent "
+                        f"conv={conversation_id} order={_order_num}"
+                    )
             else:
                 OrderBrain.update_from_message(
                     _ob_session,

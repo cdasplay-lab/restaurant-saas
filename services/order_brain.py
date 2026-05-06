@@ -383,21 +383,34 @@ class OrderSession:
             f"{self.customer_name}، {self.phone}، {self.payment_method}. تثبت؟"
         )
 
-    def generate_confirmation_message(self, order_number: str = "") -> str:
-        """NUMBER 30/32 — Generate the final formatted order confirmation with total."""
+    def items_total(self) -> int:
+        """NUMBER 38 — Sum of all item prices × quantities (excludes delivery fee)."""
+        return sum(int(it.price) * it.qty for it in self.items)
+
+    def is_below_min_order(self, min_order: int) -> bool:
+        """NUMBER 38 — True if items total is below the restaurant's minimum order amount."""
+        return min_order > 0 and self.items_total() < min_order
+
+    def generate_confirmation_message(self, order_number: str = "", delivery_fee: int = 0) -> str:
+        """NUMBER 30/32/38 — Generate the final formatted order confirmation with total."""
         lines = ["✅ طلبك وصلنا!"]
         lines.append("━━━━━━━━━━━━━")
-        total = 0
+        items_sum = 0
         for item in self.items:
             item_total = int(item.price) * item.qty
-            total += item_total
+            items_sum += item_total
             price_str = f" — {item_total:,} د.ع" if item.price else ""
             lines.append(f"• {item.name} × {item.qty}{price_str}")
             if item.notes:
                 lines.append(f"  ↳ {item.notes}")
         lines.append("━━━━━━━━━━━━━")
-        if total > 0:
-            lines.append(f"💰 المجموع: {total:,} د.ع")
+        # NUMBER 38 — add delivery fee line and include in grand total
+        _fee = delivery_fee if (self.order_type == "delivery" and delivery_fee > 0) else 0
+        grand_total = items_sum + _fee
+        if _fee > 0:
+            lines.append(f"🚚 رسوم التوصيل: {_fee:,} د.ع")
+        if grand_total > 0:
+            lines.append(f"💰 المجموع: {grand_total:,} د.ع")
         if self.order_type == "delivery":
             lines.append(f"🚗 توصيل — {self.address or '—'}")
         else:
