@@ -597,6 +597,30 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 else:
                     _fee_for_delivery = _df if _ob_session.order_type == "delivery" else 0
                     _dt_str = str((settings["delivery_time"] if settings else None) or "")
+                    # Promo code — validate against DB and set discount on session
+                    if _ob_session.promo_code and _ob_session.promo_discount == 0:
+                        try:
+                            _pc_row = conn.execute(
+                                "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
+                                (restaurant_id, _ob_session.promo_code)
+                            ).fetchone()
+                            if _pc_row:
+                                _pc = dict(_pc_row)
+                                _total_for_promo = _ob_session.items_total() + _fee_for_delivery
+                                if (not _pc["expires_at"] or _pc["expires_at"] >= str(__import__('datetime').date.today())) \
+                                        and (_pc["max_uses"] == 0 or _pc["uses_count"] < _pc["max_uses"]) \
+                                        and _total_for_promo >= _pc["min_order"]:
+                                    if _pc["discount_type"] == "percent":
+                                        _ob_session.promo_discount = int(_total_for_promo * _pc["discount_value"] / 100)
+                                    else:
+                                        _ob_session.promo_discount = min(int(_pc["discount_value"]), _total_for_promo)
+                                    conn.execute(
+                                        "UPDATE promo_codes SET uses_count=uses_count+1 WHERE id=?",
+                                        (_pc["id"],)
+                                    )
+                                    conn.commit()
+                        except Exception as _pe:
+                            logger.warning(f"[promo] validation failed: {_pe}")
                     reply_text = _ob_session.generate_confirmation_message(
                         order_number=_order_num,
                         delivery_fee=_fee_for_delivery,

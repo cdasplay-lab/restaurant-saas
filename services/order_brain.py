@@ -252,6 +252,8 @@ class OrderSession:
     repeat_order_failed: bool = False        # NUMBER 36 — repeat requested but no previous order found in DB
     sold_out_rejected: List[str] = field(default_factory=list)  # NUMBER 42 — transient, not persisted
     qty_capped: List[str] = field(default_factory=list)         # NUMBER 43 — transient: items whose qty was capped
+    promo_code: Optional[str] = None                            # promo code entered by customer
+    promo_discount: int = 0                                     # discount amount in currency units
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -440,6 +442,11 @@ class OrderSession:
         grand_total = items_sum + _fee
         if _fee > 0:
             lines.append(f"🚚 رسوم التوصيل: {_fee:,} د.ع")
+        # Promo code discount
+        _discount = int(self.promo_discount) if self.promo_discount else 0
+        if _discount > 0 and self.promo_code:
+            lines.append(f"🎟️ خصم ({self.promo_code}): -{_discount:,} د.ع")
+            grand_total = max(0, grand_total - _discount)
         if grand_total > 0:
             lines.append(f"💰 المجموع: {grand_total:,} د.ع")
         if self.order_type == "delivery":
@@ -540,6 +547,8 @@ class OrderSession:
             "upsell_offered": self.upsell_offered,
             "repeat_order_detected": self.repeat_order_detected,
             "repeat_order_failed": self.repeat_order_failed,
+            "promo_code": self.promo_code,
+            "promo_discount": self.promo_discount,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -563,6 +572,8 @@ class OrderSession:
         sess.upsell_offered = d.get("upsell_offered", False)
         sess.repeat_order_detected = d.get("repeat_order_detected", False)
         sess.repeat_order_failed = d.get("repeat_order_failed", False)
+        sess.promo_code = d.get("promo_code")
+        sess.promo_discount = int(d.get("promo_discount") or 0)
         sess.created_at = d.get("created_at", time.time())
         sess.updated_at = d.get("updated_at", time.time())
         return sess
@@ -731,6 +742,16 @@ class OrderBrain:
                     session.payment_method = method
                     updated.append(f"payment_method={method}")
                     break
+
+        # 6b. Promo code — detect uppercase alphanumeric code preceded by trigger word
+        if not session.promo_code:
+            _promo_m = re.search(
+                r'(?:كود|رمز|خصم|بروموكود|promo|code)[:\s]+([A-Z0-9]{3,20})',
+                msg, re.IGNORECASE
+            )
+            if _promo_m:
+                session.promo_code = _promo_m.group(1).upper()
+                updated.append(f"promo_code={session.promo_code}")
 
         # 7. Confirmation
         if any(kw in msg for kw in CONFIRMATION_KEYWORDS):

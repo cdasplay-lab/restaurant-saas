@@ -553,7 +553,33 @@ async def log_all_requests(request: Request, call_next):
     elif path.startswith("/webhook"):
         logger.info(f"[request-log] {method} {path}")
     response = await call_next(request)
+    # #9 — Alert super admin on 500 errors via Telegram
+    if response.status_code == 500:
+        asyncio.create_task(_alert_super_admin_error(method, path, response.status_code))
     return response
+
+
+async def _alert_super_admin_error(method: str, path: str, status_code: int) -> None:
+    """Send a Telegram alert to the super-admin notification chat on 500 errors."""
+    try:
+        _alert_token = os.getenv("ALERT_BOT_TOKEN", "")
+        _alert_chat  = os.getenv("ALERT_CHAT_ID", "")
+        if not _alert_token or not _alert_chat:
+            return
+        import httpx as _httpx
+        from datetime import datetime as _dt
+        text = (
+            f"🚨 <b>500 Error</b>\n"
+            f"<code>{method} {path}</code>\n"
+            f"🕐 {_dt.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        )
+        async with _httpx.AsyncClient(timeout=8) as _cl:
+            await _cl.post(
+                f"https://api.telegram.org/bot{_alert_token}/sendMessage",
+                json={"chat_id": _alert_chat, "text": text, "parse_mode": "HTML"}
+            )
+    except Exception as _e:
+        logger.debug(f"[alert] failed to send error alert: {_e}")
 
 
 @app.middleware("http")
@@ -3755,6 +3781,127 @@ async def delete_reply_template(tid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# ── Promo Codes ───────────────────────────────────────────────────────────────
+
+@app.get("/api/promo-codes")
+async def list_promo_codes(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM promo_codes WHERE restaurant_id=? ORDER BY created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return {"promo_codes": [dict(r) for r in rows]}
+
+
+@app.post("/api/promo-codes", status_code=201)
+async def create_promo_code(req: Request, user=Depends(current_user)):
+    data = await req.json()
+    code = (data.get("code") or "").strip().upper()
+    if not code:
+        raise HTTPException(400, "كود الخصم مطلوب")
+    discount_type  = data.get("discount_type", "percent")   # percent | fixed
+    discount_value = float(data.get("discount_value") or 0)
+    min_order      = float(data.get("min_order") or 0)
+    max_uses       = int(data.get("max_uses") or 0)
+    expires_at     = str(data.get("expires_at") or "")
+    if discount_type not in ("percent", "fixed"):
+        raise HTTPException(400, "discount_type يجب أن يكون percent أو fixed")
+    if discount_type == "percent" and not (0 < discount_value <= 100):
+        raise HTTPException(400, "نسبة الخصم يجب أن تكون بين 1 و 100")
+    pid = str(uuid.uuid4())
+    conn = database.get_db()
+    try:
+        conn.execute(
+            "INSERT INTO promo_codes (id, restaurant_id, code, discount_type, discount_value, "
+            "min_order, max_uses, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            (pid, user["restaurant_id"], code, discount_type, discount_value,
+             min_order, max_uses, expires_at)
+        )
+        conn.commit()
+    except Exception as _e:
+        conn.close()
+        raise HTTPException(409, "الكود موجود مسبقاً") from _e
+    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.patch("/api/promo-codes/{pid}")
+async def update_promo_code(pid: str, req: Request, user=Depends(current_user)):
+    data = await req.json()
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
+                        (pid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404)
+    allowed = {"discount_type", "discount_value", "min_order", "max_uses", "expires_at", "is_active"}
+    upd = {k: v for k, v in data.items() if k in allowed}
+    if upd:
+        upd["updated_at"] = "CURRENT_TIMESTAMP"
+        set_clause = ", ".join(f"{k}=?" for k in upd if k != "updated_at")
+        set_clause += ", updated_at=CURRENT_TIMESTAMP"
+        vals = [v for k, v in upd.items() if k != "updated_at"]
+        conn.execute(f"UPDATE promo_codes SET {set_clause} WHERE id=?", [*vals, pid])
+        conn.commit()
+    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/promo-codes/{pid}")
+async def delete_promo_code(pid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
+                        (pid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404)
+    conn.execute("DELETE FROM promo_codes WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/promo-codes/validate")
+async def validate_promo_code(req: Request, user=Depends(current_user)):
+    """Check if a promo code is valid for a given order total. Returns discount amount."""
+    data = await req.json()
+    code  = (data.get("code") or "").strip().upper()
+    total = float(data.get("order_total") or 0)
+    if not code:
+        raise HTTPException(400, "كود مطلوب")
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
+        (user["restaurant_id"], code)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"valid": False, "reason": "الكود غير صحيح أو منتهي"}
+    row = dict(row)
+    # Expiry check
+    if row["expires_at"] and row["expires_at"] < str(datetime.now().date()):
+        return {"valid": False, "reason": "انتهت صلاحية الكود"}
+    # Max uses
+    if row["max_uses"] > 0 and row["uses_count"] >= row["max_uses"]:
+        return {"valid": False, "reason": "استُنفد الحد الأقصى لاستخدامات هذا الكود"}
+    # Min order
+    if total < row["min_order"]:
+        return {"valid": False, "reason": f"الحد الأدنى للطلب لاستخدام هذا الكود {row['min_order']:,.0f} د.ع"}
+    # Calculate discount
+    if row["discount_type"] == "percent":
+        discount = round(total * row["discount_value"] / 100)
+    else:
+        discount = min(row["discount_value"], total)
+    return {
+        "valid": True,
+        "discount_type": row["discount_type"],
+        "discount_value": row["discount_value"],
+        "discount_amount": discount,
+        "final_total": max(0, total - discount),
+    }
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
@@ -8192,6 +8339,14 @@ async def connect_whatsapp(user=Depends(current_user)):
 @app.post("/webhook/telegram/{restaurant_id}")
 async def webhook_telegram(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     update = await req.json()
+    # #8 — Rate limit: 30 messages/min per sender per restaurant
+    _tg_sender = str(
+        (update.get("message") or update.get("callback_query") or {})
+        .get("from", {}).get("id", "")
+    )
+    if _tg_sender and not _check_rate(_tg_sender, limit=30, window=60, scope=f"wh:{restaurant_id}"):
+        logger.warning(f"[webhook] telegram rate-limit sender={_tg_sender} restaurant={restaurant_id}")
+        return {"ok": True}  # 200 so Telegram doesn't retry
     logger.info(f"[webhook] telegram POST received — restaurant={restaurant_id} update_id={update.get('update_id','?')}")
     background_tasks.add_task(webhooks.handle_telegram, restaurant_id, update)
     return {"ok": True}
@@ -8239,6 +8394,15 @@ async def webhook_whatsapp(restaurant_id: str, req: Request, background_tasks: B
                 logger.warning(f"[whatsapp] invalid HMAC signature — restaurant={restaurant_id}")
                 raise HTTPException(403, "Invalid signature")
     data = await req.json()
+    # #8 — Rate limit by WhatsApp sender
+    _wa_sender = ""
+    try:
+        _wa_sender = data["entry"][0]["changes"][0]["value"]["messages"][0]["from"]
+    except Exception:
+        pass
+    if _wa_sender and not _check_rate(_wa_sender, limit=30, window=60, scope=f"wh:{restaurant_id}"):
+        logger.warning(f"[webhook] whatsapp rate-limit sender={_wa_sender} restaurant={restaurant_id}")
+        return {"status": "ok"}
     logger.info(f"[webhook] whatsapp POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_whatsapp, restaurant_id, data)
     return {"status": "ok"}
@@ -8267,6 +8431,15 @@ async def verify_instagram(restaurant_id: str, req: Request):
 @app.post("/webhook/instagram/{restaurant_id}")
 async def webhook_instagram(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     data = await req.json()
+    # #8 — Rate limit by Instagram sender
+    _ig_sender = ""
+    try:
+        _ig_sender = data["entry"][0]["messaging"][0]["sender"]["id"]
+    except Exception:
+        pass
+    if _ig_sender and not _check_rate(_ig_sender, limit=30, window=60, scope=f"wh:{restaurant_id}"):
+        logger.warning(f"[webhook] instagram rate-limit sender={_ig_sender} restaurant={restaurant_id}")
+        return {"status": "ok"}
     logger.info(f"[webhook] instagram POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_instagram, restaurant_id, data)
     return {"status": "ok"}
@@ -8295,6 +8468,15 @@ async def verify_facebook(restaurant_id: str, req: Request):
 @app.post("/webhook/facebook/{restaurant_id}")
 async def webhook_facebook(restaurant_id: str, req: Request, background_tasks: BackgroundTasks):
     data = await req.json()
+    # #8 — Rate limit by Facebook sender
+    _fb_sender = ""
+    try:
+        _fb_sender = data["entry"][0]["messaging"][0]["sender"]["id"]
+    except Exception:
+        pass
+    if _fb_sender and not _check_rate(_fb_sender, limit=30, window=60, scope=f"wh:{restaurant_id}"):
+        logger.warning(f"[webhook] facebook rate-limit sender={_fb_sender} restaurant={restaurant_id}")
+        return {"status": "ok"}
     logger.info(f"[webhook] facebook POST received — restaurant={restaurant_id}")
     background_tasks.add_task(webhooks.handle_facebook, restaurant_id, data)
     return {"status": "ok"}

@@ -969,6 +969,28 @@ def _migrate_db(conn):
             dismissed_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS promo_codes (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            discount_type TEXT DEFAULT 'percent',
+            discount_value REAL DEFAULT 0,
+            min_order REAL DEFAULT 0,
+            max_uses INTEGER DEFAULT 0,
+            uses_count INTEGER DEFAULT 0,
+            expires_at TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_code ON promo_codes(restaurant_id, code)"
+        )
+    except Exception:
+        pass
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_active ON announcements(is_active, placement, priority)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ann_dismissal ON announcement_dismissals(announcement_id, restaurant_id, user_id)")
