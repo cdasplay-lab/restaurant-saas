@@ -1109,11 +1109,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             "extracted_order": None,
         }
 
-    # Intent-aware max_tokens budget (urgent mood → reduce by 40%)
+    # Intent-aware max_tokens budget (urgent mood → reduce by 40%; voice → cap at 60)
     _intent_fast  = _detect_intent_fast(customer_message)
     _max_tokens   = _INTENT_MAX_TOKENS.get(_intent_fast, _DEFAULT_MAX_TOKENS)
     if _mood == "urgent":
         _max_tokens = max(40, int(_max_tokens * 0.6))
+    if customer_message.startswith("[فويس]"):
+        _max_tokens = min(_max_tokens, 60)
 
     model     = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     # Temperature 0.3 — consistency over creativity for a cashier bot
@@ -1759,6 +1761,28 @@ def _validate_reply(reply_text: str, history: list, memory: dict, customer_messa
             issues.append(f"formal_opener:{_opener[:15]}")
             break
 
+    # 10b. Anti-repetition opener rotation — if last 2 bot replies used the same opener, rotate
+    _OPENER_POOL = ["تمام 🌷", "حاضر 🌷", "وصلني 🌷", "زين 🌷", "تم 🌷", "وصل 🌷", "أبشر 🌷"]
+    if history and len(history) >= 2:
+        _prev_bot = [
+            h["content"] for h in reversed(history)
+            if h.get("role") in ("bot", "assistant")
+        ][:2]
+        if len(_prev_bot) == 2:
+            _cur_opener = next((op for op in _OPENER_POOL if fixed.startswith(op)), None)
+            if _cur_opener:
+                _prev_openers = [
+                    next((op for op in _OPENER_POOL if p.startswith(op)), None)
+                    for p in _prev_bot
+                ]
+                if all(o == _cur_opener for o in _prev_openers if o):
+                    _alts = [op for op in _OPENER_POOL if op != _cur_opener]
+                    if _alts:
+                        import random as _rnd
+                        _new_opener = _rnd.choice(_alts)
+                        fixed = _new_opener + fixed[len(_cur_opener):]
+                        issues.append("opener_rotated")
+
     # 11. Word-count limit — trim to first 2 sentences if > 60 words
     if len(fixed.split()) > 60:
         import re as _re_wc
@@ -1775,7 +1799,53 @@ def _validate_reply(reply_text: str, history: list, memory: dict, customer_messa
         fixed = fixed[: _q_positions[0] + 1].strip()
         issues.append("second_question_removed")
 
-    # 13. Product hallucination guard — log if bot names something not in menu
+    # 13. Voice reply — enforce 1-sentence max (voice replies must be ultra-short)
+    _is_voice_msg = customer_message.startswith("[فويس]") if customer_message else False
+    if _is_voice_msg and len(fixed) >= 60:
+        import re as _re_v
+        _v_sents = [s.strip() for s in _re_v.split(r'[.،؟!\n]', fixed) if s.strip()]
+        if _v_sents:
+            fixed = _v_sents[0].rstrip(" .،") + " 🌷"
+            issues.append("voice_trimmed")
+
+    # 13b. Compound question check — detect "وشنو X" / "وبكم" / "وكيف" in one message
+    _COMPOUND_Q_MARKERS = ["وشنو", "وبكم", "وكيف", "ومتى", "ووين", "وكم", "وشو", "وهل"]
+    if customer_message and any(m in customer_message for m in _COMPOUND_Q_MARKERS):
+        # Customer asked 2 questions — bot reply should be longer than a one-liner
+        if len(fixed) < 40:
+            issues.append("compound_question_short_reply")
+
+    # 14. Reply consistency — detect contradiction with recent bot statements
+    if history:
+        import re as _re_con
+        _prev_bot_msgs = [
+            h["content"] for h in history[-8:]
+            if h.get("role") in ("bot", "assistant")
+        ]
+        _prev_bot_text = " ".join(_prev_bot_msgs)
+
+        # Delivery time contradiction: bot said X دقيقة before, now says different Y دقيقة
+        _prev_times = _re_con.findall(r'(\d+)\s*دقيقة', _prev_bot_text)
+        _cur_times  = _re_con.findall(r'(\d+)\s*دقيقة', fixed)
+        if _prev_times and _cur_times:
+            _prev_t = int(_prev_times[-1])
+            _cur_t  = int(_cur_times[-1])
+            if abs(_prev_t - _cur_t) > 10:  # more than 10 min difference
+                issues.append(f"time_contradiction:{_prev_t}→{_cur_t}")
+
+        # Price contradiction: bot quoted X before, now quotes very different Y for same item
+        _prev_prices = _re_con.findall(r'(\d[\d,]+)\s*د\.ع', _prev_bot_text)
+        _cur_prices  = _re_con.findall(r'(\d[\d,]+)\s*د\.ع', fixed)
+        if _prev_prices and _cur_prices:
+            try:
+                _prev_p = int(_prev_prices[-1].replace(",", ""))
+                _cur_p  = int(_cur_prices[-1].replace(",", ""))
+                if _prev_p > 0 and abs(_prev_p - _cur_p) / _prev_p > 0.5:
+                    issues.append(f"price_contradiction:{_prev_p}→{_cur_p}")
+            except (ValueError, ZeroDivisionError):
+                pass
+
+    # 15. Product hallucination guard — log if bot names something not in menu
     if products:
         import re as _re_ph
         _product_names = {(p.get("name") or "").strip().lower() for p in products if p.get("name")}
