@@ -147,6 +147,124 @@ POSITIVE_EMOJI_TRIGGERS = ["😍", "❤️", "🥰", "😘", "💙", "💚", "�
 _GULF_MARKERS = {"ابي", "تبي", "وش", "وايد", "ودي", "ابغى", "ابغ", "بغا", "خوي", "يالله"}
 _IRAQI_MARKERS = {"شنو", "كلش", "هسه", "باچر", "ويا", "وياكم", "شگد", "واجد"}
 
+# ── Intent → max_tokens budget ────────────────────────────────────────────────
+_INTENT_MAX_TOKENS: dict = {
+    "greeting":              60,
+    "thanks":                40,
+    "general_chat":          60,
+    "identity_question":     60,
+    "price_question":       110,
+    "menu_request":         180,
+    "cheapest_item":        110,
+    "recommendation":       130,
+    "direct_order":         100,
+    "repeated_confirmation": 160,
+    "order_missing_name":    60,
+    "order_missing_address": 60,
+    "order_missing_payment": 60,
+    "order_missing_delivery":60,
+    "modify_order":          80,
+    "cancel_order":          70,
+    "complaint":            130,
+    "angry_complaint":      100,
+    "complaint_cold_food":  110,
+    "complaint_missing_item":120,
+    "complaint_delay":      110,
+    "refund_replace":       120,
+    "human_handoff":         60,
+    "unavailable_item":      80,
+    "follow_up":             90,
+    "story_reply":          100,
+    "memory_same_order":    140,
+    "voice_order":          140,
+}
+_DEFAULT_MAX_TOKENS = 220
+
+# ── Reply Cache — FAQ patterns answered without OpenAI ────────────────────────
+# Each entry: (list_of_trigger_phrases, answer_template_key)
+_FAQ_PATTERNS: list = [
+    (["وين المطعم", "وين موقعكم", "العنوان", "عنوانكم", "وين انتم",
+      "مكانكم", "لوكيشن", "الموقع"], "address"),
+    (["ساعات العمل", "أوقات العمل", "دوامكم", "شفتكم", "متى تفتحون",
+      "متى تفتح", "متى تسكرون", "متى تسكر", "تسكرون امتى",
+      "وقت الفتح", "وقت الإغلاق"], "hours"),
+    (["رسوم التوصيل", "كلفة التوصيل", "اجرة التوصيل", "توصيل بكم",
+      "بكم التوصيل", "شكد التوصيل", "سعر التوصيل", "مجاني التوصيل",
+      "تكلفة التوصيل"], "delivery_fee"),
+    (["طرق الدفع", "كيف أدفع", "تقبلون كارد", "تقبلون زين",
+      "الدفع كيف", "شلون الدفع", "تقبلون فيزا"], "payment_methods"),
+    (["رقم الهاتف", "رقمكم", "تلفونكم", "هاتفكم", "واتساب المطعم"], "phone"),
+]
+
+# ── Few-Shot Examples — injected into system prompt ──────────────────────────
+_FEW_SHOT_BLOCK = """
+## أمثلة حرفية — تعلّم من هذه المحادثات بالضبط
+
+### مثال 1: طلب بسيط كامل
+ع: أريد برجر
+ب: تمام 🌷 واحد لو أكثر؟
+ع: واحد
+ب: توصيل لو استلام؟
+ع: توصيل
+ب: وين العنوان؟
+ع: الكرادة زقاق 5
+ب: وصلني 🌷
+ع: اسمي سالم، كاش
+ب: تم 🌷
+ع: ثبت
+ب: ✅ طلبك:
+  1x برجر كلاسيك
+  توصيل — الكرادة زقاق 5
+  الاسم: سالم — كاش
+تجهزه خلال ~25 دقيقة 🌷
+
+### مثال 2: سؤال عن السعر
+ع: بكم البرجر؟
+ب: برجر كلاسيك 5,000 د.ع، برجر دبل 8,000 د.ع. أيهم؟
+
+### مثال 3: عميل خليجي
+ع: ابي برجر وايد
+ب: تفضل 🌷 واحد لو أكثر؟
+ع: واحدة بس
+ب: أبشر — توصيل لو استلام؟
+
+### مثال 4: عميل غاضب
+ع: الأكل وصلني بارد
+ب: آسفين 🙏 كللي اسمك أو رقم الطلب حتى نتابع.
+ع: رقم الطلب 1234
+ب: وصلني 🌷 أحولك لموظف هسه.
+
+### مثال 5: منتج نافد
+ع: أريد سمك
+ب: خلص السمك اليوم، يرجع بكره 🙏 تحب تجرب الدجاج المشوي؟
+
+### مثال 6: عميل يعرف طلبه كامل من أول رسالة
+ع: برجر واحد توصيل الزيونة اسمي علي كاش
+ب: تم 🌷 برجر، توصيل الزيونة، علي، كاش. تثبت؟
+ع: ثبت
+ب: ✅ طلبك:
+  1x برجر كلاسيك
+  توصيل — الزيونة
+  الاسم: علي — كاش
+يجهز خلال ~25 دقيقة 🌷
+
+### مثال 7: يسأل عن هوية البوت
+ع: أنت بوت؟
+ب: إي بوت المطعم 😊 — شتريد؟
+
+### مثال 8: طلب تعديل
+ع: حذف البصل
+ب: زين 🌷 بدون بصل.
+
+### مثال 9: إلغاء
+ع: ألغ الطلب
+ب: تم الإلغاء 🌷 تحتاج شي ثاني؟
+
+### مثال 10: العميل يرد بـ "شكراً" في النهاية
+ع: شكراً
+ب: العفو 🌷
+"""
+
 # ── Formal AI openers to replace ─────────────────────────────────────────────
 _FORMAL_OPENERS = {
     "بالتأكيد!": "تمام 🌷",
@@ -281,6 +399,90 @@ def _compress_history(history: list, max_recent: int = 6) -> tuple:
         lines.append(f"[{role}] {text}")
     summary = "## ملخص محادثة سابقة\n" + "\n".join(lines[-10:])
     return recent, summary
+
+
+# ── Reply Cache — answer FAQ instantly without OpenAI ────────────────────────
+
+def _faq_reply(customer_message: str, settings: dict, restaurant: dict) -> Optional[str]:
+    """
+    Check if message matches a common FAQ. If yes, return reply immediately.
+    Returns None if no match — caller falls through to OpenAI.
+    """
+    msg = customer_message.strip().lower()
+    # don't intercept if it's also an order request
+    _order_signals = ["أريد", "اريد", "اطلب", "أطلب", "عايز", "ابي", "ابغى", "خذلي"]
+    if any(s in msg for s in _order_signals):
+        return None
+
+    for triggers, answer_key in _FAQ_PATTERNS:
+        if any(t in msg for t in triggers):
+            if answer_key == "address":
+                addr = (restaurant or {}).get("address") or (settings or {}).get("restaurant_address") or ""
+                if addr:
+                    return f"{addr} 🌷"
+            elif answer_key == "hours":
+                # Return from settings working_hours if available
+                wh_raw = (settings or {}).get("working_hours") or (restaurant or {}).get("working_hours") or ""
+                if wh_raw:
+                    return None  # let OpenAI build the formatted hours reply
+                return None
+            elif answer_key == "delivery_fee":
+                fee = (settings or {}).get("delivery_fee") or 0
+                if fee:
+                    return f"رسوم التوصيل {int(fee):,} د.ع 🌷"
+                else:
+                    return "التوصيل مجاني 🌷"
+            elif answer_key == "payment_methods":
+                pm = (settings or {}).get("payment_methods") or "كاش"
+                return f"نقبل: {pm} 🌷"
+            elif answer_key == "phone":
+                phone = (restaurant or {}).get("phone") or (settings or {}).get("restaurant_phone") or ""
+                if phone:
+                    return f"{phone} 🌷"
+    return None
+
+
+# ── Closing Flow — standard post-confirmation message ────────────────────────
+
+def _build_closing_reply(order_summary: str, settings: dict) -> str:
+    """
+    Build the standard closing message after order confirmation.
+    Appends estimated delivery/prep time if configured.
+    """
+    delivery_time = str((settings or {}).get("delivery_time") or "").strip()
+    time_note = f"يجهز خلال ~{delivery_time} 🌷" if delivery_time else "يجهز قريباً 🌷"
+    if order_summary and order_summary.startswith("✅"):
+        return f"{order_summary}\n{time_note}"
+    return time_note
+
+
+# ── Intent detection (lightweight, for max_tokens budget) ────────────────────
+
+def _detect_intent_fast(message: str) -> str:
+    """
+    Quick intent detection from message text alone.
+    Used only for max_tokens budget — not for routing.
+    Returns intent string matching keys in _INTENT_MAX_TOKENS.
+    """
+    msg = message.strip()
+    checks = [
+        (["[فويس]", "[voice]", "[audio]"],                       "voice_order"),
+        (["ثبت", "أكمل", "أكمله", "ثبته", "نعم", "تمام ثبت"],  "repeated_confirmation"),
+        (["شكر", "مشكور", "يسلم", "تسلم", "الله يعطيك"],        "thanks"),
+        (["أنت بوت", "بوت؟", "شنو اسمك", "منو انت"],            "identity_question"),
+        (["بكم", "سعر", "شسعر", "شكد", "ثمن"],                  "price_question"),
+        (["منيو", "شنو عدكم", "شو عندكم", "قائمة", "الأصناف"],  "menu_request"),
+        (["تنصح", "الأحسن", "الأفضل", "شنو أحسن"],              "recommendation"),
+        (["أريد", "اريد", "أطلب", "ابي", "خذلي", "جيبلي"],      "direct_order"),
+        (["مشكلة", "بارد", "ناقص", "غلط", "شكوى"],              "complaint"),
+        (["موظف", "مدير", "إنسان", "ما أريد بوت"],               "human_handoff"),
+        (["هلا", "مرحبا", "أهلين", "السلام"],                    "greeting"),
+    ]
+    for triggers, intent in checks:
+        if any(t in msg for t in triggers):
+            return intent
+    return "general_chat"
+
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -629,6 +831,14 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         restaurant_id, conv["customer_id"], customer_message
     )
 
+    # Reply Cache — answer FAQ instantly without OpenAI call
+    _settings_dict  = dict(settings)  if settings  else {}
+    _restaurant_dict = dict(restaurant) if restaurant else {}
+    _faq_answer = _faq_reply(customer_message, _settings_dict, _restaurant_dict)
+    if _faq_answer:
+        logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
+        return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
+
     # Slot Tracker — extract known order slots to prevent repeated questions
     _history_dicts = [dict(h) if not isinstance(h, dict) else h for h in history]
     _slot_tracker = SlotTracker().ingest(_history_dicts, customer_message)
@@ -667,33 +877,76 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             "extracted_order": None,
         }
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    messages = [{"role": "system", "content": system_prompt}]
-    for h in _recent_history:
-        role = "user" if h["role"] == "customer" else "assistant"
-        messages.append({"role": role, "content": h["content"]})
-    messages.append({"role": "user", "content": customer_message})
+    # Intent-aware max_tokens budget
+    _intent_fast  = _detect_intent_fast(customer_message)
+    _max_tokens   = _INTENT_MAX_TOKENS.get(_intent_fast, _DEFAULT_MAX_TOKENS)
+
+    model     = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    # Temperature 0.3 — consistency over creativity for a cashier bot
+    _temperature  = float(os.getenv("BOT_TEMPERATURE", "0.3"))
+
+    _products_dicts = [dict(p) for p in products]
+    _history_for_elite = [dict(h) if not isinstance(h, dict) else h for h in history]
+
+    def _build_messages() -> list:
+        msgs = [{"role": "system", "content": system_prompt}]
+        for h in _recent_history:
+            role = "user" if h["role"] == "customer" else "assistant"
+            msgs.append({"role": role, "content": h["content"]})
+        msgs.append({"role": "user", "content": customer_message})
+        return msgs
+
+    def _call_openai(msgs: list, max_tok: int) -> str:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=msgs,
+            max_tokens=max_tok,
+            temperature=_temperature,
+        )
+        return resp.choices[0].message.content.strip()
+
+    # ── Critical issues that warrant a retry ─────────────────────────────────
+    _RETRY_ISSUES = {"trimmed_length", "formal_opener", "second_question_removed",
+                     "early_confirm_stripped", "broken_start", "tech_exposure"}
+
+    def _needs_retry(issues: list) -> bool:
+        return any(any(ri in str(iss) for ri in _RETRY_ISSUES) for iss in issues)
 
     try:
         import time as _time
         _t0 = _time.monotonic()
-        logger.info(f"[bot] calling OpenAI model={model} restaurant={restaurant_id} conv={conversation_id}")
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=350,
-            temperature=0.7,
-        )
+        logger.info(f"[bot] calling OpenAI model={model} intent={_intent_fast} max_tokens={_max_tokens} restaurant={restaurant_id}")
+        _msgs = _build_messages()
+        reply_text = _call_openai(_msgs, _max_tokens)
         _latency = round((_time.monotonic() - _t0) * 1000)
-        reply_text = response.choices[0].message.content.strip()
         logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} latency={_latency}ms reply_len={len(reply_text)}")
+
         # Algorithm 6 — post-response validation & inline fixes
         reply_text, val_issues = _validate_reply(
             reply_text, _history_dicts, memory, customer_message,
-            products=[dict(p) for p in products]
+            products=_products_dicts,
         )
         if val_issues:
-            logger.warning(f"[bot_validate] restaurant={restaurant_id} conv={conversation_id} fixed={val_issues}")
+            logger.warning(f"[bot_validate] restaurant={restaurant_id} fixed={val_issues}")
+
+        # Retry once if critical issues found — stricter budget
+        if _needs_retry(val_issues):
+            logger.info(f"[bot] retry triggered — issues={val_issues}")
+            try:
+                _retry_tokens = max(60, _max_tokens - 40)
+                reply_text_retry = _call_openai(_msgs, _retry_tokens)
+                reply_text_retry, retry_issues = _validate_reply(
+                    reply_text_retry, _history_dicts, memory, customer_message,
+                    products=_products_dicts,
+                )
+                # Only use retry result if it's cleaner
+                if len(retry_issues) < len(val_issues):
+                    reply_text = reply_text_retry
+                    val_issues = retry_issues
+                    logger.info(f"[bot] retry improved reply — issues now={retry_issues}")
+            except Exception as _retry_err:
+                logger.warning(f"[bot] retry failed — keeping first reply: {_retry_err}")
+
         # NUMBER 20 — Elite Reply Brain (post-processing quality layer, LOCKED 2026-05-01)
         # SAFETY: this block only rewrites reply_text for tone/banned-phrase cleanup.
         # It must never affect order creation, order persistence, or extracted_order.
@@ -703,12 +956,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             reply_text = elite_reply_pass(
                 reply=reply_text,
                 customer_message=customer_message,
-                history=[dict(h) if not isinstance(h, dict) else h for h in history],
+                history=_history_for_elite,
                 memory=memory,
-                products=[dict(p) for p in products],
+                products=_products_dicts,
             )
         except Exception as _elite_err:
             logger.warning(f"[elite_reply] fallback — {_elite_err}")
+
     except Exception as e:
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
@@ -838,6 +1092,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc2:
             logger.warning(f"[order_brain] post-reply update failed: {_ob_exc2}")
+
+    # Closing Flow — if reply is a ✅ confirmation, ensure delivery time is mentioned
+    if "✅ طلبك" in reply_text:
+        _dt_val = str((_settings_dict or {}).get("delivery_time") or "").strip()
+        _has_time = any(w in reply_text for w in ["دقيقة", "ساعة", "دقائق", "يجهز"])
+        if _dt_val and not _has_time:
+            reply_text = reply_text.rstrip() + f"\nيجهز خلال ~{_dt_val} 🌷"
 
     return {
         "reply": reply_text,
@@ -1414,6 +1675,26 @@ def _build_system_prompt(
         if memory_lines else ""
     )
 
+    # Proactive Memory — first message directives based on known customer data
+    _is_first_message = not history or len(history) == 0
+    _proactive_note = ""
+    if _is_first_message and memory:
+        _lines = []
+        _known_name    = cust_name or memory.get("name", "")
+        _known_address = memory.get("address", "")
+        _last_order    = memory.get("last_order_summary", "")
+        _fav           = memory.get("favorite_item", "")
+        if _known_name:
+            _lines.append(f"تعرف اسمه: {_known_name} — رحّب به باسمه مباشرة.")
+        if _last_order:
+            _lines.append(f"آخر طلبه: {_last_order} — اسأله 'نفس الطلب؟' بعد الترحيب.")
+        elif _fav:
+            _lines.append(f"وجبته المفضلة: {_fav} — اقترح عليه بعد الترحيب.")
+        if _known_address and not _last_order:
+            _lines.append(f"عنوانه المعتاد: {_known_address} — استخدمه تلقائياً عند توصيل.")
+        if _lines:
+            _proactive_note = "\n## ⭐ ذاكرة استباقية — اول رسالة\n" + "\n".join(f"- {l}" for l in _lines) + "\n"
+
     # Custom prompts from bot_config
     custom_system = bot_cfg.get("system_prompt") or ""
     sales_prompt_extra = bot_cfg.get("sales_prompt") or ""
@@ -1487,7 +1768,7 @@ def _build_system_prompt(
 ## قائمة الطعام (الأسعار بالدينار العراقي)
 {menu_text}
 {memory_text}
-
+{_proactive_note}
 ## 🚨 قاعدة حديدية — المنيو فوق كل شيء
 القائمة أعلاه هي المصدر الوحيد للمنتجات والأسعار.
 ❌ ممنوع تماماً: ذكر أي منتج، اسم، أو سعر مو موجود في القائمة أعلاه.
@@ -2455,6 +2736,9 @@ def _build_system_prompt(
 
     if sales_prompt_extra:
         prompt += f"\n## عروض وحملات خاصة\n{sales_prompt_extra}\n"
+
+    # Few-Shot Examples — always injected; teaches the model by example
+    prompt += _FEW_SHOT_BLOCK
 
     if corrections:
         prompt += "\n## تصحيحات من صاحب المطعم — التزم بها دائماً\n"
