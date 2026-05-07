@@ -14,11 +14,12 @@ logger = logging.getLogger("restaurant-saas")
 
 # NUMBER 27 — OrderBrain (safe import; falls back gracefully if unavailable)
 try:
-    from services.order_brain import OrderBrain, detect_frustration
+    from services.order_brain import OrderBrain, OrderItem, detect_frustration
     _ORDER_BRAIN_ENABLED = True
 except Exception as _ob_err:
     logger.warning(f"[order_brain] import failed — deterministic session tracking disabled: {_ob_err}")
     OrderBrain = None  # type: ignore[assignment,misc]
+    OrderItem = None  # type: ignore[assignment,misc]
     detect_frustration = lambda _m: False  # type: ignore[assignment]
     _ORDER_BRAIN_ENABLED = False
 
@@ -814,6 +815,43 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             _ob_invalid_pm_reply = None
             _ob_soldout_reply = None
 
+    # ── ORDER EDIT FLOW — deterministic, no OpenAI needed ───────────────────
+    _EDIT_KEYWORDS = ["غيّر", "غير", "بدّل", "بدل", "شيل", "شيله", "احذف",
+                      "استبدل", "خليها", "رجعها", "بدله", "بدلها"]
+    if any(kw in customer_message for kw in _EDIT_KEYWORDS):
+        if (_ob_session is not None and _ob_session.has_items()
+                and _ob_session.confirmation_status in ("collecting", "awaiting_confirm")):
+            _edit_target = None
+            for _it in _ob_session.items:
+                _it_norm = _it.name.replace("ال", "").strip()
+                if _it.name in customer_message or _it_norm in customer_message:
+                    _edit_target = _it.name
+                    break
+            if _edit_target:
+                _ob_session.remove_item(_edit_target)
+                _ob_session.confirmation_status = "collecting"
+                _edit_reply = f"تمام 🌷 شلنا {_edit_target}."
+                for _prd in products:
+                    _pn = _prd["name"]
+                    _pn_norm = _pn.replace("ال", "").strip()
+                    if _pn != _edit_target and (_pn in customer_message or _pn_norm in customer_message):
+                        if OrderItem is not None:
+                            _ob_session.items.append(
+                                OrderItem(name=_pn, qty=1, price=float(_prd.get("price") or 0))
+                            )
+                        _edit_reply = f"تمام 🌷 بدلناه بـ{_pn}."
+                        break
+                _ob_save_state(conversation_id, _ob_session)
+                logger.info(f"[order_edit] removed='{_edit_target}' conv={conversation_id}")
+                return {"reply": _edit_reply, "action": "reply", "extracted_order": None}
+        elif _ob_session is None or not _ob_session.has_items():
+            # Order already confirmed — redirect to staff
+            return {
+                "reply": "أحاول أتواصل مع الشباب 🌷 كللي اسمك أو رقم طلبك وراح يعدلونه.",
+                "action": "escalate",
+                "extracted_order": None,
+            }
+
     # Check escalation conditions
     custom_keywords = []
     if bot_cfg and bot_cfg.get("escalation_keywords"):
@@ -821,6 +859,30 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             custom_keywords = json.loads(bot_cfg["escalation_keywords"])
         except Exception:
             custom_keywords = []
+
+    # ── COMPLAINT FLOW — proper acknowledgment before generic escalation ────
+    _COMPLAINT_TRIGGERS = [
+        "الأكل بارد", "كان بارد", "الطعام بارد", "جاء بارد",
+        "طلبي ما وصل", "ما وصل الطلب", "الطلب ما وصل",
+        "التوصيل تأخر", "تأخر الطلب", "تأخر كثير", "تأخر الكثير",
+        "الأكل ناقص", "ناقص من طلبي", "شيء ناقص", "ناقص شيء",
+        "طلبي غلط", "الطلب غلط", "جاء غلط", "جابو غلط", "وصل غلط",
+        "أريد أرجع الفلوس", "أريد استرداد", "رجع الفلوس",
+    ]
+    if any(kw in customer_message for kw in _COMPLAINT_TRIGGERS):
+        _mem_name = (memory.get("name") or "").strip() if memory else ""
+        if _mem_name:
+            _complaint_reply = (
+                f"آسفين كثير 🙏 {_mem_name}، "
+                "أحولك لفريق الدعم هسه وراح يتابعون معك."
+            )
+        else:
+            _complaint_reply = (
+                "آسفين كثير على ذلك 🙏 "
+                "كللي اسمك أو رقم طلبك حتى نتابع الموضوع هسه."
+            )
+        logger.info(f"[complaint_flow] triggered conv={conversation_id}")
+        return {"reply": _complaint_reply, "action": "escalate", "extracted_order": None}
 
     if _detect_escalation(customer_message, custom_keywords):
         fallback = (
@@ -884,6 +946,36 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if _faq_answer:
         logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
         return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
+
+    # ── BUDGET SUGGESTION — detect "عندي X دينار" before OpenAI ─────────────
+    _BUDGET_RE = re.compile(
+        r"(?:عندي|بـ?|ميزانيتي|ميزانية|بيّه|عندك|بسعر)\s*(\d[\d,]*)\s*(?:دينار|الف|ألف|IQD)?|"
+        r"(\d[\d,]+)\s*(?:دينار|IQD)"
+    )
+    _budget_m = _BUDGET_RE.search(customer_message)
+    _budget_kws = ["شنو تنصح", "تنصح بيه", "شنو أحسن", "الأحسن", "شنو أطلب",
+                   "ميزانية", "عندي", "بكام", "بقد"]
+    if _budget_m and any(kw in customer_message for kw in _budget_kws) and products:
+        try:
+            _raw = (_budget_m.group(1) or _budget_m.group(2) or "").replace(",", "")
+            _bval = int(_raw)
+            if ("الف" in customer_message or "ألف" in customer_message) and _bval < 1000:
+                _bval *= 1000
+            _fits = [p for p in products
+                     if float(p.get("price") or 0) <= _bval and p.get("is_available", 1)]
+            if _fits:
+                _fits.sort(key=lambda p: float(p.get("price") or 0), reverse=True)
+                _top = _fits[:3]
+                _lines = [f"• {p['name']} — {int(float(p['price'])):,} د.ع" for p in _top]
+                _budget_reply = (
+                    f"بميزانية {_bval:,} دينار تقدر تطلب:\n"
+                    + "\n".join(_lines)
+                    + "\nشنو تحب؟ 🌷"
+                )
+                logger.info(f"[budget] val={_bval} hits={len(_fits)} conv={conversation_id}")
+                return {"reply": _budget_reply, "action": "reply", "extracted_order": None}
+        except (ValueError, TypeError, AttributeError):
+            pass
 
     # Off-hours Hard Guard — if closed AND order intent → direct reply, skip OpenAI
     _off_hours_reply = None

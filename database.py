@@ -682,6 +682,8 @@ def _migrate_db(conn):
         # menu_images — send tracking
         ("menu_images", "send_count",   "INTEGER DEFAULT 0"),
         ("menu_images", "last_sent_at", "TEXT DEFAULT ''"),
+        # conversations — silence follow-up guard (1 = already sent follow-up)
+        ("conversations", "followup_sent", "INTEGER DEFAULT 0"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────

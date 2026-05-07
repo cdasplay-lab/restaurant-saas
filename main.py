@@ -470,6 +470,124 @@ async def _processed_events_cleanup_job():
         await asyncio.sleep(43200)  # 12 hours
 
 
+async def _silence_followup_job():
+    """Every 5 min: send one follow-up to conversations silent >15 min after ✅ confirmation."""
+    await asyncio.sleep(120)  # 2 min after startup
+    while True:
+        try:
+            conn = database.get_db()
+            try:
+                cutoff_near = (datetime.utcnow() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+                cutoff_far  = (datetime.utcnow() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+                rows = conn.execute("""
+                    SELECT c.id, c.restaurant_id, c.customer_id, c.channel,
+                           m.content AS last_content, m.created_at AS last_at
+                    FROM conversations c
+                    JOIN messages m ON m.id = (
+                        SELECT id FROM messages
+                        WHERE conversation_id = c.id
+                        ORDER BY created_at DESC LIMIT 1
+                    )
+                    WHERE c.mode = 'bot'
+                      AND c.status = 'open'
+                      AND c.followup_sent = 0
+                      AND m.role = 'bot'
+                      AND m.content LIKE '%✅%'
+                      AND m.created_at < ?
+                      AND m.created_at > ?
+                    LIMIT 20
+                """, (cutoff_near, cutoff_far)).fetchall()
+
+                for row in rows:
+                    try:
+                        conv_id    = row["id"]
+                        rest_id    = row["restaurant_id"]
+                        cust_id    = row["customer_id"]
+                        platform   = (row["channel"] or "").lower()
+
+                        # Get customer external_id from memory
+                        mem = conn.execute(
+                            "SELECT memory_value FROM conversation_memory "
+                            "WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
+                            (rest_id, cust_id)
+                        ).fetchone()
+                        ext_id = mem["memory_value"] if mem else None
+                        if not ext_id:
+                            conn.execute(
+                                "UPDATE conversations SET followup_sent=1 WHERE id=?", (conv_id,)
+                            )
+                            conn.commit()
+                            continue
+
+                        # Get channel credentials
+                        ch = conn.execute(
+                            "SELECT * FROM channels WHERE restaurant_id=? AND type=? AND enabled=1",
+                            (rest_id, platform)
+                        ).fetchone()
+                        if not ch:
+                            conn.execute(
+                                "UPDATE conversations SET followup_sent=1 WHERE id=?", (conv_id,)
+                            )
+                            conn.commit()
+                            continue
+                        ch = dict(ch)
+
+                        # Build channel_data
+                        if platform == "telegram":
+                            channel_data = {
+                                "platform": "telegram",
+                                "bot_token": ch.get("token", ""),
+                                "chat_id": ext_id,
+                            }
+                        elif platform == "whatsapp":
+                            channel_data = {
+                                "platform": "whatsapp",
+                                "access_token": ch.get("token", ""),
+                                "phone_number_id": ch.get("phone_number_id", ""),
+                                "to": ext_id,
+                            }
+                        elif platform in ("instagram", "facebook"):
+                            channel_data = {
+                                "platform": platform,
+                                "access_token": ch.get("token", ""),
+                                "recipient_id": ext_id,
+                            }
+                        else:
+                            conn.execute(
+                                "UPDATE conversations SET followup_sent=1 WHERE id=?", (conv_id,)
+                            )
+                            conn.commit()
+                            continue
+
+                        followup_text = "هل وصلك الطلب؟ 🌷 لو تحتاج أي شيء أنا هنا."
+                        from services.webhooks import _send_reply as _wh_send
+                        ok, err = _wh_send(channel_data, followup_text)
+                        if ok:
+                            import uuid as _fu_uuid
+                            conn.execute(
+                                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?,?,?,?)",
+                                (str(_fu_uuid.uuid4()), conv_id, "bot", followup_text)
+                            )
+                            conn.execute(
+                                "UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                (conv_id,)
+                            )
+                            logger.info(f"[followup] sent conv={conv_id} platform={platform}")
+                        else:
+                            logger.warning(f"[followup] failed conv={conv_id}: {err}")
+                        conn.execute(
+                            "UPDATE conversations SET followup_sent=1 WHERE id=?", (conv_id,)
+                        )
+                        conn.commit()
+                    except Exception as _row_err:
+                        logger.warning(f"[followup] row error conv={row.get('id','?')}: {_row_err}")
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error(f"[followup] job error: {exc}")
+        await asyncio.sleep(300)  # every 5 minutes
+
+
 def _run_super_admin_password_reset():
     """Run at startup when RESET_SUPER_ADMIN_PASSWORD env var is set (one-time Render recovery)."""
     import uuid as _uuid
@@ -510,6 +628,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_report_job())
     asyncio.create_task(_token_refresh_job())
     asyncio.create_task(_processed_events_cleanup_job())
+    asyncio.create_task(_silence_followup_job())
     yield
 
 
