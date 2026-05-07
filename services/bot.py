@@ -1003,6 +1003,38 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
         return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
 
+    # ── PRICE LOOKUP — answer "بكم X؟" directly from menu, no OpenAI ──────────
+    _PRICE_TRIGGERS = ["بكم", "شسعر", "سعر", "ثمن", "كلفة", "بقد", "بكام",
+                       "شكد سعر", "شكد ثمن", "كم سعر", "كم ثمنه", "كم كلفته"]
+    if any(kw in customer_message for kw in _PRICE_TRIGGERS) and products:
+        _prods_dict = [dict(p) for p in products]
+        _avail = [p for p in _prods_dict if p.get("available", 1)]
+        # Try to match a product name in the question
+        _matched_price_prod = None
+        # Sort longest name first so "برجر دبل" wins over "برجر"
+        for _pp in sorted(_avail, key=lambda p: len(p.get("name", "")), reverse=True):
+            _pn = _pp.get("name", "")
+            _pn_norm = _pn.replace("ال", "").strip()
+            if _pn in customer_message or _pn_norm in customer_message:
+                _matched_price_prod = _pp
+                break
+        if _matched_price_prod:
+            _px = int(float(_matched_price_prod.get("price") or 0))
+            if _px > 0:
+                _price_reply = f"{_matched_price_prod['name']} — {_px:,} د.ع 🌷"
+                logger.info(f"[price_lookup] '{_matched_price_prod['name']}'={_px} conv={conversation_id}")
+                return {"reply": _price_reply, "action": "reply", "extracted_order": None}
+        # Multi-product price list: if no specific match but asking about prices generally
+        elif any(kw in customer_message for kw in ["الأسعار", "كل الأسعار", "قائمة الأسعار", "أسعاركم"]):
+            _price_lines = [
+                f"• {p['name']} — {int(float(p.get('price') or 0)):,} د.ع"
+                for p in _avail[:8] if float(p.get("price") or 0) > 0
+            ]
+            if _price_lines:
+                _price_reply = "أسعارنا:\n" + "\n".join(_price_lines) + "\nشنو تحب تطلب؟ 🌷"
+                logger.info(f"[price_lookup] full list n={len(_price_lines)} conv={conversation_id}")
+                return {"reply": _price_reply, "action": "reply", "extracted_order": None}
+
     # ── PRODUCT DISAMBIGUATION — ambiguous order before OpenAI ──────────────
     _disambig_word, _disambig_prods = _check_disambiguation(
         customer_message, [dict(p) for p in products]
@@ -1854,6 +1886,26 @@ def _validate_reply(reply_text: str, history: list, memory: dict, customer_messa
             _mc = _mp.strip().lower()
             if _mc and not any(_mc in pn or pn in _mc for pn in _product_names):
                 issues.append(f"possible_hallucination:{_mp[:15]}")
+
+    # 16. Emoji deduplication — keep only first occurrence of any repeated emoji in one reply
+    import re as _re_em
+    _emojis_seen: set = set()
+    def _dedup_emoji(m):
+        em = m.group(0)
+        if em in _emojis_seen:
+            return ""
+        _emojis_seen.add(em)
+        return em
+    _fixed_before_em = fixed
+    fixed = _re_em.sub(
+        r'[\U00010000-\U0010ffff☀-➿⭐⭕⌚⌛⏰⏳]',
+        _dedup_emoji,
+        fixed
+    ).strip()
+    # Collapse double spaces left after emoji removal
+    fixed = _re_em.sub(r'[ \t]{2,}', ' ', fixed).strip()
+    if fixed != _fixed_before_em:
+        issues.append("emoji_deduped")
 
     # ── Post-sanitization: clean dangling punctuation from all phrase removals ──
     import re as _re2
