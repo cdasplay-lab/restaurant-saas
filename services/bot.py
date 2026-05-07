@@ -485,6 +485,62 @@ def _detect_intent_fast(message: str) -> str:
     return "general_chat"
 
 
+# ── Product Disambiguation ────────────────────────────────────────────────────
+
+_DISAMBIG_TRIGGERS = ["أريد", "اريد", "أبي", "ابي", "خذلي", "جيبلي",
+                      "أطلب", "اطلب", "عطني", "واحد", "طلب", "ابغى"]
+
+
+def _check_disambiguation(msg: str, products: list):
+    """
+    Return (base_word, matched_products) if message has an order intent
+    and one word matches 2+ distinct available products — i.e. it's ambiguous.
+    """
+    if not products or not any(kw in msg for kw in _DISAMBIG_TRIGGERS):
+        return None, []
+    avail = [p for p in products if p.get("available", 1) or p.get("is_available", 1)]
+    word_map: dict = {}
+    for p in avail:
+        for word in p["name"].split():
+            if len(word) >= 3:
+                word_map.setdefault(word, []).append(p)
+    for word, matched in word_map.items():
+        if len(matched) >= 2 and word in msg:
+            # Skip if customer already typed a full product name
+            if not any(p["name"] in msg or p["name"].replace("ال", "") in msg for p in matched):
+                return word, matched[:4]
+    return None, []
+
+
+# ── Mood Detection ────────────────────────────────────────────────────────────
+
+_MOOD_URGENT      = ["بسرعة", "عاجل", "مستعجل", "جان", "بدري", "سريع",
+                     "الحين", "هواية", "ضروري", "أسرع"]
+_MOOD_ENTHUSIASTIC = ["شكراً كثير", "شكرا كثير", "تسلم", "يسلم", "ممتاز",
+                      "روعة", "والله", "ولله", "حبيبي", "زين جداً", "تسلمون"]
+_MOOD_GREETING_KWS = ["هلا", "مرحبا", "السلام", "أهلين", "أهلاً", "صباح", "مساء"]
+
+_MOOD_HINTS = {
+    "urgent":       "⚡ الزبون مستعجل — رد في جملة واحدة فقط بلا مقدمات.",
+    "enthusiastic": "😊 الزبون سعيد — ارفع دفء ردك قليلاً واستخدم اسمه إن عرفته.",
+    "cold":         "💼 الزبون مباشر — اقصر ردك، لا ترحيب مطوّل.",
+}
+
+
+def _detect_mood(msg: str, history: list) -> str:
+    """Classify customer mood: urgent | enthusiastic | cold | normal."""
+    if any(kw in msg for kw in _MOOD_URGENT):
+        return "urgent"
+    if any(kw in msg for kw in _MOOD_ENTHUSIASTIC):
+        return "enthusiastic"
+    # Cold: short command-only message with no greeting and no prior history
+    if (len(msg.strip()) < 15
+            and not any(kw in msg for kw in _MOOD_GREETING_KWS)
+            and not history):
+        return "cold"
+    return "normal"
+
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
@@ -947,7 +1003,23 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
         return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
 
-    # ── BUDGET SUGGESTION — detect "عندي X دينار" before OpenAI ─────────────
+    # ── PRODUCT DISAMBIGUATION — ambiguous order before OpenAI ──────────────
+    _disambig_word, _disambig_prods = _check_disambiguation(
+        customer_message, [dict(p) for p in products]
+    )
+    if _disambig_prods:
+        _d_lines = "\n".join(
+            f"• {p['name']} — {int(float(p.get('price') or 0)):,} د.ع"
+            for p in _disambig_prods
+        )
+        _disambig_reply = (
+            f"عندنا {len(_disambig_prods)} أنواع {_disambig_word}:\n"
+            + _d_lines + "\nأيهم تريد؟ 🌷"
+        )
+        logger.info(f"[disambig] word='{_disambig_word}' n={len(_disambig_prods)} conv={conversation_id}")
+        return {"reply": _disambig_reply, "action": "reply", "extracted_order": None}
+
+    # ── BUDGET SUGGESTION — detect "عندي X دينار" before OpenAI ──────────────
     _BUDGET_RE = re.compile(
         r"(?:عندي|بـ?|ميزانيتي|ميزانية|بيّه|عندك|بسعر)\s*(\d[\d,]*)\s*(?:دينار|الف|ألف|IQD)?|"
         r"(\d[\d,]+)\s*(?:دينار|IQD)"
@@ -1003,6 +1075,9 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # Context Compression — keep last 6 messages, summarize older ones
     _recent_history, _history_summary = _compress_history(_history_dicts, max_recent=6)
 
+    # Mood Detection — adapt response style before building prompt
+    _mood = _detect_mood(customer_message, _history_dicts)
+
     # Build system prompt (NUMBER 27: pass order session for state injection)
     system_prompt = _build_system_prompt(
         restaurant=dict(restaurant) if restaurant else {},
@@ -1021,6 +1096,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         order_status_context=_order_status_context,
         slot_context=_slot_section,
         history_summary=_history_summary,
+        mood=_mood,
     )
 
     # Call OpenAI
@@ -1033,9 +1109,11 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             "extracted_order": None,
         }
 
-    # Intent-aware max_tokens budget
+    # Intent-aware max_tokens budget (urgent mood → reduce by 40%)
     _intent_fast  = _detect_intent_fast(customer_message)
     _max_tokens   = _INTENT_MAX_TOKENS.get(_intent_fast, _DEFAULT_MAX_TOKENS)
+    if _mood == "urgent":
+        _max_tokens = max(40, int(_max_tokens * 0.6))
 
     model     = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     # Temperature 0.3 — consistency over creativity for a cashier bot
@@ -1758,6 +1836,7 @@ def _build_system_prompt(
     order_status_context: str = "",
     slot_context: str = "",
     history_summary: str = "",
+    mood: str = "normal",
 ) -> str:
     """Build the full system prompt for the AI bot."""
     bot_name = settings.get("bot_name") or "مساعد ذكي"
@@ -1897,22 +1976,44 @@ def _build_system_prompt(
     # Proactive Memory — first message directives based on known customer data
     _is_first_message = not history or len(history) == 0
     _proactive_note = ""
-    if _is_first_message and memory:
+    if _is_first_message:
         _lines = []
-        _known_name    = cust_name or memory.get("name", "")
-        _known_address = memory.get("address", "")
-        _last_order    = memory.get("last_order_summary", "")
-        _fav           = memory.get("favorite_item", "")
+        _known_name    = cust_name or (memory or {}).get("name", "")
+        _known_address = (memory or {}).get("address", "")
+        _last_order    = (memory or {}).get("last_order_summary", "")
+        _fav           = (memory or {}).get("favorite_item", "")
+
+        # #4 — If no memory summary, fetch last real order from DB directly
+        if not _last_order and customer.get("id") and restaurant.get("id"):
+            try:
+                _conn_lo = database.get_db()
+                try:
+                    _lo_items = _get_last_order_items(_conn_lo, restaurant["id"], customer["id"])
+                    if _lo_items:
+                        _last_order = "، ".join(
+                            it["name"] + (f" ×{it['qty']}" if it.get("qty", 1) > 1 else "")
+                            for it in _lo_items[:3]
+                        )
+                finally:
+                    _conn_lo.close()
+            except Exception:
+                pass
+
         if _known_name:
             _lines.append(f"تعرف اسمه: {_known_name} — رحّب به باسمه مباشرة.")
         if _last_order:
-            _lines.append(f"آخر طلبه: {_last_order} — اسأله 'نفس الطلب؟' بعد الترحيب.")
+            _lines.append(f"آخر طلبه: {_last_order} — اقترح له 'نفس الطلب؟' بعد الترحيب.")
         elif _fav:
             _lines.append(f"وجبته المفضلة: {_fav} — اقترح عليه بعد الترحيب.")
         if _known_address and not _last_order:
             _lines.append(f"عنوانه المعتاد: {_known_address} — استخدمه تلقائياً عند توصيل.")
         if _lines:
             _proactive_note = "\n## ⭐ ذاكرة استباقية — اول رسالة\n" + "\n".join(f"- {l}" for l in _lines) + "\n"
+
+    # Mood hint injection
+    _mood_hint = _MOOD_HINTS.get(mood, "")
+    if _mood_hint:
+        _proactive_note = (f"\n## 🎭 تكيّف الأسلوب\n{_mood_hint}\n") + _proactive_note
 
     # Custom prompts from bot_config
     custom_system = bot_cfg.get("system_prompt") or ""
