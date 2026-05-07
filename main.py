@@ -4003,6 +4003,146 @@ async def test_outgoing_webhook(wid: str, user=Depends(current_user)):
         return {"ok": False, "error": str(e)}
 
 
+# ── Stripe Payment Gateway ────────────────────────────────────────────────────
+
+def _get_stripe_key(restaurant_id: str) -> str:
+    """Return the Stripe secret key for this restaurant, or the global env fallback."""
+    conn = database.get_db()
+    try:
+        row = conn.execute(
+            "SELECT stripe_secret_key, stripe_enabled FROM settings WHERE restaurant_id=?",
+            (restaurant_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row and row["stripe_enabled"] and row["stripe_secret_key"]:
+        return row["stripe_secret_key"]
+    return os.getenv("STRIPE_SECRET_KEY", "")
+
+
+@app.post("/api/orders/{oid}/payment-link")
+async def create_payment_link(oid: str, user=Depends(current_user)):
+    """Create a Stripe Checkout session for an existing order and return the URL."""
+    key = _get_stripe_key(user["restaurant_id"])
+    if not key:
+        raise HTTPException(402, "بوابة الدفع غير مُفعّلة — أضف STRIPE_SECRET_KEY في الإعدادات")
+    try:
+        import stripe as _stripe
+    except ImportError:
+        raise HTTPException(500, "stripe package not installed")
+
+    conn = database.get_db()
+    order = conn.execute(
+        "SELECT o.*, r.name AS rest_name FROM orders o "
+        "JOIN restaurants r ON o.restaurant_id=r.id "
+        "WHERE o.id=? AND o.restaurant_id=?",
+        (oid, user["restaurant_id"])
+    ).fetchone()
+    items = conn.execute(
+        "SELECT name, price, quantity FROM order_items WHERE order_id=?", (oid,)
+    ).fetchall()
+    conn.close()
+
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order["payment_status"] == "paid":
+        raise HTTPException(409, "الطلب مدفوع بالفعل")
+
+    _stripe.api_key = key
+    frontend_base = os.getenv("BASE_URL", "").rstrip("/")
+    line_items = [
+        {
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": item["name"]},
+                "unit_amount": max(1, int(item["price"] * 100)),
+            },
+            "quantity": item["quantity"],
+        }
+        for item in items
+    ] or [{
+        "price_data": {
+            "currency": "usd",
+            "product_data": {"name": f"طلب #{oid[:8]}"},
+            "unit_amount": max(1, int(order["total"] * 100)),
+        },
+        "quantity": 1,
+    }]
+
+    session = _stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=line_items,
+        mode="payment",
+        success_url=f"{frontend_base}/app?payment=success&order={oid}",
+        cancel_url=f"{frontend_base}/app?payment=cancelled&order={oid}",
+        metadata={"order_id": oid, "restaurant_id": user["restaurant_id"]},
+    )
+
+    conn2 = database.get_db()
+    conn2.execute(
+        "UPDATE orders SET stripe_session_id=?, stripe_payment_url=? WHERE id=?",
+        (session.id, session.url, oid)
+    )
+    conn2.commit()
+    conn2.close()
+    return {"url": session.url, "session_id": session.id}
+
+
+@app.post("/api/stripe/webhook", include_in_schema=False)
+async def stripe_webhook(request: Request):
+    """Stripe webhook — marks order as paid on checkout.session.completed."""
+    import hmac as _hmac, hashlib as _hl
+    try:
+        import stripe as _stripe
+    except ImportError:
+        raise HTTPException(500, "stripe package not installed")
+
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+
+    # Find matching restaurant by session metadata (we need to try all keys)
+    # Use the global key for webhook verification
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    if webhook_secret:
+        try:
+            event = _stripe.Webhook.construct_event(payload, sig, webhook_secret)
+        except Exception as _e:
+            logger.warning(f"[stripe_webhook] signature check failed: {_e}")
+            raise HTTPException(400, "Invalid signature")
+    else:
+        import json as _j
+        event = _j.loads(payload)
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        order_id = session.get("metadata", {}).get("order_id", "")
+        restaurant_id = session.get("metadata", {}).get("restaurant_id", "")
+        if order_id:
+            conn = database.get_db()
+            conn.execute(
+                "UPDATE orders SET payment_status='paid' WHERE id=? AND restaurant_id=?",
+                (order_id, restaurant_id)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"[stripe] order {order_id} marked paid")
+
+    return {"received": True}
+
+
+@app.get("/api/orders/{oid}/payment-status")
+async def get_payment_status(oid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT payment_status, stripe_payment_url FROM orders WHERE id=? AND restaurant_id=?",
+        (oid, user["restaurant_id"])
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Order not found")
+    return dict(row)
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 STATUS_FLOW = {

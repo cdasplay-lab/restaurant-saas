@@ -667,6 +667,15 @@ def _migrate_db(conn):
         ("restaurants",            "ai_learning_enabled", "INTEGER DEFAULT 1"),
         # NUMBER 37 — item special instructions / notes
         ("order_items", "notes", "TEXT DEFAULT ''"),
+        # #2 — Stripe payment gateway
+        ("orders", "payment_status",     "TEXT DEFAULT 'unpaid'"),
+        ("orders", "stripe_session_id",  "TEXT DEFAULT ''"),
+        ("orders", "stripe_payment_url", "TEXT DEFAULT ''"),
+        # settings — Stripe keys per restaurant (optional, overrides global)
+        ("settings", "stripe_secret_key",      "TEXT DEFAULT ''"),
+        ("settings", "stripe_publishable_key", "TEXT DEFAULT ''"),
+        ("settings", "stripe_webhook_secret",  "TEXT DEFAULT ''"),
+        ("settings", "stripe_enabled",         "INTEGER DEFAULT 0"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────
