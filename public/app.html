@@ -5367,7 +5367,240 @@ async function init() {
     handleOAuthReturn();
   } else {
     navigate(page);
+    setTimeout(_checkObWizardAutoShow, 1500);
   }
+}
+
+// ── ONBOARDING WIZARD ─────────────────────────────────────────────────────────
+
+let _obStep = 0;
+const _OB_STEPS = [
+  { emoji: '👋', title: 'أهلاً! هيا نعد مطعمك', counter: 'الخطوة 1 من 4' },
+  { emoji: '📡', title: 'ربط القناة',             counter: 'الخطوة 2 من 4' },
+  { emoji: '🍽️', title: 'قائمة المنتجات',         counter: 'الخطوة 3 من 4' },
+  { emoji: '🤖', title: 'تجربة البوت',            counter: 'الخطوة 4 من 4' },
+];
+
+async function showObWizard() {
+  _obStep = 0;
+  document.getElementById('ob-wizard').classList.remove('hidden');
+  await obRenderStep(0);
+}
+
+function closeObWizard() {
+  document.getElementById('ob-wizard').classList.add('hidden');
+  localStorage.setItem('ob_wizard_dismissed', '1');
+}
+
+function obBack() {
+  if (_obStep > 0) { _obStep--; obRenderStep(_obStep); }
+}
+
+async function obNext() {
+  const saved = await obSaveCurrentStep();
+  if (!saved) return;
+  if (_obStep < _OB_STEPS.length - 1) {
+    _obStep++;
+    await obRenderStep(_obStep);
+  } else {
+    closeObWizard();
+    toast('مبروك! مطعمك جاهز 🎉', 'success');
+    loadDashboard();
+  }
+}
+
+function obSkip() {
+  if (_obStep < _OB_STEPS.length - 1) { _obStep++; obRenderStep(_obStep); }
+  else closeObWizard();
+}
+
+async function obSaveCurrentStep() {
+  if (_obStep === 0) return obSaveObProfile();
+  return true;
+}
+
+async function obSaveObProfile() {
+  const name  = (document.getElementById('ob-rest-name')?.value || '').trim();
+  const phone = (document.getElementById('ob-rest-phone')?.value || '').trim();
+  if (!name) { toast('يرجى إدخال اسم المطعم', 'error'); return false; }
+  try {
+    await api.put('/api/settings', { restaurant_name: name, restaurant_phone: phone });
+    safeSetText('sideRestName', name);
+    return true;
+  } catch(e) { toast(e.message, 'error'); return false; }
+}
+
+function _escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function obRenderStep(n) {
+  const step = _OB_STEPS[n];
+  document.getElementById('ob-step-emoji').textContent  = step.emoji;
+  document.getElementById('ob-step-title').textContent  = step.title;
+  document.getElementById('ob-step-counter').textContent = step.counter;
+
+  for (let i = 0; i < 4; i++) {
+    const dot = document.getElementById('ob-dot-' + i);
+    if (dot) dot.className = i <= n
+      ? 'w-2.5 h-2.5 rounded-full bg-indigo-500 transition-all'
+      : 'w-2.5 h-2.5 rounded-full bg-slate-600 transition-all';
+  }
+
+  const backBtn  = document.getElementById('ob-btn-back');
+  const backPh   = document.getElementById('ob-btn-back-ph');
+  if (backBtn) backBtn.classList.toggle('hidden', n === 0);
+  if (backPh)  backPh.classList.toggle('hidden',  n > 0);
+
+  const nextBtn = document.getElementById('ob-btn-next');
+  if (nextBtn) nextBtn.innerHTML = n === _OB_STEPS.length - 1
+    ? 'إنهاء <i class="fa-solid fa-check text-xs mr-1"></i>'
+    : 'التالي <i class="fa-solid fa-arrow-left text-xs mr-1"></i>';
+
+  const body = document.getElementById('ob-body');
+  body.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+
+  if (n === 0) await _obStep0(body);
+  else if (n === 1) await _obStep1(body);
+  else if (n === 2) await _obStep2(body);
+  else if (n === 3) _obStep3(body);
+}
+
+async function _obStep0(body) {
+  let name = '', phone = '';
+  try { const s = await api.get('/api/settings'); name = s.restaurant_name||''; phone = s.restaurant_phone||''; } catch(e) {}
+  body.innerHTML = `
+    <p class="text-slate-400 text-sm mb-4">أدخل معلومات مطعمك الأساسية — ستظهر للزبائن في البوت</p>
+    <div class="space-y-3">
+      <div>
+        <label class="block text-slate-300 text-xs font-medium mb-1.5">اسم المطعم *</label>
+        <input id="ob-rest-name" value="${_escHtml(name)}" placeholder="مثال: مطعم أبو علي"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none" />
+      </div>
+      <div>
+        <label class="block text-slate-300 text-xs font-medium mb-1.5">رقم الهاتف (اختياري)</label>
+        <input id="ob-rest-phone" value="${_escHtml(phone)}" placeholder="07xx-xxx-xxxx"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none" />
+      </div>
+    </div>`;
+}
+
+async function _obStep1(body) {
+  let tgToken = '';
+  try { const ch = await api.get('/api/channels'); const tg = (ch||[]).find(c => c.type==='telegram'); if(tg) tgToken = tg.token||''; } catch(e) {}
+  body.innerHTML = `
+    <p class="text-slate-400 text-sm mb-4">اربط بوت تيليغرام لاستقبال رسائل الزبائن تلقائياً</p>
+    <div class="space-y-3">
+      <div>
+        <label class="block text-slate-300 text-xs font-medium mb-1.5">توكن البوت (Bot Token)</label>
+        <input id="ob-tg-token" value="${_escHtml(tgToken)}" placeholder="123456789:ABCdef..."
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none font-mono" />
+        <p class="text-slate-500 text-xs mt-1.5">احصل على التوكن من <a href="https://t.me/BotFather" target="_blank" class="text-indigo-400 hover:underline">@BotFather</a></p>
+      </div>
+      <button onclick="obSaveTg()" id="ob-tg-btn"
+        class="w-full bg-slate-700 hover:bg-slate-600 text-white text-sm py-2.5 rounded-xl transition flex items-center justify-center gap-2">
+        <i class="fa-solid fa-link text-xs"></i> حفظ وتسجيل الويب هوك
+      </button>
+      <div id="ob-tg-status" class="hidden rounded-xl text-center text-sm py-2.5"></div>
+    </div>
+    <p class="text-slate-600 text-xs mt-4 text-center">يمكنك ربط واتساب وانستغرام لاحقاً من قسم القنوات</p>`;
+}
+
+async function obSaveTg() {
+  const token = (document.getElementById('ob-tg-token')?.value||'').trim();
+  if (!token) { toast('يرجى إدخال التوكن', 'error'); return; }
+  const btn = document.getElementById('ob-tg-btn');
+  const status = document.getElementById('ob-tg-status');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> جاري الربط...';
+  try {
+    await api.put('/api/channels/telegram', { token, enabled: true });
+    await api.post('/api/channels/telegram/register-webhook');
+    status.className = 'rounded-xl text-center text-sm py-2.5 text-emerald-400 bg-emerald-500/10 border border-emerald-500/20';
+    status.textContent = '✅ تم ربط تيليغرام بنجاح!';
+    status.classList.remove('hidden');
+    btn.innerHTML = '<i class="fa-solid fa-check mr-1"></i> تم الربط';
+  } catch(e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-link text-xs"></i> حفظ وتسجيل الويب هوك';
+    toast(e.message, 'error');
+  }
+}
+
+async function _obStep2(body) {
+  let count = 0;
+  try { const p = await api.get('/api/products'); count = (p||[]).filter(x => x.available).length; } catch(e) {}
+  if (count > 0) {
+    body.innerHTML = `
+      <div class="text-center py-4">
+        <div class="text-5xl mb-3">🎉</div>
+        <p class="text-white font-bold text-base mb-1">ممتاز! عندك ${count} منتج في المنيو</p>
+        <p class="text-slate-400 text-sm">يمكنك إضافة المزيد من قسم المنتجات في أي وقت</p>
+      </div>`;
+  } else {
+    body.innerHTML = `
+      <p class="text-slate-400 text-sm mb-4">أضف منتجاتك حتى يقدر البوت يعرض المنيو للزبائن</p>
+      <div class="space-y-2.5">
+        <a href="#products" onclick="closeObWizard()"
+          class="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl px-4 py-3 transition cursor-pointer">
+          <i class="fa-solid fa-plus text-indigo-400 text-lg w-6 text-center"></i>
+          <div><p class="text-sm font-medium">إضافة منتجات يدوياً</p><p class="text-xs text-slate-400">أضف الاسم والسعر لكل صنف</p></div>
+        </a>
+        <a href="#products" onclick="closeObWizard(); setTimeout(()=>document.getElementById('importMenuBtn')?.click(),600)"
+          class="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl px-4 py-3 transition cursor-pointer">
+          <i class="fa-solid fa-file-arrow-up text-purple-400 text-lg w-6 text-center"></i>
+          <div><p class="text-sm font-medium">استيراد من ملف</p><p class="text-xs text-slate-400">PDF / Excel / صورة منيو</p></div>
+        </a>
+      </div>`;
+  }
+}
+
+function _obStep3(body) {
+  body.innerHTML = `
+    <p class="text-slate-400 text-sm mb-5">تأكد إن البوت يعمل قبل ما يستقبل الزبائن</p>
+    <div id="ob-test-area" class="text-center">
+      <button onclick="obRunTest()" id="ob-test-btn"
+        class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-medium text-sm transition inline-flex items-center gap-2">
+        <i class="fa-solid fa-robot"></i> اختبر البوت الآن
+      </button>
+    </div>`;
+}
+
+async function obRunTest() {
+  const btn  = document.getElementById('ob-test-btn');
+  const area = document.getElementById('ob-test-area');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> جاري الاختبار...'; }
+  try {
+    const d = await api.post('/api/onboarding/test-bot', {});
+    if (d.status === 'pass') {
+      area.innerHTML = `
+        <div class="text-center">
+          <div class="text-5xl mb-3">🎉</div>
+          <p class="text-white font-bold text-base mb-1">البوت شغال ممتاز!</p>
+          <p class="text-slate-400 text-sm">مطعمك جاهز لاستقبال الزبائن — اضغط إنهاء</p>
+        </div>`;
+      const nb = document.getElementById('ob-btn-next');
+      if (nb) nb.innerHTML = 'إنهاء <i class="fa-solid fa-check text-xs mr-1"></i>';
+    } else {
+      area.innerHTML = `
+        <div class="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-sm text-red-300">
+          <p class="font-medium mb-2">⚠️ اكتشفنا بعض المشاكل:</p>
+          <ul class="list-disc list-inside space-y-1 text-xs">${(d.issues||['خطأ غير محدد']).map(i=>`<li>${i}</li>`).join('')}</ul>
+          <button onclick="obRunTest()" class="mt-3 text-xs text-indigo-400 hover:underline">أعد المحاولة</button>
+        </div>`;
+    }
+  } catch(e) {
+    if (area) area.innerHTML = `<p class="text-red-400 text-sm text-center mb-3">${e.message}</p>
+      <button onclick="obRunTest()" class="text-xs text-indigo-400 hover:underline">أعد المحاولة</button>`;
+  }
+}
+
+async function _checkObWizardAutoShow() {
+  if (localStorage.getItem('ob_wizard_dismissed')) return;
+  try {
+    const d = await api.get('/api/onboarding/status');
+    if (!d.launch_ready) showObWizard();
+  } catch(e) {}
 }
 
 // Bot config is loaded inside loadSettings() above
@@ -6748,6 +6981,53 @@ async function toggleAiLearning() {
   } catch(e) { toast('خطأ: ' + e.message, 'error'); }
 }
 </script>
+<!-- ── ONBOARDING WIZARD MODAL ─────────────────────────────────────────── -->
+<div id="ob-wizard" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+
+    <!-- Header -->
+    <div class="bg-slate-900/60 px-6 py-4 flex items-center justify-between border-b border-slate-700">
+      <div class="flex items-center gap-3">
+        <span id="ob-step-emoji" class="text-2xl">👋</span>
+        <div>
+          <p id="ob-step-title"   class="text-white font-bold text-sm leading-tight"></p>
+          <p id="ob-step-counter" class="text-slate-500 text-xs mt-0.5"></p>
+        </div>
+      </div>
+      <button onclick="closeObWizard()" class="text-slate-500 hover:text-white transition text-lg leading-none">✕</button>
+    </div>
+
+    <!-- Step dots -->
+    <div class="flex justify-center gap-2 pt-4">
+      <div id="ob-dot-0" class="w-2.5 h-2.5 rounded-full bg-indigo-500 transition-all"></div>
+      <div id="ob-dot-1" class="w-2.5 h-2.5 rounded-full bg-slate-600 transition-all"></div>
+      <div id="ob-dot-2" class="w-2.5 h-2.5 rounded-full bg-slate-600 transition-all"></div>
+      <div id="ob-dot-3" class="w-2.5 h-2.5 rounded-full bg-slate-600 transition-all"></div>
+    </div>
+
+    <!-- Step body -->
+    <div id="ob-body" class="px-6 py-5 min-h-[200px]"></div>
+
+    <!-- Footer -->
+    <div class="px-6 pb-5 flex items-center gap-3">
+      <button id="ob-btn-back" onclick="obBack()"
+        class="hidden text-slate-400 hover:text-white text-sm px-4 py-2 rounded-xl border border-slate-700 hover:border-slate-500 transition">
+        <i class="fa-solid fa-arrow-right ml-1 text-xs"></i> السابق
+      </button>
+      <div id="ob-btn-back-ph"></div>
+      <div class="flex items-center gap-2 mr-auto">
+        <button id="ob-btn-skip" onclick="obSkip()"
+          class="text-slate-500 hover:text-slate-300 text-sm px-3 py-2 transition">تخطي</button>
+        <button id="ob-btn-next" onclick="obNext()"
+          class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl font-medium transition">
+          التالي <i class="fa-solid fa-arrow-left text-xs mr-1"></i>
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () =>
