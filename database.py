@@ -676,6 +676,9 @@ def _migrate_db(conn):
         ("settings", "stripe_publishable_key", "TEXT DEFAULT ''"),
         ("settings", "stripe_webhook_secret",  "TEXT DEFAULT ''"),
         ("settings", "stripe_enabled",         "INTEGER DEFAULT 0"),
+        # multi-branch — orders and users carry the branch they belong to
+        ("orders", "branch_id",  "TEXT DEFAULT ''"),
+        ("users",  "branch_id",  "TEXT DEFAULT ''"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────
@@ -1180,6 +1183,24 @@ def _migrate_db(conn):
     """)
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ow_restaurant ON outgoing_webhooks(restaurant_id, is_active)")
+    except Exception:
+        pass
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS branches (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            address TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            working_hours TEXT DEFAULT '{}',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_branches_restaurant ON branches(restaurant_id, is_active)")
     except Exception:
         pass
     conn.commit()

@@ -234,6 +234,9 @@
       <a href="#activity"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-clock-rotate-left w-4 text-center"></i> سجل النشاط
       </a>
+      <a href="#branches"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
+        <i class="fa-solid fa-code-branch w-4 text-center"></i> الفروع
+      </a>
       <a href="#settings"      class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-slate-400 text-sm">
         <i class="fa-solid fa-gear w-4 text-center"></i> الإعدادات
       </a>
@@ -459,6 +462,9 @@
             <option value="whatsapp">WhatsApp</option>
             <option value="instagram">Instagram</option>
             <option value="facebook">Facebook</option>
+          </select>
+          <select id="branchFilter" onchange="loadOrders()" class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2">
+            <option value="">كل الفروع</option>
           </select>
           <input id="ordersSearch" type="text" placeholder="بحث..." onkeyup="loadOrders()"
             class="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-3 py-2 w-40 focus:border-indigo-500">
@@ -869,6 +875,24 @@
       <div id="chansLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
       <div id="chansContent" class="hidden grid grid-cols-1 md:grid-cols-2 gap-5"></div>
 
+    </section>
+
+    <!-- ═══ BRANCHES ═══ -->
+    <section id="sec-branches" class="section">
+      <div class="max-w-3xl">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="text-xl font-bold text-white">الفروع</h2>
+            <p class="text-slate-400 text-sm mt-1">أدر فروع مطعمك وصنّف الطلبات لكل فرع</p>
+          </div>
+          <button onclick="openBranchModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2">
+            <i class="fa-solid fa-plus"></i> فرع جديد
+          </button>
+        </div>
+        <div id="branchesList" class="space-y-3">
+          <div class="flex justify-center py-10"><div class="spinner"></div></div>
+        </div>
+      </div>
     </section>
 
     <!-- ═══ SETTINGS ═══ -->
@@ -1750,6 +1774,7 @@ const PAGES = {
   analytics:     { title: 'التحليلات',      load: () => loadAnalytics() },
   channels:      { title: 'القنوات',        load: () => loadChannels() },
   activity:      { title: 'سجل النشاط',    load: () => loadActivity() },
+  branches:      { title: 'الفروع',          load: () => loadBranches() },
   settings:      { title: 'الإعدادات',      load: () => loadSettings() },
   onboarding:    { title: 'تفعيل الحساب',  load: () => typeof loadOnboarding === 'function' ? loadOnboarding() : null },
   'ai-training': { title: 'تدريب الذكاء',  load: () => typeof loadAiTraining  === 'function' ? loadAiTraining()  : null },
@@ -2012,11 +2037,26 @@ async function loadOrders() {
   if (S.orderStatus !== 'all') params.set('status', S.orderStatus);
   const ch = document.getElementById('channelFilter')?.value;
   if (ch) params.set('channel', ch);
+  const bf = document.getElementById('branchFilter')?.value;
+  if (bf) params.set('branch_id', bf);
   const sr = document.getElementById('ordersSearch')?.value;
   if (sr) params.set('search', sr);
   const dr = _dateRangeForFilter(S.orderDateFilter || 'all');
   if (dr.date_from) params.set('date_from', dr.date_from);
   if (dr.date_to) params.set('date_to', dr.date_to);
+
+  // Populate branch filter if empty
+  const bfEl = document.getElementById('branchFilter');
+  if (bfEl && bfEl.options.length <= 1) {
+    api.get('/api/branches').then(({ branches }) => {
+      branches.forEach(b => {
+        if (!bfEl.querySelector(`option[value="${b.id}"]`)) {
+          const o = document.createElement('option'); o.value = b.id; o.textContent = b.name;
+          bfEl.appendChild(o);
+        }
+      });
+    }).catch(() => {});
+  }
 
   document.getElementById('ordersLoading').classList.remove('hidden');
   document.getElementById('ordersTable').classList.add('hidden');
@@ -4572,6 +4612,99 @@ async function saveSettings() {
 
 // ── Team ──────────────────────────────────────────────────────
 const ROLE_LABELS = { owner: ['مالك','bg-purple-500/20 text-purple-300'], manager: ['مدير','bg-blue-500/20 text-blue-300'], staff: ['موظف','bg-green-500/20 text-green-300'] };
+// ── Branches ──────────────────────────────────────────────────────────────────
+async function loadBranches() {
+  const el = document.getElementById('branchesList');
+  if (!el) return;
+  el.innerHTML = '<div class="flex justify-center py-10"><div class="spinner"></div></div>';
+  try {
+    const { branches } = await api.get('/api/branches');
+    if (!branches.length) {
+      el.innerHTML = `<div class="bg-slate-800 border border-dashed border-slate-600 rounded-2xl p-10 text-center">
+        <i class="fa-solid fa-code-branch text-3xl text-slate-600 mb-3"></i>
+        <p class="text-slate-400 text-sm">لا توجد فروع بعد</p>
+        <p class="text-slate-500 text-xs mt-1">اضغط "فرع جديد" لإضافة أول فرع</p>
+      </div>`;
+      return;
+    }
+    el.innerHTML = branches.map(b => `
+      <div class="bg-slate-800 border ${b.is_default ? 'border-indigo-500/50' : 'border-slate-700'} rounded-2xl p-4 flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-white font-semibold text-sm">${b.name}</span>
+            ${b.is_default ? '<span class="badge bg-indigo-500/20 text-indigo-400 text-xs">رئيسي</span>' : ''}
+            ${!b.is_active ? '<span class="badge bg-slate-700 text-slate-400 text-xs">معطّل</span>' : ''}
+          </div>
+          ${b.address ? `<p class="text-slate-400 text-xs flex items-center gap-1"><i class="fa-solid fa-location-dot text-slate-500"></i> ${b.address}</p>` : ''}
+          ${b.phone   ? `<p class="text-slate-400 text-xs flex items-center gap-1 mt-0.5"><i class="fa-solid fa-phone text-slate-500"></i> ${b.phone}</p>` : ''}
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          ${!b.is_default ? `<button onclick="setDefaultBranch('${b.id}')" class="text-slate-400 hover:text-indigo-400 text-xs px-2 py-1 rounded border border-slate-700 hover:border-indigo-500/50 transition" title="جعله رئيسي">رئيسي</button>` : ''}
+          <button onclick="openBranchModal(${JSON.stringify(b).replace(/"/g,'&quot;')})" class="text-slate-400 hover:text-white transition p-1.5"><i class="fa-solid fa-pen-to-square text-xs"></i></button>
+          ${!b.is_default ? `<button onclick="deleteBranch('${b.id}')" class="text-slate-400 hover:text-red-400 transition p-1.5"><i class="fa-solid fa-trash text-xs"></i></button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch(e) { el.innerHTML = `<p class="text-red-400 text-sm">${e.message}</p>`; }
+}
+
+function openBranchModal(branch = null) {
+  const isEdit = !!branch;
+  showModal(`
+    <h3 class="text-lg font-bold text-white mb-4">${isEdit ? 'تعديل الفرع' : 'فرع جديد'}</h3>
+    <div class="space-y-3">
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">اسم الفرع *</label>
+        <input id="bName" value="${branch?.name||''}" placeholder="مثال: الفرع الرئيسي" class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:ring-1 focus:ring-indigo-500 outline-none">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">العنوان</label>
+        <input id="bAddress" value="${branch?.address||''}" placeholder="بغداد، الكرادة..." class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:ring-1 focus:ring-indigo-500 outline-none">
+      </div>
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">رقم الهاتف</label>
+        <input id="bPhone" value="${branch?.phone||''}" placeholder="07xxxxxxxxx" class="w-full bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:ring-1 focus:ring-indigo-500 outline-none" dir="ltr">
+      </div>
+      ${isEdit ? `<label class="flex items-center gap-2 cursor-pointer mt-1"><input type="checkbox" id="bActive" ${branch.is_active ? 'checked' : ''} class="rounded"><span class="text-slate-300 text-sm">فعّال</span></label>` : ''}
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button onclick="saveBranch(${isEdit ? `'${branch.id}'` : 'null'})" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-lg">${isEdit ? 'حفظ التغييرات' : 'إضافة الفرع'}</button>
+      <button onclick="closeModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg">إلغاء</button>
+    </div>
+  `);
+}
+
+async function saveBranch(branchId) {
+  const name = document.getElementById('bName').value.trim();
+  if (!name) return toast('اسم الفرع مطلوب', 'error');
+  const payload = {
+    name,
+    address: document.getElementById('bAddress').value.trim(),
+    phone:   document.getElementById('bPhone').value.trim(),
+  };
+  if (branchId) payload.is_active = document.getElementById('bActive')?.checked ? 1 : 0;
+  try {
+    if (branchId) await api.req('PATCH', `/api/branches/${branchId}`, payload);
+    else          await api.req('POST', '/api/branches', payload);
+    closeModal(); loadBranches(); toast(branchId ? 'تم تحديث الفرع' : 'تمت إضافة الفرع', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function setDefaultBranch(branchId) {
+  try {
+    await api.req('POST', `/api/branches/${branchId}/set-default`);
+    loadBranches(); toast('تم تحديد الفرع الرئيسي', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteBranch(branchId) {
+  if (!confirm('حذف هذا الفرع؟')) return;
+  try {
+    await api.req('DELETE', `/api/branches/${branchId}`);
+    loadBranches(); toast('تم حذف الفرع', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
 async function loadTeam() {
   document.getElementById('teamLoading').classList.remove('hidden');
   document.getElementById('teamTable').classList.add('hidden');
@@ -4872,6 +5005,80 @@ async function init() {
       renderConvList();
     }
   }, 15000);
+
+  // ── New-order watcher ────────────────────────────────────────────────────
+  // Polls pending orders every 20s, plays sound + native notification on increase
+  let _lastPendingCount = -1;
+
+  function _playOrderBeep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [880, 1100, 1320].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine'; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.25, ctx.currentTime + i * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.12 + 0.25);
+        osc.start(ctx.currentTime + i * 0.12);
+        osc.stop(ctx.currentTime + i * 0.12 + 0.3);
+      });
+    } catch(e) {}
+  }
+
+  function _showOrderBanner(count) {
+    const existing = document.getElementById('_newOrderBanner');
+    if (existing) existing.remove();
+    const el = document.createElement('div');
+    el.id = '_newOrderBanner';
+    el.style.cssText = `position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;
+      background:#f59e0b;color:#1c1917;padding:10px 20px;border-radius:12px;font-weight:700;
+      font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,.4);cursor:pointer;direction:rtl;
+      display:flex;align-items:center;gap:8px;animation:_bannerIn .3s ease`;
+    el.innerHTML = `<span>🔔</span><span>${count > 1 ? count + ' طلبات جديدة!' : 'طلب جديد!'}</span><span style="opacity:.7;font-size:11px">— اضغط للعرض</span>`;
+    el.onclick = () => { navigate('orders'); filterOrders('pending'); el.remove(); };
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 8000);
+  }
+
+  async function _checkNewOrders() {
+    try {
+      const orders = await api.get('/api/orders?status=pending').catch(() => null);
+      if (!orders) return;
+      const count = Array.isArray(orders) ? orders.length : (orders.orders || []).length;
+      if (_lastPendingCount >= 0 && count > _lastPendingCount) {
+        const newCount = count - _lastPendingCount;
+        _playOrderBeep();
+        _showOrderBanner(newCount);
+        if (Notification.permission === 'granted') {
+          new Notification('طلب جديد! 🍽️', {
+            body: newCount > 1 ? `${newCount} طلبات جديدة في الانتظار` : 'طلب جديد في الانتظار',
+            icon: '/manifest.json', dir: 'rtl', tag: 'new-order'
+          });
+        }
+        // Also refresh the orders badge
+        const pb = document.getElementById('badgePending');
+        if (pb) { pb.textContent = count; pb.classList.remove('hidden'); pb.classList.add('animate-pulse'); setTimeout(() => pb.classList.remove('animate-pulse'), 3000); }
+      }
+      _lastPendingCount = count;
+    } catch(e) {}
+  }
+
+  // Request notification permission silently on first load
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+
+  _checkNewOrders();
+  setInterval(_checkNewOrders, 20000);
+
+  // Inject banner animation keyframe once
+  if (!document.getElementById('_bannerStyle')) {
+    const s = document.createElement('style');
+    s.id = '_bannerStyle';
+    s.textContent = `@keyframes _bannerIn { from { opacity:0; transform:translateX(-50%) translateY(-12px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }`;
+    document.head.appendChild(s);
+  }
 
   // Close notif panel on outside click
   document.addEventListener('click', (e) => {

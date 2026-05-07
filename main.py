@@ -778,6 +778,7 @@ class OrderCreate(BaseModel):
     address: str = ""
     notes: str = ""
     items: list = []
+    branch_id: str = ""
 
 
 class OrderUpdate(BaseModel):
@@ -4167,6 +4168,7 @@ ALLOWED_TRANSITIONS: dict = {
 async def list_orders(
     status: Optional[str] = None,
     channel: Optional[str] = None,
+    branch_id: Optional[str] = None,
     search: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -4175,8 +4177,10 @@ async def list_orders(
     conn = database.get_db()
     rid = user["restaurant_id"]
     q = """
-        SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
+        SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
+               b.name AS branch_name
         FROM orders o JOIN customers c ON o.customer_id = c.id
+        LEFT JOIN branches b ON o.branch_id = b.id
         WHERE o.restaurant_id = ?
     """
     params = [rid]
@@ -4184,6 +4188,8 @@ async def list_orders(
         q += " AND o.status=?"; params.append(status)
     if channel:
         q += " AND o.channel=?"; params.append(channel)
+    if branch_id:
+        q += " AND o.branch_id=?"; params.append(branch_id)
     if search:
         q += " AND (c.name LIKE ? OR o.id LIKE ?)"; params += [f"%{search}%", f"%{search}%"]
     if date_from:
@@ -4220,10 +4226,10 @@ async def create_order(data: OrderCreate, user=Depends(current_user)):
     oid = str(uuid.uuid4())
     total = sum(i.get("price", 0) * i.get("quantity", 1) for i in data.items)
     conn.execute("""
-        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, notes, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, notes, status, branch_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     """, (oid, user["restaurant_id"], data.customer_id, data.channel,
-          data.type, total, data.address, data.notes))
+          data.type, total, data.address, data.notes, data.branch_id))
     for item in data.items:
         conn.execute("""
             INSERT INTO order_items (id, order_id, product_id, name, price, quantity)
@@ -4788,6 +4794,107 @@ async def ai_reply(cid: str, user=Depends(current_user)):
     msg = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
     conn.close()
     return dict(msg)
+
+
+# ── Branches ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/branches")
+async def list_branches(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM branches WHERE restaurant_id=? ORDER BY is_default DESC, created_at ASC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return {"branches": [dict(r) for r in rows]}
+
+
+@app.post("/api/branches", status_code=201)
+async def create_branch(req: Request, user=Depends(current_user)):
+    body = await req.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "اسم الفرع مطلوب")
+    conn = database.get_db()
+    sub = conn.execute(
+        "SELECT plan FROM subscriptions WHERE restaurant_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+        (user["restaurant_id"],)
+    ).fetchone()
+    plan = sub["plan"] if sub else "trial"
+    _check_plan_limit(conn, user["restaurant_id"], plan, "branches", "branches")
+    bid = str(__import__("uuid").uuid4())
+    is_default = 1 if not conn.execute(
+        "SELECT id FROM branches WHERE restaurant_id=?", (user["restaurant_id"],)
+    ).fetchone() else 0
+    conn.execute(
+        "INSERT INTO branches (id, restaurant_id, name, address, phone, working_hours, is_default) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (bid, user["restaurant_id"], name,
+         body.get("address", ""), body.get("phone", ""),
+         __import__("json").dumps(body.get("working_hours", {})), is_default)
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.patch("/api/branches/{bid}")
+async def update_branch(bid: str, req: Request, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
+                        (bid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404, "الفرع غير موجود")
+    body = await req.json()
+    allowed = {"name", "address", "phone", "working_hours", "is_active"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if "working_hours" in updates:
+        import json as _j
+        updates["working_hours"] = _j.dumps(updates["working_hours"]) if isinstance(updates["working_hours"], dict) else updates["working_hours"]
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    vals = list(updates.values())
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    conn.execute(f"UPDATE branches SET {set_clause} WHERE id=?", [*vals, bid])
+    conn.commit()
+    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/branches/{bid}")
+async def delete_branch(bid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    branch = conn.execute(
+        "SELECT * FROM branches WHERE id=? AND restaurant_id=?",
+        (bid, user["restaurant_id"])
+    ).fetchone()
+    if not branch:
+        conn.close()
+        raise HTTPException(404, "الفرع غير موجود")
+    if branch["is_default"]:
+        conn.close()
+        raise HTTPException(400, "لا يمكن حذف الفرع الرئيسي")
+    conn.execute("DELETE FROM branches WHERE id=?", (bid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/branches/{bid}/set-default")
+async def set_default_branch(bid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
+                        (bid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404, "الفرع غير موجود")
+    conn.execute("UPDATE branches SET is_default=0 WHERE restaurant_id=?", (user["restaurant_id"],))
+    conn.execute("UPDATE branches SET is_default=1 WHERE id=?", (bid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
