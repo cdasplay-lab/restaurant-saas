@@ -679,6 +679,9 @@ def _migrate_db(conn):
         # multi-branch — orders and users carry the branch they belong to
         ("orders", "branch_id",  "TEXT DEFAULT ''"),
         ("users",  "branch_id",  "TEXT DEFAULT ''"),
+        # menu_images — send tracking
+        ("menu_images", "send_count",   "INTEGER DEFAULT 0"),
+        ("menu_images", "last_sent_at", "TEXT DEFAULT ''"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────

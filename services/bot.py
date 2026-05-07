@@ -199,8 +199,8 @@ def _detect_menu_image_intent(message: str) -> bool:
     return False
 
 
-def _get_menu_images(restaurant_id: str) -> list:
-    """Return active menu images for a restaurant, ordered by sort_order."""
+def _get_menu_images(restaurant_id: str, category_hint: str = "") -> list:
+    """Return active menu images, filtered by category if a matching one is found."""
     conn = database.get_db()
     try:
         rows = conn.execute(
@@ -208,9 +208,43 @@ def _get_menu_images(restaurant_id: str) -> list:
             "WHERE restaurant_id=? AND is_active=1 ORDER BY sort_order ASC, created_at ASC",
             (restaurant_id,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        all_imgs = [dict(r) for r in rows]
     finally:
         conn.close()
+
+    if not category_hint or not all_imgs:
+        return all_imgs
+
+    # Try to match a category from the message
+    hint = category_hint.lower()
+    categories = {(r["category"] or "").strip() for r in all_imgs if r["category"]}
+    for cat in categories:
+        if cat.lower() in hint or hint in cat.lower():
+            filtered = [r for r in all_imgs if (r["category"] or "").lower() == cat.lower()]
+            if filtered:
+                return filtered
+
+    return all_imgs
+
+
+def _track_menu_image_send(restaurant_id: str, image_ids: list) -> None:
+    """Increment send_count for each image that was sent to a customer."""
+    if not image_ids:
+        return
+    try:
+        conn = database.get_db()
+        try:
+            for iid in image_ids:
+                conn.execute(
+                    "UPDATE menu_images SET send_count=COALESCE(send_count,0)+1, "
+                    "last_sent_at=CURRENT_TIMESTAMP WHERE id=? AND restaurant_id=?",
+                    (iid, restaurant_id)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -430,9 +464,15 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
     # Menu image intent — serve images before calling OpenAI
     if _detect_menu_image_intent(customer_message):
-        menu_imgs = _get_menu_images(restaurant_id)
+        menu_imgs = _get_menu_images(restaurant_id, category_hint=customer_message)
         if menu_imgs:
-            reply_text = "تفضل 🌷 هذا منيونا:"
+            # Detect if asking about a specific category
+            categories = list({(i["category"] or "").strip() for i in menu_imgs if i["category"]})
+            if len(categories) == 1 and categories[0]:
+                reply_text = f"تفضل 🌷 صور {categories[0]}:"
+            else:
+                reply_text = "تفضل 🌷 هذا منيونا:"
+            _track_menu_image_send(restaurant_id, [img["id"] for img in menu_imgs])
             return {
                 "reply": reply_text,
                 "action": "reply",

@@ -255,6 +255,15 @@ def payment_proof_path(restaurant_id: str, request_id: str, filename: str) -> st
     return f"payment-proofs/{restaurant_id}/{request_id}/{safe}"
 
 
+def menu_image_path(restaurant_id: str, filename: str) -> str:
+    """
+    Standard storage path for menu section images.
+    Result: restaurants/{restaurant_id}/menu-images/{filename}
+    """
+    safe = Path(filename).name
+    return f"restaurants/{restaurant_id}/menu-images/{safe}"
+
+
 # ── Backward-compat aliases (used in existing main.py code) ──────────────────
 product_storage_path = product_image_path
 menu_storage_path    = menu_file_path

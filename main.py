@@ -3293,6 +3293,26 @@ async def delete_menu_image(mid: str, user=Depends(current_user)):
         conn.close()
 
 
+@app.post("/api/menu-images/reorder")
+async def reorder_menu_images(req: Request, user=Depends(current_user)):
+    """Accept [{id, sort_order}, ...] and bulk-update sort_order."""
+    body = await req.json()
+    items = body.get("items", [])
+    if not items:
+        return {"ok": True}
+    conn = database.get_db()
+    try:
+        for item in items:
+            conn.execute(
+                "UPDATE menu_images SET sort_order=? WHERE id=? AND restaurant_id=?",
+                (item["sort_order"], item["id"], user["restaurant_id"])
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
 @app.patch("/api/categories/rename")
 async def rename_category(data: dict, user=Depends(current_user)):
     old_name = (data.get("old_name") or "").strip()
@@ -3511,6 +3531,39 @@ async def upload_gallery_image(
         conn.close()
 
     return {"url": public_url, "product_id": pid}
+
+
+@app.post("/api/upload/menu-image", status_code=201)
+async def upload_menu_image(
+    file: UploadFile = File(...),
+    user=Depends(require_role("owner", "manager")),
+):
+    """Upload a menu section image to Supabase Storage and return the public URL."""
+    from services import storage as _storage
+
+    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED:
+        raise HTTPException(400, f"نوع الملف غير مدعوم: {ext}")
+
+    content = await file.read()
+    if len(content) / (1024 * 1024) > 15:
+        raise HTTPException(400, "حجم الصورة يجب أن يكون أقل من 15 MB")
+
+    fname = f"{uuid.uuid4()}{ext}"
+    storage_path = _storage.menu_image_path(user["restaurant_id"], fname)
+
+    public_url = _storage.upload_bytes(
+        content,
+        _storage.BUCKET_MENUS,
+        storage_path,
+        content_type=file.content_type or "image/jpeg",
+    )
+
+    if not public_url:
+        return {"url": "", "message": "Supabase not configured — configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"}
+
+    return {"url": public_url}
 
 
 # ── Customers ─────────────────────────────────────────────────────────────────
@@ -10455,6 +10508,52 @@ async def menu_import_approve(
         "errors":   errors,
         "session_id": session_id,
     }
+
+
+@app.post("/api/menu-import/{session_id}/save-as-menu-images", status_code=201)
+async def menu_import_save_as_images(
+    session_id: str,
+    user=Depends(require_role("owner", "manager")),
+):
+    """Save the uploaded image files from an import session as menu_images entries."""
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT file_urls, file_names FROM menu_import_sessions WHERE id=? AND restaurant_id=?",
+        (session_id, user["restaurant_id"])
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "جلسة الاستيراد غير موجودة")
+
+    file_urls  = json.loads(row["file_urls"]  or "[]")
+    file_names = json.loads(row["file_names"] or "[]")
+
+    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    saved = []
+    for url, name in zip(file_urls, file_names):
+        ext = Path(name).suffix.lower()
+        if ext not in IMAGE_EXTS:
+            continue
+        # Skip if already saved
+        exists = conn.execute(
+            "SELECT id FROM menu_images WHERE restaurant_id=? AND image_url=?",
+            (user["restaurant_id"], url)
+        ).fetchone()
+        if exists:
+            continue
+        mid = str(uuid.uuid4())
+        title = Path(name).stem.replace("_", " ").replace("-", " ").strip()
+        conn.execute(
+            "INSERT INTO menu_images (id, restaurant_id, title, image_url, sort_order) VALUES (?,?,?,?,?)",
+            (mid, user["restaurant_id"], title, url,
+             conn.execute("SELECT COUNT(*) FROM menu_images WHERE restaurant_id=?",
+                          (user["restaurant_id"],)).fetchone()[0])
+        )
+        saved.append({"id": mid, "url": url, "title": title})
+
+    conn.commit()
+    conn.close()
+    return {"saved": len(saved), "items": saved}
 
 
 @app.get("/api/menu-import/history")

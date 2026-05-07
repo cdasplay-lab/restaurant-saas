@@ -608,13 +608,28 @@
       <div class="flex items-center justify-between mb-3">
         <div>
           <h2 class="text-lg font-semibold text-slate-100">صور المنيو</h2>
-          <p class="text-xs text-slate-400 mt-0.5">إذا الزبون كتب: دزلي المنيو — البوت يرسل هاي الصور تلقائياً</p>
+          <p class="text-xs text-slate-400 mt-0.5">إذا الزبون كتب: دزلي المنيو — البوت يرسل هاي الصور تلقائياً. اسحب الصور لإعادة ترتيبها</p>
         </div>
         <div class="flex items-center gap-2">
           <span id="menuImgsCountBadge" class="hidden text-xs bg-slate-700 text-slate-300 px-2.5 py-1 rounded-lg"></span>
           <button onclick="openMenuImageModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg transition flex items-center gap-1.5">
             <i class="fa-solid fa-plus"></i> إضافة صورة
           </button>
+        </div>
+      </div>
+      <!-- Stats bar -->
+      <div id="menuImgsStats" class="hidden grid grid-cols-3 gap-3 mb-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+          <p id="miStatTotal" class="text-white font-bold text-lg">0</p>
+          <p class="text-slate-500 text-xs mt-0.5">إجمالي الصور</p>
+        </div>
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+          <p id="miStatSends" class="text-indigo-400 font-bold text-lg">0</p>
+          <p class="text-slate-500 text-xs mt-0.5">مرات الإرسال</p>
+        </div>
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+          <p id="miStatTop" class="text-green-400 font-bold text-sm truncate">—</p>
+          <p class="text-slate-500 text-xs mt-0.5">الأكثر إرسالاً</p>
         </div>
       </div>
       <div id="menuImgsLoading" class="flex justify-center py-12"><div class="spinner"></div></div>
@@ -2968,27 +2983,86 @@ function renderMenuImages() {
     badge.textContent = `${active} نشطة / ${imgs.length} إجمالي`;
     badge.classList.toggle('hidden', imgs.length === 0);
   }
+  // Stats bar
+  const statsBar = document.getElementById('menuImgsStats');
+  if (statsBar && imgs.length > 0) {
+    statsBar.classList.remove('hidden');
+    const totalSends = imgs.reduce((s, i) => s + (i.send_count || 0), 0);
+    const topImg = [...imgs].sort((a, b) => (b.send_count||0) - (a.send_count||0))[0];
+    safeSetText('miStatTotal', imgs.length);
+    safeSetText('miStatSends', totalSends.toLocaleString('ar-IQ'));
+    safeSetText('miStatTop', topImg?.title || topImg?.category || '—');
+  } else if (statsBar) {
+    statsBar.classList.add('hidden');
+  }
   if (!imgs.length) { empty.classList.remove('hidden'); grid.classList.add('hidden'); return; }
   empty.classList.add('hidden');
   grid.classList.remove('hidden');
-  grid.innerHTML = imgs.map(img => `
-    <div class="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500 transition group">
+  grid.innerHTML = imgs.map((img, i) => `
+    <div class="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500 transition group cursor-grab active:cursor-grabbing"
+         draggable="true" data-mi-id="${img.id}" data-mi-idx="${i}">
       <div class="relative aspect-square bg-slate-900">
         <img src="${img.image_url}" alt="${img.title||img.category||'صورة'}"
-          class="w-full h-full object-cover"
+          class="w-full h-full object-cover pointer-events-none"
           onerror="this.parentElement.innerHTML='<div class=\'flex items-center justify-center h-full text-slate-600 text-xs\'>⚠ لا تتوفر صورة</div>'">
         <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
           <button onclick="openMenuImageModal('${img.id}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg transition">تعديل</button>
           <button onclick="deleteMenuImage('${img.id}')" class="bg-red-600 hover:bg-red-500 text-white text-xs px-3 py-1.5 rounded-lg transition">حذف</button>
         </div>
         ${!img.is_active ? '<span class="absolute top-2 right-2 bg-slate-700 text-slate-400 text-xs px-2 py-0.5 rounded">مخفية</span>' : ''}
+        <span class="absolute top-2 left-2 bg-black/50 text-slate-300 text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition">
+          <i class="fa-solid fa-grip-dots-vertical"></i>
+        </span>
       </div>
       <div class="p-2">
         <p class="text-slate-200 text-xs font-medium truncate">${img.title||'—'}</p>
-        ${img.category ? `<p class="text-slate-500 text-xs truncate">${img.category}</p>` : ''}
+        ${img.category ? `<p class="text-slate-500 text-xs truncate flex items-center gap-1"><i class="fa-solid fa-tag text-slate-600"></i>${img.category}</p>` : ''}
+        ${img.send_count > 0 ? `<p class="text-slate-600 text-xs mt-0.5"><i class="fa-solid fa-paper-plane text-slate-700"></i> ${img.send_count}</p>` : ''}
       </div>
     </div>
   `).join('');
+
+  // Drag & Drop reorder
+  _initMenuImageDnD();
+}
+
+let _miDragSrc = null;
+function _initMenuImageDnD() {
+  const grid = document.getElementById('menuImgsGrid');
+  if (!grid) return;
+  grid.querySelectorAll('[data-mi-id]').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      _miDragSrc = card;
+      e.dataTransfer.effectAllowed = 'move';
+      card.classList.add('opacity-50');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('opacity-50'));
+    card.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    card.addEventListener('dragenter', e => { e.preventDefault(); card.classList.add('ring-2', 'ring-indigo-400'); });
+    card.addEventListener('dragleave', () => card.classList.remove('ring-2', 'ring-indigo-400'));
+    card.addEventListener('drop', async e => {
+      e.preventDefault();
+      card.classList.remove('ring-2', 'ring-indigo-400');
+      if (!_miDragSrc || _miDragSrc === card) return;
+      // Reorder in _menuImages array
+      const fromId = _miDragSrc.dataset.miId;
+      const toId   = card.dataset.miId;
+      const fromIdx = _menuImages.findIndex(x => x.id === fromId);
+      const toIdx   = _menuImages.findIndex(x => x.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const [moved] = _menuImages.splice(fromIdx, 1);
+      _menuImages.splice(toIdx, 0, moved);
+      // Assign new sort_order values
+      _menuImages.forEach((img, i) => img.sort_order = i);
+      renderMenuImages();
+      // Persist to server
+      try {
+        await api.req('POST', '/api/menu-images/reorder', {
+          items: _menuImages.map((img, i) => ({ id: img.id, sort_order: i }))
+        });
+      } catch(e) { toast('فشل حفظ الترتيب', 'error'); }
+    });
+  });
 }
 
 function openMenuImageModal(id) {
@@ -2999,11 +3073,38 @@ function openMenuImageModal(id) {
       <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
     </div>
     <div class="space-y-3">
-      <div>
-        <label class="text-slate-400 text-xs mb-1 block">رابط الصورة (URL) *</label>
-        <input id="miUrl" value="${img?.image_url||''}" placeholder="https://..." class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
-        ${img?.image_url ? `<img src="${img.image_url}" class="mt-2 rounded-lg h-24 w-full object-cover" onerror="this.remove()">` : ''}
+
+      <!-- Upload zone -->
+      <div id="miUploadZone" class="border-2 border-dashed border-slate-600 hover:border-indigo-500 rounded-xl p-4 text-center cursor-pointer transition"
+           onclick="document.getElementById('miFileInput').click()"
+           ondragover="event.preventDefault();this.classList.add('border-indigo-400')"
+           ondragleave="this.classList.remove('border-indigo-400')"
+           ondrop="event.preventDefault();this.classList.remove('border-indigo-400');_miHandleDrop(event.dataTransfer.files)">
+        <div id="miUploadPlaceholder" class="${img?.image_url ? 'hidden' : ''}">
+          <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-500 mb-2"></i>
+          <p class="text-slate-400 text-sm">اسحب صورة هنا أو <span class="text-indigo-400 underline">اختر من جهازك</span></p>
+          <p class="text-slate-600 text-xs mt-1">JPG، PNG، WEBP — حتى 15 MB</p>
+        </div>
+        <div id="miPreviewWrap" class="${img?.image_url ? '' : 'hidden'}">
+          <img id="miPreview" src="${img?.image_url||''}" class="mx-auto rounded-lg max-h-36 object-contain" onerror="this.src=''">
+          <p class="text-slate-500 text-xs mt-1">اضغط للتغيير</p>
+        </div>
+        <input type="file" id="miFileInput" accept="image/*" class="hidden" onchange="_miHandleDrop(this.files)">
       </div>
+      <div id="miUploadProgress" class="hidden">
+        <div class="flex items-center gap-2 text-slate-400 text-xs">
+          <div class="spinner w-4 h-4"></div><span>جاري الرفع...</span>
+        </div>
+      </div>
+
+      <!-- URL fallback -->
+      <div>
+        <label class="text-slate-400 text-xs mb-1 block">أو أدخل رابط الصورة مباشرة</label>
+        <input id="miUrl" value="${img?.image_url||''}" placeholder="https://..." dir="ltr"
+          oninput="_miUrlChanged(this.value)"
+          class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+      </div>
+
       <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="text-slate-400 text-xs mb-1 block">العنوان</label>
@@ -3011,19 +3112,18 @@ function openMenuImageModal(id) {
         </div>
         <div>
           <label class="text-slate-400 text-xs mb-1 block">الفئة</label>
-          <input id="miCategory" value="${img?.category||''}" placeholder="مثال: وجبات، مشروبات" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+          <input id="miCategory" value="${img?.category||''}" placeholder="مثال: وجبات، مشروبات" list="miCategoryList" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+          <datalist id="miCategoryList">${[...new Set(_menuImages.map(i=>i.category).filter(Boolean))].map(c=>`<option value="${c}">`).join('')}</datalist>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="flex items-center justify-between">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="miActive" ${(!img || img.is_active) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
+          <span class="text-slate-400 text-sm">نشطة (تُرسل للعملاء)</span>
+        </label>
         <div>
-          <label class="text-slate-400 text-xs mb-1 block">الترتيب</label>
-          <input id="miOrder" type="number" value="${img?.sort_order||0}" min="0" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
-        </div>
-        <div class="flex items-end pb-1">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" id="miActive" ${(!img || img.is_active) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
-            <span class="text-slate-400 text-sm">نشطة (تُرسل للعملاء)</span>
-          </label>
+          <label class="text-slate-400 text-xs ml-2">الترتيب</label>
+          <input id="miOrder" type="number" value="${img?.sort_order||0}" min="0" class="w-16 bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1.5 text-sm text-center focus:border-indigo-500">
         </div>
       </div>
     </div>
@@ -3034,9 +3134,59 @@ function openMenuImageModal(id) {
   `);
 }
 
+async function _miHandleDrop(files) {
+  if (!files || !files[0]) return;
+  const file = files[0];
+  if (!file.type.startsWith('image/')) return toast('الملف يجب أن يكون صورة', 'error');
+  if (file.size > 15 * 1024 * 1024) return toast('الصورة أكبر من 15 MB', 'error');
+  // Local preview immediately
+  const reader = new FileReader();
+  reader.onload = e => {
+    const p = document.getElementById('miPreview');
+    const w = document.getElementById('miPreviewWrap');
+    const ph = document.getElementById('miUploadPlaceholder');
+    if (p) p.src = e.target.result;
+    if (w) w.classList.remove('hidden');
+    if (ph) ph.classList.add('hidden');
+  };
+  reader.readAsDataURL(file);
+  // Upload to server
+  document.getElementById('miUploadProgress')?.classList.remove('hidden');
+  try {
+    const fd = new FormData(); fd.append('file', file);
+    const res = await fetch(`${API_BASE}/api/upload/menu-image`, {
+      method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }, body: fd
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'فشل الرفع');
+    if (data.url) {
+      const urlEl = document.getElementById('miUrl');
+      if (urlEl) urlEl.value = data.url;
+      toast('تم رفع الصورة', 'success');
+    } else {
+      toast('Supabase غير مضبوط — استخدم رابطاً خارجياً', 'warning');
+    }
+  } catch(e) { toast(e.message, 'error'); }
+  finally { document.getElementById('miUploadProgress')?.classList.add('hidden'); }
+}
+
+function _miUrlChanged(url) {
+  const p = document.getElementById('miPreview');
+  const w = document.getElementById('miPreviewWrap');
+  const ph = document.getElementById('miUploadPlaceholder');
+  if (url && p) {
+    p.src = url;
+    w?.classList.remove('hidden');
+    ph?.classList.add('hidden');
+  } else {
+    w?.classList.add('hidden');
+    ph?.classList.remove('hidden');
+  }
+}
+
 async function saveMenuImage(id) {
   const url = document.getElementById('miUrl').value.trim();
-  if (!url) { toast('رابط الصورة مطلوب', 'error'); return; }
+  if (!url) { toast('الصورة مطلوبة — ارفع صورة أو أدخل رابطاً', 'error'); return; }
   const data = {
     image_url: url,
     title: document.getElementById('miTitle').value.trim(),
