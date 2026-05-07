@@ -487,6 +487,52 @@ def _detect_intent_fast(message: str) -> str:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
+
+
+# ── Quality Metrics Logger ────────────────────────────────────────────────────
+
+def _log_reply_quality(
+    restaurant_id: str,
+    conversation_id: str,
+    intent: str,
+    val_issues: list,
+    latency_ms: int,
+    reply_len: int,
+    was_retried: bool,
+    upsell_shown: bool,
+    faq_cache_hit: bool,
+    escalation: bool,
+) -> None:
+    """
+    Write one row to ai_quality_logs.
+    Fire-and-forget — any error is silently swallowed.
+    """
+    try:
+        import uuid as _uuid
+        conn = database.get_db()
+        issues_str = ",".join(str(i) for i in (val_issues or []))[:400]
+        conn.execute(
+            """INSERT OR IGNORE INTO ai_quality_logs
+               (id, restaurant_id, conversation_id, intent_detected,
+                response_quality, confidence, escalation_triggered,
+                used_corrections, used_knowledge)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(_uuid.uuid4()),
+                restaurant_id,
+                conversation_id,
+                intent,
+                issues_str or "ok",
+                round(1.0 - min(len(val_issues or []) * 0.1, 0.9), 2),
+                int(escalation),
+                int(was_retried),
+                int(upsell_shown),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 _async_openai_client = None
 
 
@@ -839,6 +885,24 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
         return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
 
+    # Off-hours Hard Guard — if closed AND order intent → direct reply, skip OpenAI
+    _off_hours_reply = None
+    try:
+        _wh_raw = _settings_dict.get("working_hours") or _restaurant_dict.get("working_hours") or "{}"
+        _is_open_now, _closed_msg, _next_open = _is_restaurant_open_now(_wh_raw)
+        if not _is_open_now and _wh_raw and _wh_raw != "{}":
+            _ORDER_INTENTS = ["أريد", "اريد", "أطلب", "اطلب", "ابي", "ابغى", "خذلي",
+                              "جيبلي", "عايز", "اشتري", "طلبي", "أطلب"]
+            _msg_is_order = any(kw in customer_message for kw in _ORDER_INTENTS)
+            if _msg_is_order:
+                _time_hint = f"، نفتح {_next_open}" if _next_open else ""
+                _off_hours_reply = f"المطعم مسكّر هسه{_time_hint} 🙏 تقدر تطلب أول شيء ما نفتح."
+    except Exception:
+        pass
+    if _off_hours_reply:
+        logger.info(f"[bot] off-hours order blocked — restaurant={restaurant_id}")
+        return {"reply": _off_hours_reply, "action": "reply", "extracted_order": None}
+
     # Slot Tracker — extract known order slots to prevent repeated questions
     _history_dicts = [dict(h) if not isinstance(h, dict) else h for h in history]
     _slot_tracker = SlotTracker().ingest(_history_dicts, customer_message)
@@ -1007,6 +1071,24 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if order_enabled:
         confirmed_order = _parse_confirmed_order(reply_text, memory, [dict(p) for p in products])
 
+    # Fallback Template — if intent was confirmation but reply has no ✅ and OrderBrain didn't fire
+    if (
+        _intent_fast == "repeated_confirmation"
+        and "✅" not in reply_text
+        and _ob_session is None
+    ):
+        try:
+            _fb_summary = _slot_tracker.order_summary()
+            _filled = sum(1 for v in [_slot_tracker.name, _slot_tracker.address,
+                                       _slot_tracker.payment, _slot_tracker.delivery_type] if v)
+            if _filled >= 3 and _fb_summary:
+                _dt_hint = str(_settings_dict.get("delivery_time") or "").strip()
+                _time_note = f"\nيجهز خلال ~{_dt_hint} 🌷" if _dt_hint else ""
+                reply_text = _fb_summary + _time_note
+                logger.info(f"[bot] fallback template used conv={conversation_id}")
+        except Exception:
+            pass
+
     # Update customer memory
     if customer and bot_cfg and bot_cfg.get("memory_enabled", 1):
         _update_memory_from_conversation(restaurant_id, conv["customer_id"], customer_message)
@@ -1127,6 +1209,23 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         _has_time = any(w in reply_text for w in ["دقيقة", "ساعة", "دقائق", "يجهز"])
         if _dt_val and not _has_time:
             reply_text = reply_text.rstrip() + f"\nيجهز خلال ~{_dt_val} 🌷"
+
+    # Quality Metrics — fire-and-forget, never blocks reply
+    try:
+        _log_reply_quality(
+            restaurant_id    = restaurant_id,
+            conversation_id  = conversation_id,
+            intent           = _intent_fast,
+            val_issues       = val_issues if "val_issues" in dir() else [],
+            latency_ms       = _latency   if "_latency"   in dir() else 0,
+            reply_len        = len(reply_text),
+            was_retried      = "_retry_used" in dir() and _retry_used,
+            upsell_shown     = bool(_upsell_line) if "_upsell_line" in dir() else False,
+            faq_cache_hit    = False,
+            escalation       = action == "escalate" if "action" in dir() else False,
+        )
+    except Exception:
+        pass
 
     return {
         "reply": reply_text,

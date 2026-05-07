@@ -94,9 +94,12 @@ CANCELLATION_KEYWORDS = [
 # NUMBER 37 — Item notes / special instructions
 # Words that signal a customization note on the preceding product
 _NOTE_MODIFIERS = [
-    "بدون", "مع ", "حار", "بارد", "ساخن", "إضافي", "extra",
+    "بدون", "مع إضافة", "مع ", "حار", "بارد", "ساخن", "إضافي", "extra",
     "medium", "well done", "rare", "زيادة", "أقل", "ناعم",
     "مقرمش", "طازج", "مطبوخ", "بدون صوص", "بدون بصل",
+    "بدون خس", "بدون طماطم", "بدون توابل", "بدون ثوم", "بدون مايونيز",
+    "مضاعف", "نصف", "إضافة", "سادة", "خفيف الحر", "حار زيادة",
+    "مع صوص", "مع جبن", "مع بيض", "مع خضار",
 ]
 
 # NUMBER 36 — Repeat last order phrases
@@ -805,29 +808,59 @@ def _fuzzy_product_match(msg: str, products: List[dict]) -> Optional[dict]:
 
 def _extract_item_note(msg: str, product_name: str, all_product_names: List[str] = None) -> str:
     """
-    NUMBER 37 — Extract a special-instruction note that follows a product name.
-    Returns the note text (≤35 chars) if a known modifier keyword is present, else "".
-    Examples: "برجر بدون بصل" → "بدون بصل",  "زينجر حار زيادة" → "حار زيادة"
+    NUMBER 37 — Extract special-instruction notes that follow a product name.
+    Collects ALL modifier phrases (بدون X, مع إضافة Y, حار, etc.) in one pass.
+    Examples:
+      "برجر بدون بصل مع إضافة جبن" → "بدون بصل مع إضافة جبن"
+      "زينجر حار زيادة بدون صوص"   → "حار زيادة بدون صوص"
     """
     idx = msg.find(product_name)
     if idx < 0:
         return ""
-    after = msg[idx + len(product_name):idx + len(product_name) + 50]
-    # Stop at natural sentence boundaries
-    stop = re.search(r'[،,\.\n]|(?<=\s)و\s', after)
+    after = msg[idx + len(product_name):idx + len(product_name) + 80]
+
+    # Stop at hard boundaries (comma, period, newline)
+    stop = re.search(r'[،,\.\n]', after)
     if stop:
         after = after[:stop.start()]
+
     after = after.strip()
     if not after:
         return ""
-    # Don't treat another product name as a note
+
+    # Don't treat another product name as part of the note
     for pname in (all_product_names or []):
         if pname != product_name and pname in after:
             after = after[:after.find(pname)].strip()
-    # Keep only if it contains a known modifier
-    if after and any(mod in after for mod in _NOTE_MODIFIERS):
-        return after[:35].strip()
-    return ""
+
+    # Keep only if at least one known modifier is present
+    if not any(mod in after for mod in _NOTE_MODIFIERS):
+        return ""
+
+    # Collect modifier phrases explicitly to avoid grabbing noise
+    collected = []
+    remaining = after
+    for mod in sorted(_NOTE_MODIFIERS, key=len, reverse=True):  # longest first
+        pos = remaining.find(mod)
+        if pos < 0:
+            continue
+        # Extract modifier + up to next modifier or boundary
+        chunk_start = pos
+        chunk = remaining[chunk_start:chunk_start + 25].strip()
+        # Stop chunk at next modifier
+        for other_mod in _NOTE_MODIFIERS:
+            if other_mod == mod:
+                continue
+            other_pos = chunk.find(other_mod)
+            if 0 < other_pos:
+                chunk = chunk[:other_pos].strip()
+        if chunk and chunk not in collected:
+            collected.append(chunk)
+
+    if collected:
+        return " ".join(collected)[:50].strip()
+
+    return after[:35].strip()
 
 
 def _extract_items(
@@ -867,10 +900,13 @@ def _extract_items(
                 if existing.qty != qty:
                     existing.qty = qty
                     updated.append(f"qty_update:{name}×{qty}")
-                # NUMBER 37 — update note if a new instruction detected
+                # NUMBER 37 — update/append note if new instruction detected
                 note = _extract_item_note(msg, name, all_names)
-                if note and not existing.notes:
-                    existing.notes = note
+                if note:
+                    if not existing.notes:
+                        existing.notes = note
+                    elif note not in existing.notes:
+                        existing.notes = (existing.notes + " " + note).strip()[:60]
             else:
                 note = _extract_item_note(msg, name, all_names)
                 session.items.append(OrderItem(
