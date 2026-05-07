@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#6366f1">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="مطعمي">
+<link rel="manifest" href="/manifest.json">
 <title>لوحة التحكم</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -6243,6 +6249,13 @@ async function toggleAiLearning() {
     _updateAiLearningToggle();
     toast(_aiLearningEnabled ? 'تم تفعيل تدريب الذكاء الاصطناعي ✅' : 'تم تعطيل تدريب الذكاء الاصطناعي ⚠️', _aiLearningEnabled ? 'success' : 'info');
   } catch(e) { toast('خطأ: ' + e.message, 'error'); }
+}
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () =>
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  );
 }
 </script>
 </body>

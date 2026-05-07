@@ -1153,6 +1153,26 @@ def _migrate_db(conn):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_change_entity ON ai_change_logs(entity_type, entity_id)")
     except Exception:
         pass
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS outgoing_webhooks (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL,
+            secret TEXT DEFAULT '',
+            events TEXT NOT NULL DEFAULT '["order.confirmed"]',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_triggered_at TEXT DEFAULT NULL,
+            last_status_code INTEGER DEFAULT NULL,
+            fail_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ow_restaurant ON outgoing_webhooks(restaurant_id, is_active)")
+    except Exception:
+        pass
     conn.commit()
 
     # ── Data fix: every WhatsApp channel must have a verify_token ─────────────

@@ -3904,6 +3904,105 @@ async def validate_promo_code(req: Request, user=Depends(current_user)):
     }
 
 
+# ── Outgoing Webhooks ─────────────────────────────────────────────────────────
+
+@app.get("/api/outgoing-webhooks")
+async def list_outgoing_webhooks(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM outgoing_webhooks WHERE restaurant_id=? ORDER BY created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return {"webhooks": [dict(r) for r in rows]}
+
+
+@app.post("/api/outgoing-webhooks", status_code=201)
+async def create_outgoing_webhook(req: Request, user=Depends(current_user)):
+    import json as _json
+    body = await req.json()
+    url = (body.get("url") or "").strip()
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "URL يجب أن يبدأ بـ http:// أو https://")
+    name = (body.get("name") or "Webhook").strip()[:100]
+    secret = (body.get("secret") or "").strip()[:200]
+    events_raw = body.get("events") or ["order.created"]
+    valid_events = {"order.created", "order.confirmed", "order.preparing",
+                    "order.on_way", "order.delivered", "order.cancelled"}
+    events = [e for e in events_raw if e in valid_events] or ["order.created"]
+    wid = str(__import__("uuid").uuid4())
+    conn = database.get_db()
+    conn.execute(
+        "INSERT INTO outgoing_webhooks (id, restaurant_id, name, url, secret, events) VALUES (?,?,?,?,?,?)",
+        (wid, user["restaurant_id"], name, url, secret, _json.dumps(events))
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=?", (wid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.patch("/api/outgoing-webhooks/{wid}")
+async def update_outgoing_webhook(wid: str, req: Request, user=Depends(current_user)):
+    import json as _json
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
+                        (wid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404, "Webhook not found")
+    body = await req.json()
+    allowed = {"name", "url", "secret", "events", "is_active"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if "events" in updates:
+        valid_events = {"order.created", "order.confirmed", "order.preparing",
+                        "order.on_way", "order.delivered", "order.cancelled"}
+        updates["events"] = _json.dumps([e for e in updates["events"] if e in valid_events])
+    if not updates:
+        conn.close()
+        return {"ok": True}
+    vals = list(updates.values())
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    conn.execute(f"UPDATE outgoing_webhooks SET {set_clause} WHERE id=?", [*vals, wid])
+    conn.commit()
+    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=?", (wid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/outgoing-webhooks/{wid}")
+async def delete_outgoing_webhook(wid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
+                        (wid, user["restaurant_id"])).fetchone():
+        conn.close()
+        raise HTTPException(404, "Webhook not found")
+    conn.execute("DELETE FROM outgoing_webhooks WHERE id=?", (wid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/outgoing-webhooks/{wid}/test")
+async def test_outgoing_webhook(wid: str, user=Depends(current_user)):
+    """Send a test ping to verify the endpoint is reachable."""
+    import httpx as _httpx, json as _json
+    conn = database.get_db()
+    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
+                       (wid, user["restaurant_id"])).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Webhook not found")
+    payload = _json.dumps({"event": "ping", "data": {"message": "test ping"}}).encode()
+    try:
+        async with _httpx.AsyncClient(timeout=10) as cl:
+            r = await cl.post(row["url"], content=payload,
+                              headers={"Content-Type": "application/json",
+                                       "X-Restaurant-Event": "ping"})
+        return {"ok": r.status_code < 400, "status_code": r.status_code}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 STATUS_FLOW = {
@@ -4016,7 +4115,9 @@ async def create_order(data: OrderCreate, user=Depends(current_user)):
         JOIN customers c ON o.customer_id = c.id WHERE o.id=?
     """, (oid,)).fetchone()
     conn.close()
-    return dict(row)
+    order_dict = dict(row)
+    asyncio.create_task(_fire_outgoing_webhooks(user["restaurant_id"], "order.created", order_dict))
+    return order_dict
 
 
 _STATUS_MESSAGES = {
@@ -4101,6 +4202,74 @@ async def _notify_customer_status_change(order: dict, restaurant_id: str, new_st
             conn.close()
     except Exception as _e:
         logger.warning(f"[notify_status] {new_status} notify failed order={order.get('id','?')}: {_e}")
+
+
+async def _fire_outgoing_webhooks(restaurant_id: str, event: str, payload: dict) -> None:
+    """POST event payload to all active outgoing webhooks subscribed to this event."""
+    import hmac as _hmac, hashlib as _hl, json as _json
+    try:
+        import httpx as _httpx
+        conn = database.get_db()
+        try:
+            rows = conn.execute(
+                "SELECT id, url, secret FROM outgoing_webhooks "
+                "WHERE restaurant_id=? AND is_active=1",
+                (restaurant_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            return
+
+        body = _json.dumps({"event": event, "data": payload}, ensure_ascii=False).encode()
+        async with _httpx.AsyncClient(timeout=10) as _cl:
+            for row in rows:
+                events_raw = row["secret"] or ""
+                # Load events from the outgoing_webhooks row (re-query to get events field)
+                _conn2 = database.get_db()
+                try:
+                    full = _conn2.execute(
+                        "SELECT events, secret FROM outgoing_webhooks WHERE id=?", (row["id"],)
+                    ).fetchone()
+                finally:
+                    _conn2.close()
+                if not full:
+                    continue
+                subscribed = _json.loads(full["events"] or '["order.confirmed"]')
+                if event not in subscribed:
+                    continue
+                secret = full["secret"] or ""
+                headers = {"Content-Type": "application/json", "X-Restaurant-Event": event}
+                if secret:
+                    sig = _hmac.new(secret.encode(), body, _hl.sha256).hexdigest()
+                    headers["X-Webhook-Signature"] = f"sha256={sig}"
+                try:
+                    r = await _cl.post(row["url"], content=body, headers=headers)
+                    _conn3 = database.get_db()
+                    try:
+                        _conn3.execute(
+                            "UPDATE outgoing_webhooks SET last_triggered_at=CURRENT_TIMESTAMP, "
+                            "last_status_code=?, fail_count=CASE WHEN ? < 400 THEN 0 ELSE fail_count+1 END "
+                            "WHERE id=?",
+                            (r.status_code, r.status_code, row["id"])
+                        )
+                        _conn3.commit()
+                    finally:
+                        _conn3.close()
+                except Exception as _req_e:
+                    logger.warning(f"[outgoing_webhook] delivery failed id={row['id']}: {_req_e}")
+                    _conn4 = database.get_db()
+                    try:
+                        _conn4.execute(
+                            "UPDATE outgoing_webhooks SET fail_count=fail_count+1 WHERE id=?",
+                            (row["id"],)
+                        )
+                        _conn4.commit()
+                    finally:
+                        _conn4.close()
+    except Exception as _e:
+        logger.warning(f"[outgoing_webhooks] event={event} restaurant={restaurant_id}: {_e}")
 
 
 async def _notify_customer_confirmed(order: dict, restaurant_id: str) -> None:
@@ -4256,6 +4425,10 @@ async def update_order_status(oid: str, req: Request, background_tasks: Backgrou
         order_dict = dict(order)
         background_tasks.add_task(
             _notify_customer_status_change, order_dict, user["restaurant_id"], new_status
+        )
+        background_tasks.add_task(
+            _fire_outgoing_webhooks, user["restaurant_id"],
+            f"order.{new_status}", order_dict
         )
 
     conn.commit()
@@ -10635,6 +10808,15 @@ async def dismiss_announcement(ann_id: str, user=Depends(current_user)):
 
 
 # ── Static pages ──────────────────────────────────────────────────────────────
+
+@app.get("/manifest.json", include_in_schema=False)
+async def pwa_manifest():
+    return FileResponse("public/manifest.json", media_type="application/manifest+json")
+
+@app.get("/sw.js", include_in_schema=False)
+async def pwa_sw():
+    return FileResponse("public/sw.js", media_type="application/javascript",
+                        headers={"Service-Worker-Allowed": "/"})
 
 @app.get("/")
 async def root():
