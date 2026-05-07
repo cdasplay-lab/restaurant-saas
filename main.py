@@ -1425,6 +1425,16 @@ async def subscription_status(user=Depends(current_user)):
         plan_row = _get_plan_record(conn, plan_code=plan)
         plan_label_default = {"free": "مجاني", "trial": "تجريبي", "starter": "أساسي",
                               "professional": "احترافي", "enterprise": "مؤسسي"}.get(plan, plan)
+        # Stripe status
+        stripe_row = conn.execute(
+            "SELECT stripe_enabled, stripe_secret_key FROM settings WHERE restaurant_id=? LIMIT 1",
+            (rid,)
+        ).fetchone()
+        stripe_enabled = bool(stripe_row and stripe_row["stripe_enabled"] and stripe_row["stripe_secret_key"])
+        sub_stripe = conn.execute(
+            "SELECT payment_customer_id, payment_subscription_id FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+            (rid,)
+        ).fetchone()
         return {
             "plan":               plan,
             "status":             state["status"],
@@ -1436,6 +1446,9 @@ async def subscription_status(user=Depends(current_user)):
             "cancelled_at":       state.get("cancelled_at") or "",
             "billing_email":      state.get("billing_email") or "",
             "payment_provider":   state.get("payment_provider") or "",
+            "stripe_enabled":          stripe_enabled,
+            "payment_customer_id":     (sub_stripe or {}).get("payment_customer_id") or "",
+            "payment_subscription_id": (sub_stripe or {}).get("payment_subscription_id") or "",
             "features": {
                 "ai_enabled":         features.get("ai", False),
                 "analytics_enabled":  features.get("analytics", False),
@@ -4167,19 +4180,104 @@ async def stripe_webhook(request: Request):
         import json as _j
         event = _j.loads(payload)
 
-    if event["type"] == "checkout.session.completed":
+    etype = event["type"]
+
+    if etype == "checkout.session.completed":
         session = event["data"]["object"]
-        order_id = session.get("metadata", {}).get("order_id", "")
+        mode = session.get("mode", "payment")
         restaurant_id = session.get("metadata", {}).get("restaurant_id", "")
-        if order_id:
+
+        if mode == "payment":
+            order_id = session.get("metadata", {}).get("order_id", "")
+            if order_id:
+                conn = database.get_db()
+                conn.execute(
+                    "UPDATE orders SET payment_status='paid' WHERE id=? AND restaurant_id=?",
+                    (order_id, restaurant_id)
+                )
+                conn.commit()
+                conn.close()
+                logger.info(f"[stripe] order {order_id} marked paid")
+
+        elif mode == "subscription" and restaurant_id:
+            customer_id      = session.get("customer", "")
+            subscription_id  = session.get("subscription", "")
+            plan_code        = session.get("metadata", {}).get("plan", "")
+            now_date         = datetime.utcnow().strftime("%Y-%m-%d")
+            end_date         = (datetime.utcnow() + timedelta(days=32)).strftime("%Y-%m-%d")
+
+            conn = database.get_db()
+            existing = conn.execute(
+                "SELECT id FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+                (restaurant_id,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE subscriptions
+                       SET status='active', plan=?, payment_customer_id=?,
+                           payment_subscription_id=?, start_date=?, end_date=?,
+                           updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (plan_code, customer_id, subscription_id, now_date, end_date, existing["id"])
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO subscriptions (id, restaurant_id, plan, status,
+                           payment_customer_id, payment_subscription_id,
+                           start_date, end_date)
+                       VALUES (?, ?, ?, 'active', ?, ?, ?, ?)""",
+                    (str(__import__("uuid").uuid4()), restaurant_id, plan_code,
+                     customer_id, subscription_id, now_date, end_date)
+                )
+            conn.commit()
+            conn.close()
+            logger.info(f"[stripe] subscription activated for restaurant {restaurant_id} plan={plan_code}")
+
+    elif etype == "invoice.payment_succeeded":
+        invoice = event["data"]["object"]
+        subscription_id = invoice.get("subscription", "")
+        if subscription_id:
+            end_date = (datetime.utcnow() + timedelta(days=32)).strftime("%Y-%m-%d")
             conn = database.get_db()
             conn.execute(
-                "UPDATE orders SET payment_status='paid' WHERE id=? AND restaurant_id=?",
-                (order_id, restaurant_id)
+                """UPDATE subscriptions SET status='active', end_date=?,
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE payment_subscription_id=?""",
+                (end_date, subscription_id)
             )
             conn.commit()
             conn.close()
-            logger.info(f"[stripe] order {order_id} marked paid")
+            logger.info(f"[stripe] invoice paid — subscription {subscription_id} renewed to {end_date}")
+
+    elif etype == "invoice.payment_failed":
+        invoice = event["data"]["object"]
+        subscription_id = invoice.get("subscription", "")
+        if subscription_id:
+            conn = database.get_db()
+            conn.execute(
+                """UPDATE subscriptions SET status='past_due',
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE payment_subscription_id=?""",
+                (subscription_id,)
+            )
+            conn.commit()
+            conn.close()
+            logger.warning(f"[stripe] invoice payment failed — subscription {subscription_id} past_due")
+
+    elif etype == "customer.subscription.deleted":
+        sub_obj = event["data"]["object"]
+        subscription_id = sub_obj.get("id", "")
+        if subscription_id:
+            conn = database.get_db()
+            conn.execute(
+                """UPDATE subscriptions SET status='cancelled',
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE payment_subscription_id=?""",
+                (subscription_id,)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"[stripe] subscription {subscription_id} cancelled")
 
     return {"received": True}
 
@@ -4195,6 +4293,108 @@ async def get_payment_status(oid: str, user=Depends(current_user)):
     if not row:
         raise HTTPException(404, "Order not found")
     return dict(row)
+
+
+# ── Stripe Subscriptions (auto-billing) ──────────────────────────────────────
+
+@app.post("/api/billing/stripe/subscribe")
+async def stripe_create_subscription(req: Request, user=Depends(current_user)):
+    """Create a Stripe Checkout Session for a subscription plan."""
+    key = _get_stripe_key(user["restaurant_id"])
+    if not key:
+        raise HTTPException(402, "Stripe غير مفعّل — أضف STRIPE_SECRET_KEY")
+    try:
+        import stripe as _stripe
+    except ImportError:
+        raise HTTPException(500, "stripe package not installed")
+
+    body = await req.json()
+    plan_code = (body.get("plan") or "").strip()
+    plan_id   = (body.get("plan_id") or "").strip()
+
+    # Look up price from subscription_plans
+    conn = database.get_db()
+    plan_row = conn.execute(
+        "SELECT * FROM subscription_plans WHERE (code=? OR id=?) AND is_active=1 LIMIT 1",
+        (plan_code, plan_id or plan_code)
+    ).fetchone()
+    # Get existing Stripe customer ID if any
+    sub_row = conn.execute(
+        "SELECT payment_customer_id FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+        (user["restaurant_id"],)
+    ).fetchone()
+    conn.close()
+
+    if not plan_row:
+        raise HTTPException(404, "الخطة غير موجودة")
+
+    price_usd = float(plan_row.get("price") or 0)
+    if price_usd <= 0:
+        raise HTTPException(400, "هذه الخطة مجانية — لا تحتاج دفعاً")
+
+    _stripe.api_key = key
+    frontend_base = os.getenv("BASE_URL", "").rstrip("/")
+
+    params: dict = {
+        "payment_method_types": ["card"],
+        "mode": "subscription",
+        "line_items": [{
+            "price_data": {
+                "currency": "usd",
+                "recurring": {"interval": "month"},
+                "product_data": {
+                    "name": plan_row.get("name_ar") or plan_row.get("name") or plan_code,
+                    "description": plan_row.get("description_ar") or "",
+                },
+                "unit_amount": int(price_usd * 100),
+            },
+            "quantity": 1,
+        }],
+        "success_url": f"{frontend_base}/app?billing=success&plan={plan_code}#settings",
+        "cancel_url":  f"{frontend_base}/app?billing=cancelled#settings",
+        "metadata": {
+            "restaurant_id": user["restaurant_id"],
+            "plan": plan_code,
+            "plan_id": plan_id,
+        },
+    }
+    if sub_row and sub_row["payment_customer_id"]:
+        params["customer"] = sub_row["payment_customer_id"]
+    else:
+        params["customer_email"] = user.get("email", "")
+
+    session = _stripe.checkout.Session.create(**params)
+    return {"url": session.url, "session_id": session.id}
+
+
+@app.post("/api/billing/stripe/portal")
+async def stripe_billing_portal(user=Depends(current_user)):
+    """Create a Stripe Customer Portal session so the user can manage their subscription."""
+    key = _get_stripe_key(user["restaurant_id"])
+    if not key:
+        raise HTTPException(402, "Stripe غير مفعّل")
+    try:
+        import stripe as _stripe
+    except ImportError:
+        raise HTTPException(500, "stripe package not installed")
+
+    conn = database.get_db()
+    sub_row = conn.execute(
+        "SELECT payment_customer_id FROM subscriptions WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 1",
+        (user["restaurant_id"],)
+    ).fetchone()
+    conn.close()
+
+    if not sub_row or not sub_row["payment_customer_id"]:
+        raise HTTPException(400, "لا يوجد اشتراك Stripe مرتبط بهذا الحساب")
+
+    _stripe.api_key = key
+    frontend_base = os.getenv("BASE_URL", "").rstrip("/")
+    portal = _stripe.billing_portal.Session.create(
+        customer=sub_row["payment_customer_id"],
+        return_url=f"{frontend_base}/app#settings",
+    )
+    return {"url": portal.url}
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

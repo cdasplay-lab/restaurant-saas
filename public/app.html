@@ -487,9 +487,10 @@
               <th class="text-right px-4 py-3">رقم الطلب</th>
               <th class="text-right px-4 py-3">العميل</th>
               <th class="text-right px-4 py-3">القناة</th>
-              <th class="text-right px-4 py-3">النوع</th>
+              <th class="text-right px-4 py-3">الفرع</th>
               <th class="text-right px-4 py-3">المبلغ</th>
               <th class="text-right px-4 py-3">الحالة</th>
+              <th class="text-right px-4 py-3">الدفع</th>
               <th class="text-right px-4 py-3">التاريخ</th>
               <th class="px-4 py-3"></th>
             </tr>
@@ -1161,6 +1162,28 @@
               <div id="bilPayMethods" class="space-y-3">جارٍ التحميل…</div>
             </div>
             <!-- Submit Proof -->
+            <!-- Stripe Auto-Billing -->
+            <div id="stripeAutoCard" class="bg-slate-800 rounded-2xl p-5 border border-indigo-500/30 space-y-4">
+              <div class="flex items-center gap-2 mb-1">
+                <i class="fa-brands fa-stripe text-indigo-400 text-xl"></i>
+                <h3 class="text-white font-semibold text-sm">الدفع التلقائي بالبطاقة (Stripe)</h3>
+                <span id="stripeStatusBadge" class="hidden badge bg-green-500/20 text-green-400 text-xs mr-auto">مفعّل</span>
+              </div>
+              <div id="stripeNotConfigured" class="text-slate-400 text-xs leading-relaxed">
+                <i class="fa-solid fa-circle-info text-slate-500 ml-1"></i>
+                لتفعيل الدفع التلقائي أضف <code class="bg-slate-700 px-1 rounded">STRIPE_SECRET_KEY</code> في متغيرات البيئة على السيرفر.
+              </div>
+              <div id="stripeConfigured" class="hidden space-y-3">
+                <p class="text-slate-400 text-xs">اختر خطة وادفع ببطاقتك — يُجدَّد الاشتراك تلقائياً كل شهر.</p>
+                <div id="stripePlansGrid" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
+                <div id="stripePortalRow" class="hidden pt-2 border-t border-slate-700">
+                  <button onclick="openStripePortal()" class="w-full bg-slate-700 hover:bg-slate-600 text-white text-sm py-2 rounded-xl transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-credit-card"></i> إدارة بطاقتي وفواتيري
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div id="proofForm" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
               <h3 class="text-white font-semibold text-sm">إرسال إيصال الدفع</h3>
               <p class="text-slate-400 text-xs">بعد إتمام الدفع عبر أي طريقة أعلاه، ارفع صورة/PDF الإيصال هنا.</p>
@@ -2103,9 +2126,10 @@ function renderOrdersTable() {
       <td class="px-4 py-3 text-slate-500 text-xs font-mono">#${o.id.slice(-8)}</td>
       <td class="px-4 py-3 text-white font-medium">${o.customer_name}</td>
       <td class="px-4 py-3">${platformBadge(o.channel)}</td>
-      <td class="px-4 py-3 text-slate-400 text-xs">${o.type === 'delivery' ? '🛵 توصيل' : '🏠 استلام'}</td>
+      <td class="px-4 py-3 text-slate-400 text-xs">${o.branch_name ? `<span class="badge bg-slate-700 text-slate-300">${o.branch_name}</span>` : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-4 py-3 text-green-400 font-semibold">${cur(o.total)}</td>
       <td class="px-4 py-3">${statusBadge(o.status)}</td>
+      <td class="px-4 py-3">${_paymentBadge(o.payment_status)}</td>
       <td class="px-4 py-3 text-slate-500 text-xs">${dt(o.created_at)}</td>
       <td class="px-4 py-3">
         <button onclick="openOrderModal('${o.id}')" class="text-indigo-400 hover:text-indigo-300 text-xs px-2 py-1 rounded border border-indigo-500/30 hover:border-indigo-400/50 transition">
@@ -2113,6 +2137,12 @@ function renderOrdersTable() {
         </button>
       </td>
     </tr>`).join('');
+}
+
+function _paymentBadge(status) {
+  if (!status || status === 'unpaid') return '<span class="badge bg-slate-700 text-slate-400 text-xs">غير مدفوع</span>';
+  if (status === 'paid')   return '<span class="badge bg-green-500/20 text-green-400 text-xs">✓ مدفوع</span>';
+  return `<span class="badge bg-slate-700 text-slate-400 text-xs">${status}</span>`;
 }
 
 async function openOrderModal(id) {
@@ -2132,6 +2162,14 @@ async function openOrderModal(id) {
         <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">القناة</p><p>${platformBadge(o.channel)}</p></div>
         <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">النوع</p><p class="text-white">${o.type === 'delivery' ? '🛵 توصيل' : '🏠 استلام'}</p></div>
         <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الحالة</p>${statusBadge(o.status)}</div>
+        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الفرع</p><p class="text-white text-sm">${o.branch_name || '—'}</p></div>
+        <div class="bg-slate-900 rounded-xl p-3">
+          <p class="text-slate-500 text-xs mb-1">الدفع</p>
+          <div class="flex items-center gap-2">
+            ${_paymentBadge(o.payment_status)}
+            ${o.payment_status !== 'paid' ? `<button onclick="sendPaymentLink('${o.id}')" class="text-xs text-indigo-400 hover:text-indigo-300 underline">إرسال رابط</button>` : ''}
+          </div>
+        </div>
         <div class="bg-slate-900 rounded-xl p-3 col-span-2"><p class="text-slate-500 text-xs mb-1">العنوان</p><p class="text-white">${o.address || '—'}</p></div>
       </div>
       <div class="mb-4">
@@ -2190,6 +2228,24 @@ async function saveOrderInfo(id) {
     });
     toast('تم الحفظ', 'success');
   } catch(e) { toast(e.message, 'error'); }
+}
+
+async function sendPaymentLink(orderId) {
+  try {
+    const r = await api.req('POST', `/api/orders/${orderId}/payment-link`);
+    if (r.url) {
+      await navigator.clipboard.writeText(r.url).catch(() => {});
+      toast('تم إنشاء رابط الدفع — نُسخ إلى الحافظة ✅', 'success');
+      closeModal();
+      loadOrders();
+    }
+  } catch(e) {
+    if (e.message?.includes('402') || e.message?.includes('Stripe') || e.message?.includes('STRIPE')) {
+      toast('Stripe غير مفعّل — أضف STRIPE_SECRET_KEY في الإعدادات', 'error');
+    } else {
+      toast(e.message, 'error');
+    }
+  }
 }
 
 function printOrder(o) {
@@ -4626,6 +4682,12 @@ async function loadBilling() {
       : '<p class="text-slate-500 text-xs">لا توجد طرق دفع مفعّلة حالياً — تواصل مع الدعم</p>';
 
     loadMyPayRequests();
+
+    // Stripe auto-billing section
+    const stripeEnabled = !!(d.stripe_enabled || d.payment_provider === 'stripe');
+    const hasStripeCustomer = !!(d.payment_customer_id);
+    await loadStripeBilling(plans, d.plan, stripeEnabled, hasStripeCustomer).catch(() => {});
+
   } catch(e) {
     document.getElementById('billingLoading').textContent = 'تعذّر تحميل بيانات الاشتراك';
   }
@@ -4643,6 +4705,62 @@ function selectPlanForProof(planId, price, currency) {
   if (card) card.classList.add('ring-2','ring-indigo-500');
   const form = document.getElementById('proofForm');
   if (form) form.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+// ── Stripe auto-billing ────────────────────────────────────────────────────
+async function loadStripeBilling(plans, currentPlan, stripeEnabled, hasStripeCustomer) {
+  const notConfigured = document.getElementById('stripeNotConfigured');
+  const configured    = document.getElementById('stripeConfigured');
+  const statusBadge   = document.getElementById('stripeStatusBadge');
+  const portalRow     = document.getElementById('stripePortalRow');
+  if (!notConfigured) return;
+
+  if (!stripeEnabled) {
+    notConfigured.classList.remove('hidden');
+    configured.classList.add('hidden');
+    return;
+  }
+  notConfigured.classList.add('hidden');
+  configured.classList.remove('hidden');
+
+  if (hasStripeCustomer) {
+    statusBadge?.classList.remove('hidden');
+    portalRow?.classList.remove('hidden');
+  }
+
+  const grid = document.getElementById('stripePlansGrid');
+  if (!grid) return;
+  const paidPlans = (plans || []).filter(p => p.code !== 'trial' && p.is_active);
+  if (!paidPlans.length) { grid.innerHTML = '<p class="text-slate-500 text-xs col-span-3">لا توجد خطط متاحة</p>'; return; }
+  grid.innerHTML = paidPlans.map(p => {
+    const isCurrent = p.code === currentPlan;
+    return `
+    <div class="bg-slate-900 border ${isCurrent ? 'border-indigo-500' : 'border-slate-700'} rounded-xl p-4 text-center">
+      ${p.badge_text_ar ? `<div class="badge bg-indigo-500/20 text-indigo-400 text-xs mb-2">${p.badge_text_ar}</div>` : ''}
+      <p class="text-white font-bold text-sm mb-1">${p.name_ar || p.name}</p>
+      <p class="text-green-400 font-bold text-lg mb-3">${p.price > 0 ? '$' + p.price : 'مجاني'}<span class="text-slate-500 text-xs">/شهر</span></p>
+      ${isCurrent
+        ? '<span class="badge bg-indigo-500/20 text-indigo-300 text-xs">خطتك الحالية</span>'
+        : `<button onclick="stripeSubscribe('${p.code}','${p.id||''}')" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-2 rounded-lg transition">اشترك الآن</button>`
+      }
+    </div>`;
+  }).join('');
+}
+
+async function stripeSubscribe(planCode, planId) {
+  try {
+    const r = await api.req('POST', '/api/billing/stripe/subscribe', { plan: planCode, plan_id: planId });
+    if (r.url) window.location.href = r.url;
+    else toast('تعذّر إنشاء جلسة الدفع', 'error');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function openStripePortal() {
+  try {
+    const r = await api.req('POST', '/api/billing/stripe/portal');
+    if (r.url) window.location.href = r.url;
+    else toast('تعذّر فتح بوابة الفواتير', 'error');
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 function onProofPlanChange() {
@@ -5617,6 +5735,25 @@ async function miSubmitImport() {
 function miStartOver() {
   openMenuImport();
 }
+
+async function miSaveAsMenuImages() {
+  if (!_miSessionId) return;
+  const btn = document.getElementById('miSaveImgBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner w-4 h-4"></div> جاري الحفظ...'; }
+  try {
+    const r = await api.req('POST', `/api/menu-import/${_miSessionId}/save-as-menu-images`);
+    if (r.saved > 0) {
+      toast(`تم حفظ ${r.saved} صورة كصور منيو ✅`, 'success');
+      if (btn) { btn.innerHTML = `<i class="fa-solid fa-check"></i> تم حفظ ${r.saved} صورة`; btn.classList.replace('bg-purple-600','bg-green-700'); }
+    } else {
+      toast('لا توجد صور جديدة للحفظ (ربما محفوظة مسبقاً)', 'warning');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-images"></i> احفظ الصور كصور منيو'; }
+    }
+  } catch(e) {
+    toast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-images"></i> احفظ الصور كصور منيو'; }
+  }
+}
 </script>
 
 <!-- ═══ MENU IMPORT MODAL ═══ -->
@@ -5761,8 +5898,11 @@ function miStartOver() {
           </div>
         </div>
         <div id="miDoneErrors" class="hidden bg-red-900/30 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm mb-6 text-right max-w-xl mx-auto"></div>
-        <div class="flex justify-center gap-3">
+        <div class="flex flex-wrap justify-center gap-3">
           <button onclick="closeMenuImport()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl font-semibold transition">عرض المنتجات</button>
+          <button onclick="miSaveAsMenuImages()" id="miSaveImgBtn" class="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2.5 rounded-xl transition flex items-center gap-2">
+            <i class="fa-solid fa-images"></i> احفظ الصور كصور منيو
+          </button>
           <button onclick="miStartOver()" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2.5 rounded-xl transition">استيراد منيو آخر</button>
         </div>
       </div>
