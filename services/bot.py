@@ -1061,6 +1061,18 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                                     conn.commit()
                         except Exception as _pe:
                             logger.warning(f"[promo] validation failed: {_pe}")
+                    # Upsell Engine — get suggestion BEFORE clearing session
+                    # Skip if NUMBER 33 pre-confirmation upsell already fired this session
+                    _upsell_line = ""
+                    try:
+                        _already_upsold = getattr(_ob_session, "upsell_offered", False)
+                        if not _already_upsold and len(_ob_session.items) <= 2:
+                            _upsell_line = _ob_session._get_upsell_suggestion(
+                                [dict(p) for p in products]
+                            )
+                    except Exception as _ue:
+                        logger.debug(f"[upsell] skipped: {_ue}")
+
                     reply_text = _ob_session.generate_confirmation_message(
                         order_number=_order_num,
                         delivery_fee=_fee_for_delivery,
@@ -1072,6 +1084,22 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                         f"[order_brain] NUMBER 30 confirmation sent "
                         f"conv={conversation_id} order={_order_num}"
                     )
+
+                    # Append upsell — only if customer hasn't already refused in this conversation
+                    if _upsell_line:
+                        _refusal_signals = ["لا شكراً", "لا شكرا", "لا ما أريد", "لا بس",
+                                            "بس هذا", "ما أريد إضافة", "يكفي", "بس هيچ",
+                                            "ما أريد ثاني", "لا ثاني", "بس، شكراً"]
+                        _prev_customer_text = " ".join(
+                            h.get("content", "") for h in _history_dicts
+                            if h.get("role") in ("customer", "user")
+                        )
+                        _already_refused = any(r in _prev_customer_text for r in _refusal_signals)
+                        if not _already_refused:
+                            reply_text = reply_text.rstrip() + f"\n{_upsell_line}"
+                            logger.info(f"[upsell] appended: {_upsell_line!r} conv={conversation_id}")
+                        else:
+                            logger.debug(f"[upsell] skipped — refusal detected conv={conversation_id}")
             else:
                 OrderBrain.update_from_message(
                     _ob_session,
