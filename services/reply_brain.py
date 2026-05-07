@@ -397,3 +397,41 @@ def _detect_missing_slots(ctx: dict) -> list:
     if not ctx.get("known_payment"):
         missing.append("payment")
     return missing
+
+
+# ── Multi-turn Order Summary ──────────────────────────────────────────────────
+
+def build_order_summary(history: list, current_message: str = "", products: list = None) -> str:
+    """
+    Build a clean Arabic order confirmation summary from conversation history.
+    Uses SlotTracker to extract all known slots.
+    Returns formatted ✅ summary string, or "" if not enough data.
+    NEVER raises.
+    """
+    try:
+        from services.bot import SlotTracker
+        tracker = SlotTracker().ingest(history or [], current_message)
+
+        # Detect product name from order history
+        items_text = ""
+        if products:
+            all_text = " ".join(
+                (m.get("content") or "") for m in (history or [])
+                if m.get("role") in ("customer", "user")
+            ) + " " + current_message
+            for p in products:
+                pname = (p.get("name") or "").strip()
+                if pname and pname in all_text:
+                    qty = tracker.quantity or 1
+                    price = p.get("price") or 0
+                    price_str = f" — {int(qty * price):,} د.ع" if price else ""
+                    items_text = f"{qty}x {pname}{price_str}"
+                    break
+
+        summary = tracker.order_summary(items_text)
+        # Only return summary if we have at least 2 meaningful slots filled
+        filled = sum(1 for v in [tracker.name, tracker.address, tracker.payment,
+                                  tracker.delivery_type] if v)
+        return summary if filled >= 2 else ""
+    except Exception:
+        return ""

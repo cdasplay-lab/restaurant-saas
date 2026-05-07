@@ -77,9 +77,7 @@ ELITE_BANNED_ADDITIONAL = [
     "تحليل الطلب",
     "تحليل رسالتك",
     "تم رصد",
-    # Corporate/formal filler words
-    "بالتأكيد",
-    "بالطبع",
+    # Corporate/formal filler words — بالتأكيد/بالطبع handled by _FORMAL_OPENERS in bot.py (replaced, not deleted)
     "بكل سرور",
     "من دواعي سروري",
     "بكل ترحيب",
@@ -185,7 +183,7 @@ CORPORATE_SIGNALS = [
     "من دواعي سروري",
 ]
 
-MAX_REPLY_LENGTH = 300
+MAX_REPLY_LENGTH = 220
 MAX_QUESTIONS = 1
 
 # Intents where multi-question is always a problem (not just simple intents)
