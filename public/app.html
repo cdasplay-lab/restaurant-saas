@@ -258,9 +258,12 @@
         <p id="userName" class="text-white text-xs font-medium truncate">المدير</p>
         <p id="userEmail" class="text-slate-500 text-xs truncate">admin@restaurant.com</p>
       </div>
-      <button onclick="logout()" class="text-slate-500 hover:text-red-400 transition text-sm" title="تسجيل الخروج">
-        <i class="fa-solid fa-right-from-bracket"></i>
-      </button>
+      <div class="flex items-center gap-1.5">
+        <div id="wsDot" class="w-2 h-2 rounded-full bg-slate-600" title="غير متصل"></div>
+        <button onclick="logout()" class="text-slate-500 hover:text-red-400 transition text-sm" title="تسجيل الخروج">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      </div>
     </div>
   </div>
 </aside>
@@ -5450,7 +5453,97 @@ async function init() {
   }
 
   _checkNewOrders();
-  setInterval(_checkNewOrders, 20000);
+  setInterval(_checkNewOrders, 60000); // slower poll — WS handles instant alerts
+
+  // ── WebSocket real-time events ───────────────────────────────────────────
+  let _ws = null, _wsRetry = 0, _wsAlive = false;
+
+  function _wsUrl() {
+    const base = (window.API_BASE || '').replace(/\/$/, '');
+    const proto = base.startsWith('https') ? 'wss' : 'ws';
+    return base.replace(/^https?/, proto) + `/ws?token=${S.token}`;
+  }
+
+  function _playMsgBeep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine'; osc.frequency.value = 660;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.35);
+    } catch(e) {}
+  }
+
+  function _setWsDot(connected) {
+    _wsAlive = connected;
+    const dot = document.getElementById('wsDot');
+    if (!dot) return;
+    dot.className = connected
+      ? 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse'
+      : 'w-2 h-2 rounded-full bg-slate-600';
+    dot.title = connected ? 'متصل — إشعارات فورية' : 'غير متصل';
+  }
+
+  function _initWs() {
+    if (_ws) { try { _ws.close(); } catch(e) {} }
+    _ws = new WebSocket(_wsUrl());
+
+    _ws.onopen = () => {
+      _wsRetry = 0;
+      _setWsDot(true);
+      setInterval(() => { if (_ws?.readyState === 1) _ws.send('ping'); }, 25000);
+    };
+
+    _ws.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch { return; }
+
+      if (ev.type === 'new_order') {
+        _playOrderBeep();
+        _showOrderBanner(1);
+        // Refresh orders badge immediately
+        api.get('/api/orders?status=pending').then(orders => {
+          const count = Array.isArray(orders) ? orders.length : (orders?.orders || []).length;
+          _lastPendingCount = count;
+          const pb = document.getElementById('badgePending');
+          if (pb && count > 0) { pb.textContent = count; pb.classList.remove('hidden'); pb.classList.add('animate-pulse'); setTimeout(() => pb.classList.remove('animate-pulse'), 3000); }
+        }).catch(() => {});
+        if (Notification.permission === 'granted')
+          new Notification('طلب جديد! 🍽️', { body: `طلب جديد من ${ev.name || 'زبون'} عبر ${ev.platform || ''}`, dir: 'rtl', tag: 'new-order' });
+      }
+
+      if (ev.type === 'new_message') {
+        _playMsgBeep();
+        toast(`رسالة جديدة من ${ev.name || 'زبون'}`, 'info');
+        // Refresh conv list silently
+        api.get('/api/conversations').then(convs => { S.convs = convs; renderConvList(); }).catch(() => {});
+        // If active conv matches, refresh messages
+        if (S.activeConv && ev.conv_id === S.activeConv) {
+          api.get(`/api/conversations/${S.activeConv}/messages`).then(msgs => renderMessages(msgs, false)).catch(() => {});
+        }
+      }
+
+      if (ev.type === 'escalation') {
+        _playMsgBeep();
+        toast(`⚠️ ${ev.name || 'زبون'} يطلب موظف`, 'warning');
+        api.get('/api/conversations').then(convs => { S.convs = convs; renderConvList(); }).catch(() => {});
+      }
+    };
+
+    _ws.onclose = () => {
+      _setWsDot(false);
+      // Exponential backoff: 2s, 4s, 8s … max 30s
+      const delay = Math.min(2000 * Math.pow(2, _wsRetry), 30000);
+      _wsRetry++;
+      setTimeout(_initWs, delay);
+    };
+
+    _ws.onerror = () => { _ws.close(); };
+  }
+
+  _initWs();
 
   // Inject banner animation keyframe once
   if (!document.getElementById('_bannerStyle')) {

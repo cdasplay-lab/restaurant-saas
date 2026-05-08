@@ -14,6 +14,7 @@ import httpx
 
 import database
 from services import bot
+from services.ws_manager import ws_manager
 
 logger = logging.getLogger("restaurant-saas")
 
@@ -1247,6 +1248,11 @@ def _process_incoming(
                             f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
                             "conversation", conv_id
                         )
+                        ws_manager.broadcast_sync(restaurant_id, "escalation", {
+                            "conv_id": conv_id,
+                            "name": customer.get("name", ""),
+                            "platform": platform,
+                        })
 
                 conn.commit()
 
@@ -1306,6 +1312,11 @@ def _process_incoming(
                         "customer", customer_id
                     )
                     conn.commit()
+                    ws_manager.broadcast_sync(restaurant_id, "new_order", {
+                        "name": customer.get("name", ""),
+                        "platform": platform,
+                        "conv_id": conv_id,
+                    })
 
                 _log_activity(
                     conn, restaurant_id,
@@ -1330,6 +1341,11 @@ def _process_incoming(
                     "conversation", conv_id
                 )
                 conn.commit()
+                ws_manager.broadcast_sync(restaurant_id, "new_message", {
+                    "conv_id": conv_id,
+                    "name": customer.get("name", ""),
+                    "platform": platform,
+                })
 
                 _log_activity(
                     conn, restaurant_id,
@@ -1828,6 +1844,13 @@ def _auto_create_order(
         "order", order_id,
     )
     conn.commit()
+    ws_manager.broadcast_sync(restaurant_id, "new_order", {
+        "order_id": order_id,
+        "name": customer.get("name", ""),
+        "platform": platform,
+        "total": int(total),
+        "conv_id": conversation_id,
+    })
 
     # Send Telegram notification to owner if notify_chat_id is configured
     try:

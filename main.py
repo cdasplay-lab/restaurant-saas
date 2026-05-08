@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -21,6 +21,7 @@ import bcrypt as _bcrypt
 import database
 from services import webhooks
 from services import menu_parser as _menu_parser
+from services.ws_manager import ws_manager
 from services.integrations import get_adapter, get_all_adapters, PLATFORM_CATALOG
 import secrets as _secrets
 import tempfile
@@ -718,7 +719,7 @@ async def subscription_guard(request: Request, call_next):
     if not path.startswith("/api/"):
         return await call_next(request)
     # Exclude: auth, super admin, billing/subscription status (expired users must still read their own status)
-    skip_prefixes = ("/api/auth/", "/api/super/", "/api/subscription/", "/api/billing/", "/api/announcements", "/api/onboarding")
+    skip_prefixes = ("/api/auth/", "/api/super/", "/api/subscription/", "/api/billing/", "/api/announcements", "/api/onboarding", "/ws")
     if any(path.startswith(p) for p in skip_prefixes):
         return await call_next(request)
 
@@ -7681,6 +7682,32 @@ async def get_activity(
 
 
 # ── Notifications ─────────────────────────────────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket, token: str = ""):
+    """Real-time event stream. Auth via ?token=JWT query param."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        restaurant_id = payload.get("restaurant_id")
+        if not restaurant_id:
+            await ws.close(code=4001); return
+    except Exception:
+        await ws.close(code=4001); return
+
+    await ws_manager.connect(restaurant_id, ws)
+    try:
+        # Send initial ping so client knows connection is live
+        await ws.send_text('{"type":"connected"}')
+        while True:
+            # Keep alive — client sends "ping", we reply "pong"
+            data = await ws.receive_text()
+            if data == "ping":
+                await ws.send_text('{"type":"pong"}')
+    except WebSocketDisconnect:
+        ws_manager.disconnect(restaurant_id, ws)
+    except Exception:
+        ws_manager.disconnect(restaurant_id, ws)
+
 
 @app.get("/api/notifications")
 async def get_notifications(
