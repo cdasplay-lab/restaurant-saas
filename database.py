@@ -684,6 +684,15 @@ def _migrate_db(conn):
         ("menu_images", "last_sent_at", "TEXT DEFAULT ''"),
         # conversations — silence follow-up guard (1 = already sent follow-up)
         ("conversations", "followup_sent", "INTEGER DEFAULT 0"),
+        # conversations — quality tracking
+        ("conversations", "had_order",        "INTEGER DEFAULT 0"),
+        ("conversations", "resolution_type",  "TEXT DEFAULT ''"),
+        # bot_config — brand voice
+        ("bot_config", "voice_tone",       "TEXT DEFAULT 'friendly'"),
+        ("bot_config", "dialect_override", "TEXT DEFAULT 'auto'"),
+        ("bot_config", "custom_greeting",  "TEXT DEFAULT ''"),
+        ("bot_config", "custom_farewell",  "TEXT DEFAULT ''"),
+        ("bot_config", "brand_keywords",   "TEXT DEFAULT ''"),
     ]
 
     # ── billing_audit_logs ───────────────────────────────────────────────────
@@ -1147,6 +1156,59 @@ def _migrate_db(conn):
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_know_ver_knowledge ON restaurant_knowledge_versions(knowledge_id, version_number)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_know_ver_restaurant ON restaurant_knowledge_versions(restaurant_id, created_at)")
+    except Exception:
+        pass
+
+    # ── shift_commands — staff real-time bot instructions ────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS shift_commands (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            command_text TEXT NOT NULL,
+            created_by TEXT DEFAULT '',
+            expires_at TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_shift_commands_rest ON shift_commands(restaurant_id, is_active)")
+    except Exception:
+        pass
+
+    # ── exception_playbook — deterministic replies for hard situations ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS exception_playbook (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            trigger_keywords TEXT DEFAULT '[]',
+            reply_text TEXT NOT NULL,
+            category TEXT DEFAULT 'general',
+            priority INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_exception_playbook_rest ON exception_playbook(restaurant_id, is_active)")
+    except Exception:
+        pass
+
+    # ── bot_unclear_log — track questions bot couldn't answer (weekly report) ─
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_unclear_log (
+            id TEXT PRIMARY KEY,
+            restaurant_id TEXT NOT NULL,
+            customer_message TEXT NOT NULL,
+            conversation_id TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+        )
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_unclear_rest ON bot_unclear_log(restaurant_id, created_at)")
     except Exception:
         pass
 

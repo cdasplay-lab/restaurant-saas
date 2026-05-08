@@ -980,6 +980,12 @@ class BotConfigUpdate(BaseModel):
     order_extraction_enabled: Optional[bool] = None
     memory_enabled: Optional[bool] = None
     escalation_threshold: Optional[int] = None
+    # Brand Voice
+    voice_tone: Optional[str] = None
+    dialect_override: Optional[str] = None
+    custom_greeting: Optional[str] = None
+    custom_farewell: Optional[str] = None
+    brand_keywords: Optional[str] = None
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -6590,6 +6596,11 @@ async def update_bot_config(data: BotConfigUpdate, user=Depends(current_user)):
     if data.order_extraction_enabled is not None: upd["order_extraction_enabled"] = int(data.order_extraction_enabled)
     if data.memory_enabled is not None: upd["memory_enabled"] = int(data.memory_enabled)
     if data.escalation_threshold is not None: upd["escalation_threshold"] = data.escalation_threshold
+    if data.voice_tone is not None: upd["voice_tone"] = data.voice_tone
+    if data.dialect_override is not None: upd["dialect_override"] = data.dialect_override
+    if data.custom_greeting is not None: upd["custom_greeting"] = data.custom_greeting
+    if data.custom_farewell is not None: upd["custom_farewell"] = data.custom_farewell
+    if data.brand_keywords is not None: upd["brand_keywords"] = data.brand_keywords
 
     if upd:
         conn.execute(f"UPDATE bot_config SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
@@ -6706,6 +6717,149 @@ async def delete_bot_correction(cid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# ── SHIFT COMMANDS ────────────────────────────────────────────────────────────
+
+@app.get("/api/shift-commands")
+async def list_shift_commands(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM shift_commands WHERE restaurant_id=? AND is_active=1 "
+        "AND (expires_at='' OR expires_at > datetime('now')) ORDER BY created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/api/shift-commands")
+async def add_shift_command(data: dict, user=Depends(current_user)):
+    text = (data.get("command_text") or "").strip()
+    if not text:
+        raise HTTPException(400, "command_text required")
+    expires_at = (data.get("expires_at") or "").strip()
+    rid = user["restaurant_id"]
+    added_by = user.get("name") or user.get("email") or ""
+    conn = database.get_db()
+    cid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO shift_commands (id, restaurant_id, command_text, created_by, expires_at) VALUES (?,?,?,?,?)",
+        (cid, rid, text, added_by, expires_at)
+    )
+    conn.commit(); conn.close()
+    return {"ok": True, "id": cid}
+
+@app.delete("/api/shift-commands/{cid}")
+async def delete_shift_command(cid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    conn.execute(
+        "UPDATE shift_commands SET is_active=0 WHERE id=? AND restaurant_id=?",
+        (cid, user["restaurant_id"])
+    )
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+@app.delete("/api/shift-commands")
+async def clear_all_shift_commands(user=Depends(current_user)):
+    conn = database.get_db()
+    conn.execute("UPDATE shift_commands SET is_active=0 WHERE restaurant_id=?", (user["restaurant_id"],))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+
+# ── EXCEPTION PLAYBOOK ────────────────────────────────────────────────────────
+
+@app.get("/api/exception-playbook")
+async def list_playbook(user=Depends(current_user)):
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT * FROM exception_playbook WHERE restaurant_id=? ORDER BY priority DESC, created_at DESC",
+        (user["restaurant_id"],)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/api/exception-playbook")
+async def add_playbook_entry(data: dict, user=Depends(current_user)):
+    import json as _json
+    triggers = data.get("trigger_keywords") or []
+    reply    = (data.get("reply_text") or "").strip()
+    if not triggers or not reply:
+        raise HTTPException(400, "trigger_keywords and reply_text required")
+    if isinstance(triggers, list):
+        triggers_json = _json.dumps(triggers, ensure_ascii=False)
+    else:
+        triggers_json = str(triggers)
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    eid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO exception_playbook (id, restaurant_id, trigger_keywords, reply_text, category, priority) VALUES (?,?,?,?,?,?)",
+        (eid, rid, triggers_json, reply, data.get("category","general"), int(data.get("priority",0)))
+    )
+    conn.commit(); conn.close()
+    return {"ok": True, "id": eid}
+
+@app.patch("/api/exception-playbook/{eid}")
+async def update_playbook_entry(eid: str, data: dict, user=Depends(current_user)):
+    conn = database.get_db()
+    if not conn.execute("SELECT id FROM exception_playbook WHERE id=? AND restaurant_id=?",
+                        (eid, user["restaurant_id"])).fetchone():
+        conn.close(); raise HTTPException(404)
+    if "is_active" in data:
+        conn.execute("UPDATE exception_playbook SET is_active=? WHERE id=?", (int(data["is_active"]), eid))
+    if "reply_text" in data:
+        conn.execute("UPDATE exception_playbook SET reply_text=? WHERE id=?", (data["reply_text"].strip(), eid))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+@app.delete("/api/exception-playbook/{eid}")
+async def delete_playbook_entry(eid: str, user=Depends(current_user)):
+    conn = database.get_db()
+    conn.execute("DELETE FROM exception_playbook WHERE id=? AND restaurant_id=?", (eid, user["restaurant_id"]))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+
+# ── BOT QUALITY ANALYTICS ─────────────────────────────────────────────────────
+
+@app.get("/api/analytics/bot-quality")
+async def bot_quality_analytics(user=Depends(current_user)):
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    def q(sql, *p): return (conn.execute(sql, p).fetchone() or [0])[0]
+    total   = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=?", rid)
+    ordered = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND had_order=1", rid)
+    escalated = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND resolution_type='escalated'", rid)
+    avg_msgs  = q("SELECT COALESCE(AVG(bot_turn_count),0) FROM conversations WHERE restaurant_id=? AND bot_turn_count>0", rid)
+    week_convs = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND created_at >= datetime('now','-7 days')", rid)
+    week_ordered = q("SELECT COUNT(*) FROM conversations WHERE restaurant_id=? AND had_order=1 AND created_at >= datetime('now','-7 days')", rid)
+    conversion = round((ordered / total * 100) if total > 0 else 0, 1)
+    week_conversion = round((week_ordered / week_convs * 100) if week_convs > 0 else 0, 1)
+    conn.close()
+    return {
+        "total_conversations": total,
+        "ordered": ordered,
+        "escalated": escalated,
+        "conversion_rate": conversion,
+        "avg_messages_per_conv": round(float(avg_msgs), 1),
+        "week_conversations": week_convs,
+        "week_conversion_rate": week_conversion,
+    }
+
+@app.get("/api/analytics/bot-gaps")
+async def bot_gaps_report(days: int = 7, user=Depends(current_user)):
+    """Weekly report: questions the bot couldn't answer."""
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    rows = conn.execute(
+        "SELECT customer_message, COUNT(*) as cnt FROM bot_unclear_log "
+        "WHERE restaurant_id=? AND created_at >= datetime('now', ? || ' days') "
+        "GROUP BY customer_message ORDER BY cnt DESC LIMIT 30",
+        (rid, f"-{days}")
+    ).fetchall()
+    conn.close()
+    return [{"message": r["customer_message"], "count": r["cnt"]} for r in rows]
 
 
 # ── NUMBER 25 — AI Training / Learning System ─────────────────────────────────

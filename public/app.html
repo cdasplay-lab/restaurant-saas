@@ -508,6 +508,22 @@
       <div class="flex gap-4 h-[calc(100vh-140px)]">
         <!-- List -->
         <div class="w-80 flex-shrink-0 bg-slate-800 rounded-2xl border border-slate-700 flex flex-col">
+          <!-- Shift Commands Panel -->
+          <div class="border-b border-slate-700">
+            <button onclick="toggleShiftPanel()" class="w-full flex items-center justify-between px-3 py-2 text-xs text-slate-400 hover:text-white transition">
+              <span class="flex items-center gap-1.5"><span>⚡</span><span>تعليمات الشفت</span><span id="shiftCount" class="hidden bg-amber-500 text-black text-[10px] font-bold px-1.5 rounded-full"></span></span>
+              <i id="shiftChevron" class="fa-solid fa-chevron-down text-[10px] transition-transform"></i>
+            </button>
+            <div id="shiftPanel" class="hidden px-3 pb-3 space-y-2">
+              <div id="shiftList" class="space-y-1 max-h-32 overflow-y-auto"></div>
+              <div class="flex gap-1.5">
+                <input id="shiftInput" type="text" placeholder="مثال: البرجر خلص الليلة"
+                  onkeydown="if(event.key==='Enter')addShiftCommand()"
+                  class="flex-1 bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:border-amber-500 focus:outline-none placeholder-slate-600">
+                <button onclick="addShiftCommand()" class="bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs px-2 rounded-lg hover:bg-amber-500/40 transition">+</button>
+              </div>
+            </div>
+          </div>
           <div class="p-3 border-b border-slate-700 space-y-2">
             <div class="flex gap-2">
               <button onclick="filterConvs('all')" id="convTab-all" class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600 text-white font-medium">الكل</button>
@@ -1380,10 +1396,13 @@
 
         <!-- Tabs -->
         <div class="flex gap-2 border-b border-slate-700 pb-0">
-          <button onclick="aiTab('feedback')" id="aiTabFeedback" class="ai-tab-btn ai-tab-active px-4 py-2 text-sm rounded-t-lg">📬 التقييمات المعلقة</button>
+          <button onclick="aiTab('feedback')" id="aiTabFeedback" class="ai-tab-btn ai-tab-active px-4 py-2 text-sm rounded-t-lg">📬 التقييمات</button>
           <button onclick="aiTab('corrections')" id="aiTabCorrections" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">✏️ التصحيحات</button>
-          <button onclick="aiTab('knowledge')" id="aiTabKnowledge" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📚 قاعدة المعرفة</button>
-          <button onclick="aiTab('changelog')" id="aiTabChangelog" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📋 سجل التغييرات</button>
+          <button onclick="aiTab('knowledge')" id="aiTabKnowledge" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📚 المعرفة</button>
+          <button onclick="aiTab('playbook')" id="aiTabPlaybook" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">🚨 المواقف الصعبة</button>
+          <button onclick="aiTab('brand')" id="aiTabBrand" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">🎨 صوت العلامة</button>
+          <button onclick="aiTab('quality')" id="aiTabQuality" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📊 الجودة</button>
+          <button onclick="aiTab('changelog')" id="aiTabChangelog" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">📋 السجل</button>
           <button onclick="aiTab('settings')" id="aiTabSettings" class="ai-tab-btn px-4 py-2 text-sm rounded-t-lg">⚙️ الإعدادات</button>
         </div>
 
@@ -1491,6 +1510,92 @@
               <button onclick="closeVersionModal()" class="text-slate-400 hover:text-white">✕</button>
             </div>
             <div id="aiVersionList" class="space-y-2"></div>
+          </div>
+        </div>
+
+        <!-- Tab: Exception Playbook -->
+        <div id="aiPanelPlaybook" class="ai-panel hidden space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-white font-medium">🚨 دليل المواقف الصعبة</h3>
+              <p class="text-slate-400 text-xs mt-0.5">ردود ثابتة تتجاوز الذكاء الاصطناعي — لمواقف حرجة مثل التأخير أو الشكاوى</p>
+            </div>
+            <button onclick="openAddPlaybook()" class="bg-red-600/20 border border-red-500/50 text-red-300 text-xs px-3 py-1.5 rounded-lg hover:bg-red-600/40 transition">+ إضافة موقف</button>
+          </div>
+          <div id="playbookList" class="space-y-2"></div>
+        </div>
+
+        <!-- Tab: Brand Voice -->
+        <div id="aiPanelBrand" class="ai-panel hidden space-y-4">
+          <div>
+            <h3 class="text-white font-medium">🎨 صوت العلامة التجارية</h3>
+            <p class="text-slate-400 text-xs mt-0.5">خصّص أسلوب البوت ولهجته وكلمات علامتك التجارية</p>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="space-y-1">
+              <label class="text-slate-300 text-xs font-medium">الأسلوب العام</label>
+              <select id="brandVoiceTone" class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none">
+                <option value="friendly">ودي ودافي (افتراضي)</option>
+                <option value="formal">رسمي ومحترم</option>
+                <option value="funny">خفيف ومرح</option>
+              </select>
+            </div>
+            <div class="space-y-1">
+              <label class="text-slate-300 text-xs font-medium">اللهجة</label>
+              <select id="brandDialect" class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none">
+                <option value="auto">تلقائي (يكتشف لهجة الزبون)</option>
+                <option value="iraqi">عراقي</option>
+                <option value="gulf">خليجي</option>
+                <option value="egyptian">مصري</option>
+                <option value="levantine">شامي</option>
+              </select>
+            </div>
+            <div class="space-y-1">
+              <label class="text-slate-300 text-xs font-medium">تحية الافتتاح المخصصة</label>
+              <input id="brandGreeting" type="text" placeholder="مثال: أهلاً وسهلاً في مطعم النخبة! 🌟"
+                class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none placeholder-slate-600">
+            </div>
+            <div class="space-y-1">
+              <label class="text-slate-300 text-xs font-medium">تحية الوداع المخصصة</label>
+              <input id="brandFarewell" type="text" placeholder="مثال: شكراً لاختيارك مطعمنا، نراك قريباً! 💛"
+                class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none placeholder-slate-600">
+            </div>
+            <div class="md:col-span-2 space-y-1">
+              <label class="text-slate-300 text-xs font-medium">كلمات وعبارات العلامة التجارية</label>
+              <textarea id="brandKeywords" rows="3" placeholder="مثال: استخدم دائماً 'يسلموا' عند الشكر، قل 'حياك' للترحيب، لا تستخدم كلمة 'مو مشكلة'"
+                class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none placeholder-slate-600 resize-none"></textarea>
+            </div>
+          </div>
+          <button onclick="saveBrandVoice()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2 rounded-lg transition font-medium">حفظ صوت العلامة</button>
+        </div>
+
+        <!-- Tab: Quality -->
+        <div id="aiPanelQuality" class="ai-panel hidden space-y-4">
+          <h3 class="text-white font-medium">📊 قياس جودة البوت</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="qualityKpiGrid">
+            <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 text-center">
+              <div id="qkpiTotal" class="text-2xl font-bold text-slate-300">—</div>
+              <div class="text-slate-400 text-xs mt-1">إجمالي المحادثات</div>
+            </div>
+            <div class="bg-slate-800 border border-emerald-500/30 rounded-2xl p-4 text-center">
+              <div id="qkpiConversion" class="text-2xl font-bold text-emerald-400">—</div>
+              <div class="text-slate-400 text-xs mt-1">نسبة التحويل (طلب)</div>
+            </div>
+            <div class="bg-slate-800 border border-amber-500/30 rounded-2xl p-4 text-center">
+              <div id="qkpiEscalated" class="text-2xl font-bold text-amber-400">—</div>
+              <div class="text-slate-400 text-xs mt-1">محولة للطاقم</div>
+            </div>
+            <div class="bg-slate-800 border border-indigo-500/30 rounded-2xl p-4 text-center">
+              <div id="qkpiAvgMsgs" class="text-2xl font-bold text-indigo-400">—</div>
+              <div class="text-slate-400 text-xs mt-1">متوسط الرسائل/محادثة</div>
+            </div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="text-white text-sm font-medium">أسئلة ما عرف البوت يجاوب عليها (آخر 7 أيام)</h4>
+              <button onclick="loadBotGaps()" class="text-slate-400 hover:text-white text-xs"><i class="fa-solid fa-rotate-right"></i></button>
+            </div>
+            <div id="botGapsList" class="space-y-1.5 max-h-64 overflow-y-auto"></div>
           </div>
         </div>
 
@@ -2296,6 +2401,64 @@ async function loadConversations() {
   try {
     S.convs = await api.get('/api/conversations');
     renderConvList();
+    loadShiftCommands();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Shift Commands ────────────────────────────────────────────
+let _shiftCmds = [];
+let _shiftOpen = false;
+
+function toggleShiftPanel() {
+  _shiftOpen = !_shiftOpen;
+  document.getElementById('shiftPanel').classList.toggle('hidden', !_shiftOpen);
+  const ch = document.getElementById('shiftChevron');
+  if (ch) ch.style.transform = _shiftOpen ? 'rotate(180deg)' : '';
+  if (_shiftOpen) loadShiftCommands();
+}
+
+async function loadShiftCommands() {
+  try {
+    _shiftCmds = await api.get('/api/shift-commands');
+    renderShiftList();
+  } catch(e) {}
+}
+
+function renderShiftList() {
+  const cnt = document.getElementById('shiftCount');
+  if (cnt) {
+    if (_shiftCmds.length > 0) { cnt.textContent = _shiftCmds.length; cnt.classList.remove('hidden'); }
+    else cnt.classList.add('hidden');
+  }
+  const el = document.getElementById('shiftList');
+  if (!el) return;
+  if (!_shiftCmds.length) {
+    el.innerHTML = '<p class="text-slate-600 text-xs text-center py-2">لا توجد تعليمات — البوت يعمل بشكل طبيعي</p>';
+    return;
+  }
+  el.innerHTML = _shiftCmds.map(c => `
+    <div class="flex items-start gap-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 py-1.5">
+      <span class="text-amber-400 text-xs flex-1">${c.command_text}</span>
+      <button onclick="deleteShiftCommand('${c.id}')" class="text-slate-600 hover:text-red-400 text-xs flex-shrink-0">✕</button>
+    </div>`).join('');
+}
+
+async function addShiftCommand() {
+  const inp = document.getElementById('shiftInput');
+  const text = (inp?.value || '').trim();
+  if (!text) return;
+  try {
+    await api.post('/api/shift-commands', { command_text: text });
+    inp.value = '';
+    await loadShiftCommands();
+    toast('تم إضافة التعليمة ✓', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteShiftCommand(id) {
+  try {
+    await api.delete(`/api/shift-commands/${id}`);
+    await loadShiftCommands();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -6831,12 +6994,15 @@ let _aiActiveTab = 'feedback';
 
 function aiTab(tab) {
   _aiActiveTab = tab;
-  ['feedback', 'corrections', 'knowledge', 'changelog', 'settings'].forEach(t => {
+  ['feedback', 'corrections', 'knowledge', 'changelog', 'settings', 'playbook', 'brand', 'quality'].forEach(t => {
     const btn = document.getElementById('aiTab' + t.charAt(0).toUpperCase() + t.slice(1));
     const panel = document.getElementById('aiPanel' + t.charAt(0).toUpperCase() + t.slice(1));
     if (btn) btn.classList.toggle('ai-tab-active', t === tab);
     if (panel) panel.classList.toggle('hidden', t !== tab);
   });
+  if (tab === 'playbook') loadPlaybook();
+  if (tab === 'brand')    loadBrandVoice();
+  if (tab === 'quality')  { loadQualityKpis(); loadBotGaps(); }
   if (tab === 'feedback') loadAiFeedback();
   if (tab === 'corrections') loadAiCorrections();
   if (tab === 'knowledge') loadAiKnowledge();
@@ -7185,7 +7351,165 @@ async function toggleAiLearning() {
     toast(_aiLearningEnabled ? 'تم تفعيل تدريب الذكاء الاصطناعي ✅' : 'تم تعطيل تدريب الذكاء الاصطناعي ⚠️', _aiLearningEnabled ? 'success' : 'info');
   } catch(e) { toast('خطأ: ' + e.message, 'error'); }
 }
+
+// ── Exception Playbook ────────────────────────────────────────
+let _playbookEntries = [];
+async function loadPlaybook() {
+  try {
+    _playbookEntries = await api.get('/api/exception-playbook');
+    renderPlaybook();
+  } catch(e) {}
+}
+function renderPlaybook() {
+  const el = document.getElementById('playbookList'); if (!el) return;
+  if (!_playbookEntries.length) {
+    el.innerHTML = '<p class="text-slate-500 text-sm text-center py-6">لا توجد مواقف محددة — أضف موقفاً أول</p>';
+    return;
+  }
+  const CATS = { delay:'تأخير', quality:'جودة', wrong_order:'خطأ طلب', complaint:'شكوى', general:'عام' };
+  el.innerHTML = _playbookEntries.map(e => {
+    let trigs = [];
+    try { trigs = JSON.parse(e.trigger_keywords); } catch { trigs = [e.trigger_keywords]; }
+    return `<div class="bg-slate-800 border ${e.is_active ? 'border-red-500/30' : 'border-slate-700'} rounded-xl p-3 space-y-2">
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1">
+          <div class="flex flex-wrap gap-1 mb-1.5">
+            ${trigs.map(t => `<span class="bg-slate-700 text-slate-300 text-xs px-2 py-0.5 rounded-full">${t}</span>`).join('')}
+            <span class="bg-red-500/20 text-red-400 text-xs px-2 py-0.5 rounded-full">${CATS[e.category]||e.category}</span>
+          </div>
+          <p class="text-slate-300 text-sm">${e.reply_text}</p>
+        </div>
+        <div class="flex gap-1 flex-shrink-0">
+          <button onclick="togglePlaybook('${e.id}',${e.is_active?0:1})" class="text-xs px-2 py-1 rounded ${e.is_active?'bg-emerald-500/20 text-emerald-400':'bg-slate-700 text-slate-500'}">${e.is_active?'نشط':'معطل'}</button>
+          <button onclick="deletePlaybook('${e.id}')" class="text-xs text-slate-500 hover:text-red-400 px-1">🗑</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+function openAddPlaybook() {
+  document.getElementById('playbook-modal').classList.remove('hidden');
+  document.getElementById('playbookTriggers').value = '';
+  document.getElementById('playbookReply').value = '';
+}
+function closeAddPlaybook() { document.getElementById('playbook-modal').classList.add('hidden'); }
+async function savePlaybookEntry() {
+  const triggers = (document.getElementById('playbookTriggers').value || '').split(',').map(s=>s.trim()).filter(Boolean);
+  const reply    = (document.getElementById('playbookReply').value || '').trim();
+  const category = document.getElementById('playbookCategory').value;
+  if (!triggers.length || !reply) { toast('أدخل الكلمات المحفزة والرد', 'error'); return; }
+  try {
+    await api.post('/api/exception-playbook', { trigger_keywords: triggers, reply_text: reply, category });
+    await loadPlaybook();
+    closeAddPlaybook();
+    toast('تم إضافة الموقف ✓', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+async function togglePlaybook(id, val) {
+  await api.patch(`/api/exception-playbook/${id}`, { is_active: val });
+  await loadPlaybook();
+}
+async function deletePlaybook(id) {
+  if (!confirm('حذف هذا الموقف؟')) return;
+  await api.delete(`/api/exception-playbook/${id}`);
+  await loadPlaybook();
+}
+
+// ── Brand Voice ───────────────────────────────────────────────
+async function loadBrandVoice() {
+  try {
+    const cfg = await api.get('/api/bot-config');
+    document.getElementById('brandVoiceTone').value   = cfg.voice_tone || 'friendly';
+    document.getElementById('brandDialect').value     = cfg.dialect_override || 'auto';
+    document.getElementById('brandGreeting').value    = cfg.custom_greeting || '';
+    document.getElementById('brandFarewell').value    = cfg.custom_farewell || '';
+    document.getElementById('brandKeywords').value    = cfg.brand_keywords || '';
+  } catch(e) {}
+}
+async function saveBrandVoice() {
+  try {
+    await api.patch('/api/bot-config', {
+      voice_tone:       document.getElementById('brandVoiceTone').value,
+      dialect_override: document.getElementById('brandDialect').value,
+      custom_greeting:  document.getElementById('brandGreeting').value.trim(),
+      custom_farewell:  document.getElementById('brandFarewell').value.trim(),
+      brand_keywords:   document.getElementById('brandKeywords').value.trim(),
+    });
+    toast('تم حفظ صوت العلامة ✓', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Quality KPIs ──────────────────────────────────────────────
+async function loadQualityKpis() {
+  try {
+    const d = await api.get('/api/analytics/bot-quality');
+    document.getElementById('qkpiTotal').textContent      = d.total_conversations?.toLocaleString() || '0';
+    document.getElementById('qkpiConversion').textContent = (d.conversion_rate || 0) + '%';
+    document.getElementById('qkpiEscalated').textContent  = d.escalated?.toLocaleString() || '0';
+    document.getElementById('qkpiAvgMsgs').textContent    = d.avg_messages_per_conv || '0';
+  } catch(e) {}
+}
+async function loadBotGaps() {
+  try {
+    const gaps = await api.get('/api/analytics/bot-gaps?days=7');
+    const el = document.getElementById('botGapsList'); if (!el) return;
+    if (!gaps.length) {
+      el.innerHTML = '<p class="text-slate-500 text-xs text-center py-4">لا توجد أسئلة غير مجابة هذا الأسبوع 🎉</p>';
+      return;
+    }
+    el.innerHTML = gaps.map(g => `
+      <div class="flex items-center justify-between bg-slate-900 rounded-lg px-3 py-2">
+        <p class="text-slate-300 text-xs flex-1 truncate">${g.message}</p>
+        <span class="text-amber-400 text-xs font-bold flex-shrink-0 mr-2">${g.count}×</span>
+        <button onclick="addCorrectionFromGap(this.dataset.msg)" data-msg="${g.message.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}" class="text-indigo-400 hover:text-indigo-300 text-xs flex-shrink-0">أجب</button>
+      </div>`).join('');
+  } catch(e) {}
+}
+function addCorrectionFromGap(msg) {
+  aiTab('corrections');
+  setTimeout(() => {
+    const inp = document.querySelector('#aiPanelCorrections input, #aiPanelCorrections textarea');
+    if (inp) { inp.value = msg; inp.focus(); }
+  }, 200);
+}
 </script>
+<!-- ── PLAYBOOK ADD MODAL ─────────────────────────────────────────────────── -->
+<div id="playbook-modal" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">
+    <div class="p-4 border-b border-slate-700 flex items-center justify-between">
+      <h3 class="text-white font-bold text-sm">🚨 إضافة موقف صعب</h3>
+      <button onclick="closeAddPlaybook()" class="text-slate-500 hover:text-white text-lg">✕</button>
+    </div>
+    <div class="p-4 space-y-3">
+      <div>
+        <p class="text-slate-400 text-xs mb-1">كلمات تشير لهذا الموقف (افصل بفاصلة)</p>
+        <input id="playbookTriggers" type="text" placeholder="مثال: طلبي تأخر، طلبي ما وصل، وين طلبي"
+          class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-red-500 focus:outline-none placeholder-slate-600">
+      </div>
+      <div>
+        <p class="text-slate-400 text-xs mb-1">الرد الثابت</p>
+        <textarea id="playbookReply" rows="3"
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:border-red-500 focus:outline-none resize-none"
+          placeholder="مثال: آسفين كثير على التأخير 🙏 نتابع طلبك هسه وراح نتصل فيك خلال دقيقتين."></textarea>
+      </div>
+      <div>
+        <p class="text-slate-400 text-xs mb-1">التصنيف</p>
+        <select id="playbookCategory" class="w-full bg-slate-900 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none">
+          <option value="delay">تأخير التوصيل</option>
+          <option value="quality">جودة الطعام</option>
+          <option value="wrong_order">خطأ في الطلب</option>
+          <option value="complaint">شكوى عامة</option>
+          <option value="general">عام</option>
+        </select>
+      </div>
+    </div>
+    <div class="p-4 border-t border-slate-700 flex gap-2 justify-end">
+      <button onclick="closeAddPlaybook()" class="px-4 py-2 rounded-lg text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition">إلغاء</button>
+      <button onclick="savePlaybookEntry()" class="px-4 py-2 rounded-lg text-sm bg-red-600 text-white hover:bg-red-500 transition font-medium">حفظ</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── FIX REPLY MODAL ──────────────────────────────────────────────────── -->
 <div id="fix-reply-modal" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
   <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">

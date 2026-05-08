@@ -737,6 +737,41 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             if restaurant else 1
         )
 
+        # Load active shift commands (staff real-time instructions)
+        shift_commands_list = []
+        try:
+            sc_rows = conn.execute(
+                "SELECT command_text FROM shift_commands "
+                "WHERE restaurant_id=? AND is_active=1 "
+                "AND (expires_at='' OR expires_at > datetime('now')) "
+                "ORDER BY created_at DESC LIMIT 10",
+                (restaurant_id,)
+            ).fetchall()
+            shift_commands_list = [(r["command_text"] if hasattr(r, "keys") else r[0]) for r in sc_rows]
+        except Exception as _sce:
+            logger.debug(f"[bot] shift_commands load failed: {_sce}")
+
+        # Load exception playbook entries
+        exception_playbook_list = []
+        try:
+            import json as _json
+            ep_rows = conn.execute(
+                "SELECT trigger_keywords, reply_text, priority FROM exception_playbook "
+                "WHERE restaurant_id=? AND is_active=1 ORDER BY priority DESC LIMIT 20",
+                (restaurant_id,)
+            ).fetchall()
+            for _ep in ep_rows:
+                _trigs_raw = (_ep["trigger_keywords"] if hasattr(_ep, "keys") else _ep[0]) or "[]"
+                _reply_ep  = (_ep["reply_text"] if hasattr(_ep, "keys") else _ep[1]) or ""
+                try:
+                    _trigs = _json.loads(_trigs_raw) if isinstance(_trigs_raw, str) else _trigs_raw
+                except Exception:
+                    _trigs = [_trigs_raw]
+                if _reply_ep:
+                    exception_playbook_list.append((_trigs, _reply_ep))
+        except Exception as _epe:
+            logger.debug(f"[bot] exception_playbook load failed: {_epe}")
+
         # Load active bot corrections (NUMBER 25: trigger/correction format + legacy text)
         corrections_list = []
         if _ai_learning_on:
@@ -995,6 +1030,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         restaurant_id, conv["customer_id"], customer_message
     )
 
+    # ── EXCEPTION PLAYBOOK — hard situations, deterministic, highest priority ─
+    _msg_lc = customer_message.lower()
+    for _ep_trigs, _ep_reply in exception_playbook_list:
+        if any(str(t).lower() in _msg_lc for t in _ep_trigs if t):
+            logger.info(f"[bot] exception playbook hit — restaurant={restaurant_id}")
+            return {"reply": _ep_reply, "action": "reply", "extracted_order": None}
+
     # ── OWNER CORRECTIONS — deterministic, highest priority ─────────────────
     # Check before FAQ/OpenAI — if owner corrected a specific reply, use it exactly
     try:
@@ -1151,6 +1193,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         slot_context=_slot_section,
         history_summary=_history_summary,
         mood=_mood,
+        shift_commands=shift_commands_list,
     )
 
     # Call OpenAI
@@ -1452,6 +1495,19 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         )
     except Exception:
         pass
+
+    # Track unclear/fallback replies for weekly gaps report
+    _unclear_signals = ["ما فهمت", "مو واضح", "مو فاهم", "شنو تقصد", "ما أقدر أفهم"]
+    if any(s in reply_text for s in _unclear_signals):
+        try:
+            _uc_conn = database.get_db()
+            _uc_conn.execute(
+                "INSERT INTO bot_unclear_log (id, restaurant_id, customer_message, conversation_id) VALUES (?,?,?,?)",
+                (str(__import__("uuid").uuid4()), restaurant_id, customer_message[:300], conversation_id)
+            )
+            _uc_conn.commit(); _uc_conn.close()
+        except Exception:
+            pass
 
     return {
         "reply": reply_text,
@@ -1981,6 +2037,7 @@ def _build_system_prompt(
     slot_context: str = "",
     history_summary: str = "",
     mood: str = "normal",
+    shift_commands: list = None,
 ) -> str:
     """Build the full system prompt for the AI bot."""
     bot_name = settings.get("bot_name") or "مساعد ذكي"
@@ -2143,8 +2200,21 @@ def _build_system_prompt(
             except Exception:
                 pass
 
+        # Deep customer profile
+        _total_orders = customer.get("total_orders") or 0
+        _total_spent  = customer.get("total_spent") or 0
+        _loyalty_label = ""
+        if _total_orders >= 20:
+            _loyalty_label = f"زبون وفي جداً ({_total_orders} طلب)"
+        elif _total_orders >= 5:
+            _loyalty_label = f"زبون متكرر ({_total_orders} طلب)"
+        elif _total_orders >= 1:
+            _loyalty_label = f"زبون سبق وطلب ({_total_orders} مرة)"
+
         if _known_name:
             _lines.append(f"تعرف اسمه: {_known_name} — رحّب به باسمه مباشرة.")
+        if _loyalty_label:
+            _lines.append(_loyalty_label + (" — رحّب به حرارة واسأل عن تجربته السابقة." if _total_orders >= 5 else "."))
         if _last_order:
             _lines.append(f"آخر طلبه: {_last_order} — اقترح له 'نفس الطلب؟' بعد الترحيب.")
         elif _fav:
@@ -2173,10 +2243,49 @@ def _build_system_prompt(
         "\"تفضل\", \"أبشر\", \"زين\", \"وش تحب؟\", \"هلا\" — بدل الكلمات العراقية المحضة."
     ) if _dialect == "gulf" else ""
 
-    prompt = f"""أنت {bot_name}، كاشير عراقي شاطر يشتغل في {rest_name}.
-مو بوت رسمي ومو مساعد ذكاء اصطناعي — أنت موظف المطعم على الواتساب/الإنستغرام.
-أسلوبك: طبيعي، دافي، عراقي خالص، مختصر، واضح، سريع.{_dialect_note}
-{cust_greeting}{vip_note}
+    # Brand Voice — tone + dialect from bot_config
+    _voice_tone = (bot_cfg or {}).get("voice_tone") or "friendly"
+    _dialect_cfg = (bot_cfg or {}).get("dialect_override") or "auto"
+    _custom_greeting = ((bot_cfg or {}).get("custom_greeting") or "").strip()
+    _custom_farewell = ((bot_cfg or {}).get("custom_farewell") or "").strip()
+    _brand_keywords = ((bot_cfg or {}).get("brand_keywords") or "").strip()
+
+    _tone_desc = {
+        "formal":   "رسمي ومحترم — استخدم لغة رسمية ونبرة مؤدبة.",
+        "friendly": "ودي ودافي — طبيعي مثل موظف مطعم حقيقي.",
+        "funny":    "خفيف ومرح — أضف لمسة طريفة خفيفة مع الاحترام.",
+    }.get(_voice_tone, "ودي ودافي — طبيعي مثل موظف مطعم حقيقي.")
+
+    _dialect_desc = {
+        "gulf":     "خليجي — استخدم: هلا، وش، تفضل، أبشر، زين.",
+        "iraqi":    "عراقي — استخدم: هسه، شنو، وياك، أرتبلك، أتابعها.",
+        "egyptian": "مصري — استخدم: ازيك، تمام، حاضر، معلش، يلا.",
+        "levantine":"شامي — استخدم: هلأ، كيفك، شو، تكرم عيونك.",
+        "auto":     "",
+    }.get(_dialect_cfg if _dialect_cfg != "auto" else "auto", "")
+
+    _effective_dialect = _dialect_cfg if _dialect_cfg != "auto" else _dialect
+
+    _brand_block = ""
+    if _brand_keywords:
+        _brand_block = f"\n## كلمات وعبارات العلامة التجارية — استخدمها دائماً\n{_brand_keywords}\n"
+    if _custom_greeting:
+        _brand_block += f"\n## تحية الافتتاح المخصصة\nعند بدء المحادثة قل: {_custom_greeting}\n"
+    if _custom_farewell:
+        _brand_block += f"\n## تحية الوداع المخصصة\nعند إنهاء الطلب قل: {_custom_farewell}\n"
+
+    # Shift Commands — top-priority real-time staff instructions
+    _shift_block = ""
+    if shift_commands:
+        _shift_block = "\n## ⚡ تعليمات الشفت الحالية — الأولوية القصوى — طبّقها فوراً\n"
+        for _sc in shift_commands:
+            _shift_block += f"- {_sc}\n"
+        _shift_block += "\n"
+
+    prompt = f"""{_shift_block}أنت {bot_name}، موظف استقبال في {rest_name}.
+مو بوت رسمي — أنت موظف مطعم حقيقي على الواتساب/الإنستغرام.
+أسلوبك: {_tone_desc}{(' ' + _dialect_desc) if _dialect_desc else ''}{_dialect_note}
+{_brand_block}{cust_greeting}{vip_note}
 
 ## هويتك — كاشير مطعم عراقي
 

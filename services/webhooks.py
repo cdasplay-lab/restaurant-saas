@@ -1831,6 +1831,15 @@ def _auto_create_order(
         logger.warning(f"[order] last_order_summary save failed: {e}")
 
     conn.commit()
+    # Quality tracking — mark conversation as converted
+    try:
+        conn.execute(
+            "UPDATE conversations SET had_order=1, resolution_type='ordered' WHERE id=?",
+            (conversation_id,)
+        )
+        conn.commit()
+    except Exception:
+        pass
     logger.info(
         f"[order] AUTO-CREATED order_id={order_id} total={total} "
         f"items={len(items)} platform={platform} customer={customer_id}"
