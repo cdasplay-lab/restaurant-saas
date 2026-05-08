@@ -2305,36 +2305,96 @@ function filterConvs(f) {
   renderConvList();
 }
 
+function timeAgo(ts) {
+  if (!ts) return '';
+  const now = Date.now();
+  const then = new Date(ts.endsWith('Z') ? ts : ts + 'Z').getTime();
+  const diff = Math.floor((now - then) / 1000);
+  if (diff < 60)   return 'الآن';
+  if (diff < 3600) return `${Math.floor(diff/60)} د`;
+  if (diff < 86400) return `${Math.floor(diff/3600)} س`;
+  const days = Math.floor(diff/86400);
+  if (days === 1)  return 'أمس';
+  if (days < 7)   return `${days} أيام`;
+  return new Date(then).toLocaleDateString('ar', {month:'short', day:'numeric'});
+}
+
 function renderConvList() {
   let list = S.convs;
-  if (S.convFilter === 'open') list = list.filter(c => c.status === 'open');
+  if (S.convFilter === 'open')   list = list.filter(c => c.status === 'open');
   if (S.convFilter === 'urgent') list = list.filter(c => c.urgent);
   const q = (document.getElementById('convSearch')?.value || '').trim().toLowerCase();
-  if (q) list = list.filter(c => (c.customer_name || '').toLowerCase().includes(q));
+  if (q) list = list.filter(c =>
+    (c.display_name || c.customer_name || '').toLowerCase().includes(q) ||
+    (c.last_message || '').toLowerCase().includes(q)
+  );
 
   const el = document.getElementById('convList');
   if (!list.length) {
     el.innerHTML = '<p class="text-slate-600 text-xs text-center py-8">لا توجد محادثات</p>';
     return;
   }
-  el.innerHTML = list.map(c => `
+  el.innerHTML = list.map(c => {
+    const name      = c.display_name || c.customer_name || '—';
+    const initial   = name[0] || '?';
+    const avatarBg  = c.urgent ? 'bg-red-600' : c.first_contact ? 'bg-amber-600' : 'bg-indigo-600';
+    const isActive  = S.activeConv === c.id;
+    const cardClass = isActive
+      ? 'bg-indigo-600/20 border border-indigo-500/50'
+      : 'hover:bg-slate-700/50 border border-transparent';
+
+    // last message preview
+    let preview = '';
+    if (c.last_message) {
+      const raw = c.last_message.replace(/\n/g,' ').trim();
+      const prefix = c.last_message_role === 'customer' ? '' : 'أنت: ';
+      const truncated = raw.length > 38 ? raw.slice(0,38) + '…' : raw;
+      preview = `<p class="text-slate-500 text-xs truncate mt-0.5">${prefix}${truncated}</p>`;
+    }
+
+    // status badge
+    let statusBadge = '';
+    if (c.urgent) {
+      statusBadge = '<span class="badge bg-red-500/20 text-red-400 text-xs border border-red-500/30">عاجل</span>';
+    } else if (c.status === 'open') {
+      statusBadge = '<span class="badge bg-emerald-500/20 text-emerald-400 text-xs border border-emerald-500/30">مفتوح</span>';
+    } else {
+      statusBadge = '<span class="badge bg-slate-700 text-slate-500 text-xs">مغلق</span>';
+    }
+
+    // unread dot + count
+    const unreadBadge = c.unread_count > 0
+      ? `<span class="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">${c.unread_count > 9 ? '9+' : c.unread_count}</span>`
+      : '';
+
+    const timeStr = timeAgo(c.last_message_at || c.updated_at);
+
+    return `
     <div onclick="openConv('${c.id}')"
-      class="p-3 rounded-xl cursor-pointer transition ${S.activeConv === c.id ? 'bg-indigo-600/20 border border-indigo-500/50' : 'hover:bg-slate-700/50 border border-transparent'}">
-      <div class="flex items-center gap-2 mb-1">
-        <div class="w-7 h-7 ${c.first_contact ? 'bg-amber-600' : 'bg-indigo-600'} rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
-          ${c.customer_name?.[0] || '?'}
+      class="p-3 rounded-xl cursor-pointer transition ${cardClass} ${c.unread_count > 0 ? 'border-l-2 border-l-indigo-500' : ''}">
+      <div class="flex items-start gap-2">
+        <div class="w-8 h-8 ${avatarBg} rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
+          ${initial}
         </div>
-        <p class="text-white text-sm font-medium flex-1 truncate">${c.customer_name}</p>
-        ${c.first_contact ? '<span class="badge bg-amber-500/20 text-amber-400 text-xs" title="رسالة أولى — طلب تواصل جديد">طلب جديد</span>' : ''}
-        ${c.urgent ? '<span class="badge bg-red-500/20 text-red-400"><i class="fa-solid fa-triangle-exclamation"></i></span>' : ''}
-        ${c.unread_count > 0 ? `<span class="badge bg-indigo-500 text-white">${c.unread_count}</span>` : ''}
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between gap-1 mb-0.5">
+            <p class="text-white text-sm font-medium truncate flex-1">${name}</p>
+            <span class="text-slate-500 text-[10px] flex-shrink-0">${timeStr}</span>
+          </div>
+          ${preview}
+          <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            ${platformBadge(c.platform)}
+            ${statusBadge}
+            <span class="badge ${c.mode === 'bot' ? 'bg-purple-500/20 text-purple-400' : 'bg-green-500/20 text-green-400'} text-xs">${c.mode === 'bot' ? '🤖' : '👤'}</span>
+            ${c.first_contact ? '<span class="badge bg-amber-500/20 text-amber-400 text-xs border border-amber-500/30">طلب جديد</span>' : ''}
+          </div>
+        </div>
+        <div class="flex-shrink-0 flex flex-col items-end gap-1 mt-0.5">
+          ${unreadBadge}
+        </div>
       </div>
-      <div class="flex items-center gap-2">
-        ${platformBadge(c.platform)}
-        <span class="badge ${c.mode === 'bot' ? 'bg-purple-500/20 text-purple-400' : 'bg-green-500/20 text-green-400'} text-xs">${c.mode === 'bot' ? '🤖' : '👤'}</span>
-        <span class="badge ${c.status === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-500'} text-xs">${c.status === 'open' ? 'مفتوح' : 'مغلق'}</span>
-      </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 async function openConv(id) {
@@ -2347,9 +2407,10 @@ async function openConv(id) {
   active.classList.remove('hidden');
   active.classList.add('flex');
 
-  document.getElementById('chatName').textContent = conv?.customer_name || '—';
+  const displayName = conv?.display_name || conv?.customer_name || '—';
+  document.getElementById('chatName').textContent = displayName;
   document.getElementById('chatPlatform').textContent = `${channelIcon(conv?.platform)} ${conv?.platform}`;
-  document.getElementById('chatAvatar').textContent = conv?.customer_name?.[0] || '?';
+  document.getElementById('chatAvatar').textContent = displayName[0] || '?';
 
   const modeBtn = document.getElementById('modeBtnText');
   modeBtn.textContent = conv?.mode === 'bot' ? '🤖 بوت' : '👤 بشري';

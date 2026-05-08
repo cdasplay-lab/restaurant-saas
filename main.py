@@ -4999,18 +4999,37 @@ async def list_conversations(
     conn = database.get_db()
     rid = user["restaurant_id"]
     q = """
-        SELECT cv.*, c.name AS customer_name, c.platform, c.phone
+        SELECT cv.*,
+               c.name AS customer_name,
+               c.platform,
+               c.phone,
+               COALESCE(
+                 (SELECT memory_value FROM conversation_memory
+                  WHERE customer_id=c.id AND restaurant_id=? AND memory_key='name'
+                  ORDER BY updated_at DESC LIMIT 1),
+                 c.name
+               ) AS display_name,
+               (SELECT content FROM messages
+                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+               (SELECT role FROM messages
+                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message_role,
+               (SELECT created_at FROM messages
+                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
         FROM conversations cv JOIN customers c ON cv.customer_id = c.id
         WHERE cv.restaurant_id=?
     """
-    params = [rid]
+    params = [rid, rid]
     if mode:
         q += " AND cv.mode=?"; params.append(mode)
     if status:
         q += " AND cv.status=?"; params.append(status)
     if search:
-        q += " AND (c.name LIKE ? OR c.phone LIKE ?)"; params += [f"%{search}%", f"%{search}%"]
-    q += " ORDER BY cv.updated_at DESC"
+        q += """ AND (c.name LIKE ? OR c.phone LIKE ?
+                   OR EXISTS(SELECT 1 FROM conversation_memory cm2
+                              WHERE cm2.customer_id=c.id AND cm2.memory_key='name'
+                                AND cm2.memory_value LIKE ?))"""
+        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+    q += " ORDER BY COALESCE((SELECT created_at FROM messages WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1), cv.updated_at) DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
