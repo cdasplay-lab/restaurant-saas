@@ -1692,7 +1692,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const S = {
   token: localStorage.getItem('token'),
   user: JSON.parse(localStorage.getItem('user') || 'null'),
-  orders: [], products: [], customers: [], convs: [],
+  orders: [], products: [], customers: [], convs: [], activeMsgs: [],
   orderStatus: 'all',
   convFilter: 'all',
   activeConv: null,
@@ -2424,6 +2424,7 @@ async function openConv(id) {
 }
 
 function renderMessages(msgs, forceScroll = true) {
+  S.activeMsgs = msgs;
   const el = document.getElementById('chatMessages');
   // If user has scrolled up, don't snap back down on auto-refresh
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -2471,12 +2472,15 @@ function renderMessages(msgs, forceScroll = true) {
     const editBtn = canEdit
       ? `<button onclick="startEditMessage('${m.id}','${convId}')" title="تعديل" class="msg-edit-btn opacity-0 group-hover:opacity-100 transition-opacity ml-1 text-slate-500 hover:text-indigo-400 text-xs px-1">✏️</button>`
       : '';
+    const fixBtn = m.role === 'bot'
+      ? `<button onclick="openFixReply('${m.id}')" title="صحح هذا الرد للأبد" class="msg-edit-btn opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-red-400 text-xs px-1">👎</button>`
+      : '';
 
     return `<div class="flex ${align} group">
       <div class="chat-bubble ${m.role}" style="max-width:80%">
         <div class="flex items-center justify-between mb-1">
           <p class="text-xs opacity-60">${roleLabel}</p>
-          ${editBtn}
+          <div class="flex items-center">${fixBtn}${editBtn}</div>
         </div>
         ${storyBadge}${voiceBadge}
         <p id="msg-text-${m.id}" class="whitespace-pre-wrap">${m.content}</p>
@@ -2552,6 +2556,53 @@ async function sendMessage() {
     const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
     renderMessages(msgs);
     await loadConversations();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Fix Reply (👎 correction) ─────────────────────────────────
+let _fixMsgId = null;
+
+function openFixReply(msgId) {
+  _fixMsgId = msgId;
+  const idx = S.activeMsgs.findIndex(m => m.id === msgId);
+  const botMsg = S.activeMsgs[idx];
+
+  // Find the last customer message before this bot message
+  let triggerText = '';
+  for (let i = idx - 1; i >= 0; i--) {
+    if (S.activeMsgs[i].role === 'customer') {
+      triggerText = S.activeMsgs[i].content || '';
+      break;
+    }
+  }
+
+  document.getElementById('fix-trigger-display').textContent = triggerText || '(لم يُعثر على رسالة الزبون)';
+  document.getElementById('fix-reply-text').value = botMsg?.content || '';
+  document.getElementById('fix-trigger-display').dataset.trigger = triggerText;
+  document.getElementById('fix-reply-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('fix-reply-text').focus(), 100);
+}
+
+function closeFixReply() {
+  document.getElementById('fix-reply-modal').classList.add('hidden');
+  _fixMsgId = null;
+}
+
+async function saveFixReply() {
+  const triggerText    = (document.getElementById('fix-trigger-display').dataset.trigger || '').trim();
+  const correctionText = (document.getElementById('fix-reply-text').value || '').trim();
+  if (!correctionText) { toast('اكتب الرد الصحيح أولاً', 'error'); return; }
+  if (!triggerText)    { toast('لم يُعثر على رسالة الزبون — لا يمكن حفظ القاعدة', 'error'); return; }
+  try {
+    await api.post('/api/bot-config/corrections', { trigger_text: triggerText, correction_text: correctionText });
+    // Also update the message in the chat immediately
+    if (_fixMsgId) {
+      await api.patch(`/api/conversations/${S.activeConv}/messages/${_fixMsgId}`, { content: correctionText });
+      const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
+      renderMessages(msgs);
+    }
+    toast('تم حفظ القاعدة ✓ — البوت سيرد بهذا الرد دائماً', 'success');
+    closeFixReply();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -7042,6 +7093,38 @@ async function toggleAiLearning() {
   } catch(e) { toast('خطأ: ' + e.message, 'error'); }
 }
 </script>
+<!-- ── FIX REPLY MODAL ──────────────────────────────────────────────────── -->
+<div id="fix-reply-modal" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">
+    <div class="p-4 border-b border-slate-700 flex items-center justify-between">
+      <div>
+        <h3 class="text-white font-bold text-sm">📌 صحح هذا الرد للأبد</h3>
+        <p class="text-slate-500 text-xs mt-0.5">من هنا جدام البوت يرد بهذا الرد تلقائياً</p>
+      </div>
+      <button onclick="closeFixReply()" class="text-slate-500 hover:text-white text-lg">✕</button>
+    </div>
+    <div class="p-4 space-y-3">
+      <div>
+        <p class="text-slate-400 text-xs mb-1">ما قاله الزبون (المحفز)</p>
+        <div id="fix-trigger-display" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-300 text-sm"></div>
+      </div>
+      <div>
+        <p class="text-slate-400 text-xs mb-1">الرد الصحيح الذي يجب أن يقوله البوت</p>
+        <textarea id="fix-reply-text" rows="3"
+          class="w-full bg-slate-900 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none resize-none"
+          placeholder="اكتب الرد الذي تريده..."></textarea>
+      </div>
+      <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2 text-indigo-300 text-xs">
+        هذا الرد سيكون <strong>دائماً</strong> — البوت يتجاوز الذكاء الاصطناعي ويرد مباشرة
+      </div>
+    </div>
+    <div class="p-4 border-t border-slate-700 flex gap-2 justify-end">
+      <button onclick="closeFixReply()" class="px-4 py-2 rounded-lg text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition">إلغاء</button>
+      <button onclick="saveFixReply()" class="px-4 py-2 rounded-lg text-sm bg-indigo-600 text-white hover:bg-indigo-500 transition font-medium">حفظ القاعدة</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── ONBOARDING WIZARD MODAL ─────────────────────────────────────────── -->
 <div id="ob-wizard" class="hidden fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
   <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">

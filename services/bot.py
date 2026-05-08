@@ -995,6 +995,28 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         restaurant_id, conv["customer_id"], customer_message
     )
 
+    # ── OWNER CORRECTIONS — deterministic, highest priority ─────────────────
+    # Check before FAQ/OpenAI — if owner corrected a specific reply, use it exactly
+    try:
+        _corr_conn = database.get_db()
+        _corr_rows = _corr_conn.execute(
+            "SELECT trigger_text, correction_text FROM bot_corrections "
+            "WHERE restaurant_id=? AND is_active=1 AND trigger_text!='' AND correction_text!='' "
+            "AND (deleted_at IS NULL OR deleted_at='') "
+            "ORDER BY priority DESC, created_at DESC LIMIT 30",
+            (restaurant_id,)
+        ).fetchall()
+        _corr_conn.close()
+        _msg_lower = customer_message.lower()
+        for _cr in _corr_rows:
+            _trig = (_cr["trigger_text"] if hasattr(_cr, "keys") else _cr[0] or "").lower().strip()
+            _corr_reply = (_cr["correction_text"] if hasattr(_cr, "keys") else _cr[1] or "").strip()
+            if _trig and _corr_reply and _trig in _msg_lower:
+                logger.info(f"[bot] owner correction hit — trigger='{_trig[:30]}' restaurant={restaurant_id}")
+                return {"reply": _corr_reply, "action": "reply", "extracted_order": None}
+    except Exception as _ce:
+        logger.warning(f"[bot] corrections check failed: {_ce}")
+
     # Reply Cache — answer FAQ instantly without OpenAI call
     _settings_dict  = dict(settings)  if settings  else {}
     _restaurant_dict = dict(restaurant) if restaurant else {}

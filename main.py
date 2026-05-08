@@ -6625,32 +6625,55 @@ async def list_bot_corrections(user=Depends(current_user)):
 
 @app.post("/api/bot-config/corrections")
 async def add_bot_correction(data: dict, user=Depends(current_user)):
-    """Add a correction. Deduplicates by exact text — won't insert duplicates."""
-    text = (data.get("text") or "").strip()
-    if not text:
-        raise HTTPException(400, "text is required")
+    """Add a correction. Supports structured (trigger_text+correction_text) and legacy (text) formats."""
+    trigger_text    = (data.get("trigger_text") or "").strip()
+    correction_text = (data.get("correction_text") or "").strip()
+    legacy_text     = (data.get("text") or "").strip()
+
+    # Structured format takes priority
+    if trigger_text and correction_text:
+        display_text = f'إذا قال "{trigger_text[:60]}" → "{correction_text[:60]}"'
+    elif legacy_text:
+        display_text = legacy_text
+    else:
+        raise HTTPException(400, "trigger_text+correction_text or text is required")
+
     rid = user["restaurant_id"]
     added_by = user.get("name") or user.get("email") or ""
     conn = database.get_db()
-    # Dedup: exact same text for same restaurant → reactivate if inactive
-    existing = conn.execute(
-        "SELECT id, is_active FROM bot_corrections WHERE restaurant_id=? AND text=?",
-        (rid, text)
-    ).fetchone()
-    if existing:
-        if not existing["is_active"]:
-            conn.execute("UPDATE bot_corrections SET is_active=1, added_by=?, created_at=CURRENT_TIMESTAMP WHERE id=?",
-                         (added_by, existing["id"]))
-            conn.commit()
-        conn.close()
-        return {"ok": True, "correction_added": text, "deduped": True}
+
+    # Dedup: same trigger for same restaurant → update correction text
+    if trigger_text:
+        existing = conn.execute(
+            "SELECT id FROM bot_corrections WHERE restaurant_id=? AND trigger_text=?",
+            (rid, trigger_text)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE bot_corrections SET correction_text=?, text=?, is_active=1, added_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (correction_text, display_text, added_by, existing["id"])
+            )
+            conn.commit(); conn.close()
+            return {"ok": True, "deduped": True}
+    else:
+        existing = conn.execute(
+            "SELECT id, is_active FROM bot_corrections WHERE restaurant_id=? AND text=?",
+            (rid, display_text)
+        ).fetchone()
+        if existing:
+            if not existing["is_active"]:
+                conn.execute("UPDATE bot_corrections SET is_active=1, added_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                             (added_by, existing["id"]))
+                conn.commit()
+            conn.close()
+            return {"ok": True, "deduped": True}
+
     conn.execute(
-        "INSERT INTO bot_corrections (id, restaurant_id, text, added_by, is_active) VALUES (?, ?, ?, ?, 1)",
-        (str(uuid.uuid4()), rid, text, added_by)
+        "INSERT INTO bot_corrections (id, restaurant_id, text, trigger_text, correction_text, added_by, is_active) VALUES (?,?,?,?,?,?,1)",
+        (str(uuid.uuid4()), rid, display_text, trigger_text, correction_text, added_by)
     )
-    conn.commit()
-    conn.close()
-    return {"ok": True, "correction_added": text}
+    conn.commit(); conn.close()
+    return {"ok": True}
 
 
 @app.patch("/api/bot-config/corrections/{cid}")
