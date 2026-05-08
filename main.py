@@ -2703,6 +2703,50 @@ async def top_customers_analytics(user=Depends(current_user)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/analytics/hourly-orders")
+async def hourly_orders_analytics(user=Depends(current_user)):
+    """Return order count grouped by hour of day (0-23) — all time, non-cancelled."""
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    rows = conn.execute(
+        "SELECT strftime('%H', created_at) AS hour, COUNT(*) AS count "
+        "FROM orders WHERE restaurant_id=? AND status!='cancelled' GROUP BY hour ORDER BY hour",
+        (rid,)
+    ).fetchall()
+    conn.close()
+    hour_map = {r["hour"]: r["count"] for r in rows}
+    return [{"hour": str(i).zfill(2), "label": f"{i:02d}:00", "count": hour_map.get(str(i).zfill(2), 0)} for i in range(24)]
+
+
+@app.get("/api/broadcast/preview")
+async def broadcast_preview(
+    segment: str = "all",
+    platform: str = "",
+    user=Depends(current_user),
+):
+    """Return estimated recipient count for a broadcast segment without sending."""
+    conn = database.get_db()
+    rid = user["restaurant_id"]
+    try:
+        q = "SELECT COUNT(DISTINCT c.id) FROM customers c WHERE c.restaurant_id=?"
+        params: list = [rid]
+        if segment == "vip":
+            q += " AND c.vip=1"
+        elif segment == "returning":
+            q += " AND c.total_orders >= 2"
+        elif segment == "inactive_30":
+            q += " AND (c.last_seen < datetime('now', '-30 days') OR c.last_seen IS NULL)"
+        elif segment == "new":
+            q += " AND c.total_orders = 0"
+        if platform:
+            q += " AND c.platform=?"
+            params.append(platform)
+        count = conn.execute(q, params).fetchone()[0]
+    finally:
+        conn.close()
+    return {"count": count}
+
+
 @app.get("/api/analytics/bot-stats")
 async def bot_stats(user=Depends(current_user)):
     conn = database.get_db()
@@ -3845,11 +3889,20 @@ async def broadcast_message(req: Request, background_tasks: BackgroundTasks, use
         raise HTTPException(400, "الرسالة فارغة")
 
     rid = user["restaurant_id"]
+    segment = body.get("segment", "all")  # all | vip | returning | inactive_30 | new
     conn = database.get_db()
     try:
         # Fetch distinct customers with conversations for this restaurant
         query = "SELECT DISTINCT c.id, c.platform, c.phone FROM customers c WHERE c.restaurant_id=? AND c.platform IS NOT NULL"
         params = [rid]
+        if segment == "vip":
+            query += " AND c.vip=1"
+        elif segment == "returning":
+            query += " AND c.total_orders >= 2"
+        elif segment == "inactive_30":
+            query += " AND (c.last_seen < datetime('now', '-30 days') OR c.last_seen IS NULL)"
+        elif segment == "new":
+            query += " AND c.total_orders = 0"
         if platform_filter:
             query += " AND c.platform=?"
             params.append(platform_filter)
@@ -5001,6 +5054,7 @@ async def list_conversations(
     mode: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    customer_id: Optional[str] = None,
     user=Depends(current_user),
 ):
     conn = database.get_db()
@@ -5036,6 +5090,8 @@ async def list_conversations(
                               WHERE cm2.customer_id=c.id AND cm2.memory_key='name'
                                 AND cm2.memory_value LIKE ?))"""
         params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+    if customer_id:
+        q += " AND cv.customer_id=?"; params.append(customer_id)
     q += " ORDER BY COALESCE((SELECT created_at FROM messages WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1), cv.updated_at) DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()

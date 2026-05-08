@@ -475,6 +475,14 @@
             class="bg-green-700 hover:bg-green-600 text-white text-xs px-3 py-2 rounded-lg transition flex items-center gap-1.5">
             <i class="fa-solid fa-file-csv"></i> تصدير
           </button>
+          <div class="flex gap-1 bg-slate-800 border border-slate-700 rounded-lg p-0.5">
+            <button id="viewTable" onclick="setOrderView('table')" class="px-2.5 py-1.5 rounded text-xs text-white bg-slate-600 transition" title="جدول">
+              <i class="fa-solid fa-list"></i>
+            </button>
+            <button id="viewKanban" onclick="setOrderView('kanban')" class="px-2.5 py-1.5 rounded text-xs text-slate-400 hover:text-white transition" title="كانبان">
+              <i class="fa-solid fa-table-columns"></i>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -482,6 +490,43 @@
       <div id="ordersEmpty" class="hidden text-center py-12 text-slate-500">
         <i class="fa-solid fa-bag-shopping text-4xl mb-3"></i>
         <p>لا توجد طلبات</p>
+      </div>
+      <!-- Kanban board -->
+      <div id="ordersKanban" class="hidden">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="bg-slate-800/60 rounded-2xl border border-yellow-500/30 p-3">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 rounded-full bg-yellow-400 inline-block"></span>
+              <span class="text-yellow-400 text-xs font-semibold">⏳ بانتظار التأكيد</span>
+              <span id="kb-count-pending" class="mr-auto text-slate-500 text-xs"></span>
+            </div>
+            <div id="kb-col-pending" class="space-y-2 min-h-24"></div>
+          </div>
+          <div class="bg-slate-800/60 rounded-2xl border border-blue-500/30 p-3">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 rounded-full bg-blue-400 inline-block"></span>
+              <span class="text-blue-400 text-xs font-semibold">✅ مؤكد</span>
+              <span id="kb-count-confirmed" class="mr-auto text-slate-500 text-xs"></span>
+            </div>
+            <div id="kb-col-confirmed" class="space-y-2 min-h-24"></div>
+          </div>
+          <div class="bg-slate-800/60 rounded-2xl border border-orange-500/30 p-3">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
+              <span class="text-orange-400 text-xs font-semibold">👨‍🍳 قيد التحضير</span>
+              <span id="kb-count-preparing" class="mr-auto text-slate-500 text-xs"></span>
+            </div>
+            <div id="kb-col-preparing" class="space-y-2 min-h-24"></div>
+          </div>
+          <div class="bg-slate-800/60 rounded-2xl border border-indigo-500/30 p-3">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>
+              <span class="text-indigo-400 text-xs font-semibold">🛵 في الطريق</span>
+              <span id="kb-count-on_way" class="mr-auto text-slate-500 text-xs"></span>
+            </div>
+            <div id="kb-col-on_way" class="space-y-2 min-h-24"></div>
+          </div>
+        </div>
       </div>
       <div id="ordersTable" class="hidden bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
         <table class="w-full text-sm">
@@ -563,6 +608,16 @@
                 </button>
                 <button id="closeConvBtn" onclick="closeConversation()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-400 hover:bg-slate-600 transition">إغلاق</button>
               </div>
+            </div>
+            <!-- Handoff banner — visible only when mode=human -->
+            <div id="humanBanner" class="hidden items-center justify-between gap-3 px-4 py-2 bg-emerald-900/40 border-b border-emerald-700/50">
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                <span class="text-emerald-300 text-xs font-medium">أنت تتكلم مع الزبون الآن — البوت موقوف مؤقتاً</span>
+              </div>
+              <button onclick="toggleMode()" class="text-xs text-emerald-400 hover:text-white border border-emerald-600/50 px-2 py-1 rounded-lg transition">
+                رجّع للبوت 🤖
+              </button>
             </div>
             <!-- Messages -->
             <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
@@ -706,16 +761,38 @@
         <p class="text-slate-400 text-sm mb-6">ترسل الرسالة لجميع الزبائن الذين تواصلوا معك سابقاً عبر المنصات المفعّلة.</p>
 
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
-          <!-- Platform filter -->
-          <div>
-            <label class="block text-slate-300 text-sm mb-2">المنصة</label>
-            <select id="bcPlatform" class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
-              <option value="">الكل (جميع المنصات)</option>
-              <option value="telegram">Telegram</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="instagram">Instagram</option>
-              <option value="facebook">Facebook</option>
-            </select>
+          <!-- Segment + Platform row -->
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-slate-300 text-sm mb-2">الشريحة المستهدفة</label>
+              <select id="bcSegment" onchange="bcPreview()" class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
+                <option value="all">الكل</option>
+                <option value="returning">عملاء متكررون (2+ طلب)</option>
+                <option value="vip">VIP فقط</option>
+                <option value="new">لم يطلبوا بعد</option>
+                <option value="inactive_30">غير نشطين (30+ يوم)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-slate-300 text-sm mb-2">المنصة</label>
+              <select id="bcPlatform" onchange="bcPreview()" class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-xl px-4 py-2.5 focus:border-indigo-500">
+                <option value="">الكل (جميع المنصات)</option>
+                <option value="telegram">Telegram</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Recipient preview -->
+          <div id="bcPreviewBox" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 flex items-center gap-2 text-sm">
+            <i class="fa-solid fa-users text-indigo-400"></i>
+            <span class="text-slate-400">المستلمون المتوقعون:</span>
+            <span id="bcPreviewCount" class="text-white font-bold">—</span>
+            <button onclick="bcPreview()" class="mr-auto text-xs text-slate-500 hover:text-indigo-400 transition">
+              <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
           </div>
 
           <!-- Message -->
@@ -802,6 +879,11 @@
             <p class="text-white font-semibold mb-4">أفضل العملاء</p>
             <div id="analyticsTopCusts" class="space-y-3"></div>
           </div>
+        </div>
+        <!-- Hourly Orders Heatmap -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 mb-4">
+          <p class="text-white font-semibold mb-4">⏰ ساعات الذروة — توزيع الطلبات خلال اليوم</p>
+          <canvas id="analyticsHourlyChart" height="80"></canvas>
         </div>
         <!-- Voice Analytics (NUMBER 22/23) -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
@@ -1915,7 +1997,7 @@ const PAGES = {
   products:      { title: 'المنتجات',       load: () => loadProducts() },
   'menu-images': { title: 'صور المنيو',     load: () => loadMenuImages() },
   customers:     { title: 'العملاء',        load: () => loadCustomers() },
-  broadcast:     { title: 'بث الرسائل',     load: () => {} },
+  broadcast:     { title: 'بث الرسائل',     load: () => bcPreview() },
   team:          { title: 'الفريق',         load: () => loadTeam() },
   analytics:     { title: 'التحليلات',      load: () => loadAnalytics() },
   channels:      { title: 'القنوات',        load: () => loadChannels() },
@@ -2223,11 +2305,30 @@ function filterOrders(status) {
   loadOrders();
 }
 
+let _orderView = 'table';
+
+function setOrderView(view) {
+  _orderView = view;
+  document.getElementById('viewTable').className = `px-2.5 py-1.5 rounded text-xs transition ${view === 'table' ? 'text-white bg-slate-600' : 'text-slate-400 hover:text-white'}`;
+  document.getElementById('viewKanban').className = `px-2.5 py-1.5 rounded text-xs transition ${view === 'kanban' ? 'text-white bg-slate-600' : 'text-slate-400 hover:text-white'}`;
+  renderOrdersTable();
+}
+
 function renderOrdersTable() {
   if (!S.orders.length) {
     document.getElementById('ordersEmpty').classList.remove('hidden');
+    document.getElementById('ordersTable').classList.add('hidden');
+    document.getElementById('ordersKanban').classList.add('hidden');
     return;
   }
+  document.getElementById('ordersEmpty').classList.add('hidden');
+  if (_orderView === 'kanban') {
+    document.getElementById('ordersTable').classList.add('hidden');
+    document.getElementById('ordersKanban').classList.remove('hidden');
+    renderOrdersKanban();
+    return;
+  }
+  document.getElementById('ordersKanban').classList.add('hidden');
   document.getElementById('ordersTable').classList.remove('hidden');
   document.getElementById('ordersBody').innerHTML = S.orders.map(o => `
     <tr class="border-t border-slate-700/50 hover:bg-slate-700/30 transition">
@@ -2307,6 +2408,39 @@ async function openOrderModal(id) {
       </div>
     `);
   } catch(e) { toast(e.message, 'error'); closeModal(); }
+}
+
+function renderOrdersKanban() {
+  const cols = ['pending', 'confirmed', 'preparing', 'on_way'];
+  cols.forEach(st => {
+    const items = S.orders.filter(o => o.status === st);
+    document.getElementById(`kb-count-${st}`).textContent = items.length ? `${items.length}` : '';
+    document.getElementById(`kb-col-${st}`).innerHTML = items.length ? items.map(o => `
+      <div class="bg-slate-900 rounded-xl p-3 border border-slate-700/60 hover:border-slate-600 transition cursor-pointer" onclick="openOrderModal('${o.id}')">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-white text-xs font-semibold">${h(o.customer_name)}</span>
+          <span class="text-green-400 text-xs font-bold">${cur(o.total)}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-slate-500 text-[10px]">${platformBadge(o.channel)}</span>
+          <span class="text-slate-600 text-[10px]">${timeAgo(o.created_at)}</span>
+        </div>
+        <button onclick="event.stopPropagation();kanbanAdvance('${o.id}')"
+          class="mt-2 w-full text-[10px] py-1 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/40 transition">
+          تقديم ▶
+        </button>
+      </div>`).join('')
+      : '<p class="text-slate-600 text-xs text-center py-4">لا يوجد</p>';
+  });
+}
+
+async function kanbanAdvance(id) {
+  try {
+    const r = await api.patch(`/api/orders/${id}/status`, { action: 'advance' });
+    toast(`الحالة: ${r.status}`, 'success');
+    S.orders = await api.get(`/api/orders?${new URLSearchParams({...(S.orderStatus !== 'all' ? {status: S.orderStatus} : {})})}`);
+    renderOrdersKanban();
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 async function advanceOrder(id) {
@@ -2578,8 +2712,7 @@ async function openConv(id) {
   document.getElementById('chatPlatform').textContent = `${channelIcon(conv?.platform)} ${conv?.platform}`;
   document.getElementById('chatAvatar').textContent = displayName[0] || '?';
 
-  const modeBtn = document.getElementById('modeBtnText');
-  modeBtn.textContent = conv?.mode === 'bot' ? '🤖 بوت' : '👤 بشري';
+  _updateModeBtnAndBanner(conv?.mode || 'bot');
   if (conv?.urgent) document.getElementById('urgentBtn').classList.add('border-red-500','text-red-400');
 
   try {
@@ -2860,15 +2993,35 @@ async function sendAiReply() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+function _updateModeBtnAndBanner(mode) {
+  const modeBtn = document.getElementById('modeBtn');
+  const modeBtnText = document.getElementById('modeBtnText');
+  const banner = document.getElementById('humanBanner');
+  if (!modeBtn || !modeBtnText) return;
+  if (mode === 'human') {
+    modeBtnText.textContent = '👤 أنت تتكلم';
+    modeBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600/20 border border-emerald-500/50 text-emerald-300 hover:bg-emerald-600/40 transition';
+    if (banner) { banner.classList.remove('hidden'); banner.classList.add('flex'); }
+  } else {
+    modeBtnText.textContent = '🤖 بوت';
+    modeBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/20 border border-indigo-500/50 text-indigo-300 hover:bg-indigo-600/40 transition';
+    if (banner) { banner.classList.add('hidden'); banner.classList.remove('flex'); }
+  }
+}
+
 async function toggleMode() {
   if (!S.activeConv) return;
   const conv = S.convs.find(c => c.id === S.activeConv);
   const newMode = conv?.mode === 'bot' ? 'human' : 'bot';
   try {
     await api.patch(`/api/conversations/${S.activeConv}/mode`, { mode: newMode });
-    toast(`وضع: ${newMode === 'bot' ? 'بوت' : 'بشري'}`, 'info');
+    if (newMode === 'human') {
+      toast('أنت الآن تتكلم مع الزبون — البوت موقوف 👤', 'success');
+    } else {
+      toast('تم تسليم المحادثة للبوت 🤖', 'info');
+    }
     await loadConversations();
-    document.getElementById('modeBtnText').textContent = newMode === 'bot' ? '🤖 بوت' : '👤 بشري';
+    _updateModeBtnAndBanner(newMode);
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -3593,14 +3746,14 @@ async function openCustomerModal(id) {
   try {
     const c = await api.get(`/api/customers/${id}`);
     openModal(`
-      <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center justify-between mb-4">
         <h2 class="text-white font-bold">ملف العميل</h2>
         <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
       </div>
-      <div class="flex items-center gap-4 mb-5 p-4 bg-slate-900 rounded-2xl">
-        <div class="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-xl">${c.name[0]}</div>
+      <div class="flex items-center gap-4 mb-4 p-4 bg-slate-900 rounded-2xl">
+        <div class="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-xl">${h(c.name[0])}</div>
         <div>
-          <p class="text-white font-bold text-lg">${c.name}</p>
+          <p class="text-white font-bold text-lg">${h(c.name)}</p>
           <div class="flex gap-2 mt-1">${platformBadge(c.platform)} ${c.vip ? '<span class="badge bg-yellow-500/20 text-yellow-400">⭐ VIP</span>' : ''}</div>
         </div>
         <div class="mr-auto text-right">
@@ -3608,35 +3761,86 @@ async function openCustomerModal(id) {
           <p class="text-slate-500 text-xs">${c.total_orders} طلب</p>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3 mb-4 text-sm">
-        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الجوال</p><p class="text-white">${c.phone||'—'}</p></div>
-        <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">المفضل</p><p class="text-white">${c.favorite_item||'—'}</p></div>
-        <div class="bg-slate-900 rounded-xl p-3 col-span-2"><p class="text-slate-500 text-xs mb-1">التفضيلات</p>
-          <input id="cPref" value="${c.preferences||''}" class="w-full bg-transparent text-white text-sm focus:outline-none"></div>
-        <div class="flex items-center gap-2 col-span-2">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" id="cVip" ${c.vip ? 'checked' : ''} class="w-4 h-4 rounded accent-yellow-500">
-            <span class="text-slate-400 text-sm">VIP</span>
-          </label>
+      <div class="flex gap-1 border-b border-slate-700 mb-4">
+        <button onclick="custTab('profile')" id="cTabProfile" class="ai-tab-btn ai-tab-active px-3 py-2 text-xs rounded-t-lg">👤 الملف</button>
+        <button onclick="custTab('orders')" id="cTabOrders" class="ai-tab-btn px-3 py-2 text-xs rounded-t-lg">🛒 الطلبات (${c.orders.length})</button>
+        <button onclick="custTab('convs','${id}')" id="cTabConvs" class="ai-tab-btn px-3 py-2 text-xs rounded-t-lg">💬 المحادثات</button>
+      </div>
+      <div id="cPanelProfile">
+        <div class="grid grid-cols-2 gap-3 mb-4 text-sm">
+          <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">الجوال</p><p class="text-white">${h(c.phone||'—')}</p></div>
+          <div class="bg-slate-900 rounded-xl p-3"><p class="text-slate-500 text-xs mb-1">المفضل</p><p class="text-white">${h(c.favorite_item||'—')}</p></div>
+          <div class="bg-slate-900 rounded-xl p-3 col-span-2"><p class="text-slate-500 text-xs mb-1">ملاحظات / تفضيلات</p>
+            <input id="cPref" value="${h(c.preferences||'')}" class="w-full bg-transparent text-white text-sm focus:outline-none"></div>
+          <div class="col-span-2 flex items-center gap-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cVip" ${c.vip ? 'checked' : ''} class="w-4 h-4 rounded accent-yellow-500">
+              <span class="text-slate-400 text-sm">VIP</span>
+            </label>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="saveCustomer('${id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition">حفظ</button>
+          <button onclick="deleteCustomer('${id}')" class="bg-red-600/20 hover:bg-red-600/40 border border-red-500/50 text-red-400 py-2.5 px-4 rounded-xl text-sm transition">حذف</button>
+          <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إغلاق</button>
         </div>
       </div>
-      ${c.orders.length ? `
-        <p class="text-slate-400 text-xs mb-2">آخر الطلبات</p>
-        <div class="space-y-1 mb-4 max-h-40 overflow-y-auto">
+      <div id="cPanelOrders" class="hidden">
+        ${c.orders.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">
           ${c.orders.map(o => `
-            <div class="flex justify-between py-1.5 border-b border-slate-700/50">
+            <div class="flex justify-between items-center py-2 border-b border-slate-700/50">
               <span class="text-slate-400 text-xs">${dt(o.created_at)}</span>
               ${statusBadge(o.status)}
               <span class="text-green-400 text-xs font-semibold">${cur(o.total)}</span>
             </div>`).join('')}
-        </div>` : ''}
-      <div class="flex gap-2">
-        <button onclick="saveCustomer('${id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition">حفظ</button>
-        <button onclick="deleteCustomer('${id}')" class="bg-red-600/20 hover:bg-red-600/40 border border-red-500/50 text-red-400 py-2.5 px-4 rounded-xl text-sm transition">حذف</button>
-        <button onclick="closeModal()" class="bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-xl text-sm transition">إغلاق</button>
+        </div>` : '<p class="text-slate-500 text-sm text-center py-8">لا توجد طلبات بعد</p>'}
+      </div>
+      <div id="cPanelConvs" class="hidden">
+        <div id="cConvsList" class="space-y-1 max-h-72 overflow-y-auto">
+          <div class="flex justify-center py-4"><div class="spinner"></div></div>
+        </div>
       </div>
     `);
   } catch(e) { toast(e.message, 'error'); closeModal(); }
+}
+
+function custTab(tab, customerId) {
+  ['profile','orders','convs'].forEach(t => {
+    const btn = document.getElementById(`cTab${t.charAt(0).toUpperCase()+t.slice(1)}`);
+    const panel = document.getElementById(`cPanel${t.charAt(0).toUpperCase()+t.slice(1)}`);
+    if (!btn || !panel) return;
+    if (t === tab) {
+      btn.classList.add('ai-tab-active'); btn.classList.remove('text-slate-500');
+      panel.classList.remove('hidden');
+    } else {
+      btn.classList.remove('ai-tab-active');
+      panel.classList.add('hidden');
+    }
+  });
+  if (tab === 'convs' && customerId) loadCustomerConvs(customerId);
+}
+
+async function loadCustomerConvs(customerId) {
+  const el = document.getElementById('cConvsList');
+  if (!el) return;
+  try {
+    const convs = await api.get(`/api/conversations?customer_id=${customerId}`);
+    if (!convs.length) { el.innerHTML = '<p class="text-slate-500 text-sm text-center py-8">لا توجد محادثات بعد</p>'; return; }
+    el.innerHTML = convs.map(cv => `
+      <div class="flex items-center justify-between py-2 border-b border-slate-700/50 cursor-pointer hover:bg-slate-700/20 px-1 rounded"
+           onclick="closeModal();navigate('conversations');setTimeout(()=>openConv('${cv.id}'),400)">
+        <div>
+          <p class="text-white text-xs">${cv.last_message ? h(cv.last_message.slice(0,40)) + (cv.last_message.length > 40 ? '…' : '') : '(بدون رسائل)'}</p>
+          <p class="text-slate-500 text-[10px]">${timeAgo(cv.last_message_at || cv.updated_at)}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          ${cv.status === 'open' ? '<span class="badge bg-emerald-500/20 text-emerald-400 text-[10px]">مفتوح</span>' : '<span class="badge bg-slate-700 text-slate-500 text-[10px]">مغلق</span>'}
+          ${platformBadge(cv.platform)}
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = '<p class="text-red-400 text-xs text-center py-4">تعذر التحميل</p>';
+  }
 }
 
 async function saveCustomer(id) {
@@ -3692,9 +3896,24 @@ document.getElementById('bcMessage')?.addEventListener('input', function() {
   document.getElementById('bcCharCount').textContent = this.value.length + ' / 1000';
 });
 
+async function bcPreview() {
+  const segment = document.getElementById('bcSegment')?.value || 'all';
+  const platform = document.getElementById('bcPlatform')?.value || '';
+  const el = document.getElementById('bcPreviewCount');
+  if (!el) return;
+  el.textContent = '…';
+  try {
+    const qs = new URLSearchParams({ segment });
+    if (platform) qs.set('platform', platform);
+    const r = await api.get(`/api/broadcast/preview?${qs}`);
+    el.textContent = r.count;
+  } catch(e) { el.textContent = '—'; }
+}
+
 async function sendBroadcast() {
   const msg = (document.getElementById('bcMessage').value || '').trim();
   const platform = document.getElementById('bcPlatform').value;
+  const segment = document.getElementById('bcSegment')?.value || 'all';
   const resultEl = document.getElementById('bcResult');
   if (!msg) { toast('الرسالة فارغة', 'error'); return; }
   if (msg.length > 1000) { toast('الرسالة طويلة جداً (الحد 1000 حرف)', 'error'); return; }
@@ -3704,7 +3923,7 @@ async function sendBroadcast() {
   resultEl.classList.add('hidden');
 
   try {
-    const body = { message: msg };
+    const body = { message: msg, segment };
     if (platform) body.platform = platform;
     const r = await api.post('/api/broadcast', body);
     resultEl.className = 'text-sm rounded-xl px-4 py-3 bg-green-500/20 border border-green-500/30 text-green-300';
@@ -3733,7 +3952,7 @@ async function loadAnalytics() {
     if (dateTo)   voiceQS.set('date_to', dateTo);
     const voiceUrl = '/api/analytics/voice' + (voiceQS.toString() ? '?' + voiceQS : '');
 
-    const [sum, weekly, channels, topProds, topCusts, voice, menuImgs] = await Promise.all([
+    const [sum, weekly, channels, topProds, topCusts, voice, menuImgs, hourly] = await Promise.all([
       api.get('/api/analytics/summary'),
       api.get('/api/analytics/weekly-revenue'),
       api.get('/api/analytics/channel-breakdown'),
@@ -3741,6 +3960,7 @@ async function loadAnalytics() {
       api.get('/api/analytics/top-customers'),
       api.get(voiceUrl).catch(() => ({})),
       api.get('/api/analytics/menu-images').catch(() => ({})),
+      api.get('/api/analytics/hourly-orders').catch(() => []),
     ]);
 
     document.getElementById('aKpiRevenue').textContent = cur(sum.total_revenue);
@@ -3766,6 +3986,36 @@ async function loadAnalytics() {
         scales: { x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
                   y: { ticks: { color: '#94a3b8' }, grid: { color: 'transparent' } } } },
     });
+
+    // Hourly heatmap
+    if (hourly && hourly.length) {
+      const maxCount = Math.max(...hourly.map(h => h.count), 1);
+      const hCtx = document.getElementById('analyticsHourlyChart');
+      if (S.charts['analyticsHourlyChart']) S.charts['analyticsHourlyChart'].destroy();
+      S.charts['analyticsHourlyChart'] = new Chart(hCtx, {
+        type: 'bar',
+        data: {
+          labels: hourly.map(h => h.label),
+          datasets: [{
+            data: hourly.map(h => h.count),
+            backgroundColor: hourly.map(h => {
+              const intensity = h.count / maxCount;
+              return `rgba(99,102,241,${0.15 + intensity * 0.75})`;
+            }),
+            borderColor: 'rgba(99,102,241,0.4)',
+            borderWidth: 1, borderRadius: 3,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.parsed.y} طلب` } } },
+          scales: {
+            x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 0 }, grid: { color: 'transparent' } },
+            y: { ticks: { color: '#94a3b8', stepSize: 1 }, grid: { color: '#1e293b' } },
+          },
+        },
+      });
+    }
 
     document.getElementById('analyticsTopCusts').innerHTML = topCusts.map((c, i) => `
       <div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">

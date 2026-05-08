@@ -143,6 +143,8 @@ class _PgConnection:
         sql = re.sub(r'\bDATE\(([^)]+)\)', r'(\1)::date', sql)
         # strftime('%Y-%m', col) → to_char((col)::timestamp, 'YYYY-MM')
         sql = re.sub(r"strftime\('%Y-%m',\s*([^)]+)\)", r"to_char((\1)::timestamp, 'YYYY-MM')", sql)
+        # strftime('%H', col) → to_char((col)::timestamp, 'HH24')
+        sql = re.sub(r"strftime\('%H',\s*([^)]+)\)", r"to_char((\1)::timestamp, 'HH24')", sql)
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql, params or [])
         return _PgCursor(cur)
