@@ -550,6 +550,48 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
 
+# ── Phase 2: place_order Function Calling Tool ───────────────────────────────
+_PLACE_ORDER_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "place_order",
+            "description": (
+                "استدعِ هذه الأداة فقط عندما يؤكد العميل الطلب "
+                "(يقول ثبت أو نعم أو اي أو تمام أو ما يعادلها) "
+                "وعندك جميع المعلومات: الأصناف، الكميات، الاسم، "
+                "العنوان أو نوع الاستلام، طريقة الدفع. "
+                "لا تستدعيها قبل التأكيد ولا إذا ناقص أي معلومة."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "قائمة الأصناف المطلوبة",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name":       {"type": "string",  "description": "اسم الصنف كما في المنيو"},
+                                "qty":        {"type": "integer", "description": "الكمية"},
+                                "unit_price": {"type": "number",  "description": "سعر الوحدة بالدينار العراقي"},
+                                "note":       {"type": "string",  "description": "ملاحظة خاصة مثل بدون بصل (اختياري)"},
+                            },
+                            "required": ["name", "qty", "unit_price"],
+                        },
+                    },
+                    "customer_name":   {"type": "string", "description": "اسم العميل"},
+                    "delivery_type":   {"type": "string", "enum": ["delivery", "pickup"], "description": "توصيل أم استلام"},
+                    "address":         {"type": "string", "description": "عنوان التوصيل — مطلوب إذا delivery"},
+                    "payment_method":  {"type": "string", "description": "طريقة الدفع (كاش، كي كارد، زين كاش...)"},
+                    "closing_message": {"type": "string", "description": "جملة إغلاق ودية بالعربي مثل: حاضر 🌷 الشباب يجهزون هسه"},
+                },
+                "required": ["items", "customer_name", "delivery_type", "payment_method", "closing_message"],
+            },
+        },
+    }
+]
+
 
 # ── Quality Metrics Logger ────────────────────────────────────────────────────
 
@@ -1250,14 +1292,38 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         msgs.append({"role": "user", "content": customer_message})
         return msgs
 
+    # Mutable container to communicate tool call result back to outer scope
+    _tool_call_data: dict = {"triggered": False, "args": None}
+
     def _call_openai(msgs: list, max_tok: int) -> str:
         resp = client.chat.completions.create(
             model=model,
             messages=msgs,
             max_tokens=max_tok,
             temperature=_temperature,
+            tools=_PLACE_ORDER_TOOLS,
+            tool_choice="auto",
         )
-        return resp.choices[0].message.content.strip()
+        msg = resp.choices[0].message
+        # Detect place_order tool call
+        if msg.tool_calls:
+            tc = msg.tool_calls[0]
+            if tc.function.name == "place_order":
+                try:
+                    import json as _tj
+                    args = _tj.loads(tc.function.arguments)
+                    _tool_call_data["triggered"] = True
+                    _tool_call_data["args"] = args
+                    logger.info(
+                        f"[tool] place_order called — "
+                        f"items={len(args.get('items', []))} "
+                        f"name={args.get('customer_name', '')} "
+                        f"conv={conversation_id}"
+                    )
+                    return "__FC_ORDER__"
+                except Exception as _tce:
+                    logger.warning(f"[tool] place_order parse failed: {_tce}")
+        return (msg.content or "").strip()
 
     # ── Critical issues that warrant a retry ─────────────────────────────────
     _RETRY_ISSUES = {"trimmed_length", "formal_opener", "second_question_removed",
@@ -1275,52 +1341,109 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         _latency = round((_time.monotonic() - _t0) * 1000)
         logger.info(f"[bot] OpenAI reply OK — restaurant={restaurant_id} latency={_latency}ms reply_len={len(reply_text)}")
 
-        # Algorithm 6 — post-response validation & inline fixes
-        reply_text, val_issues = _validate_reply(
-            reply_text, _history_dicts, memory, customer_message,
-            products=_products_dicts,
-        )
-        if val_issues:
-            logger.warning(f"[bot_validate] restaurant={restaurant_id} fixed={val_issues}")
+        # Skip post-processing if GPT called place_order tool
+        val_issues = []
+        if not _tool_call_data["triggered"]:
+            # Algorithm 6 — post-response validation & inline fixes
+            reply_text, val_issues = _validate_reply(
+                reply_text, _history_dicts, memory, customer_message,
+                products=_products_dicts,
+            )
+            if val_issues:
+                logger.warning(f"[bot_validate] restaurant={restaurant_id} fixed={val_issues}")
 
-        # Retry once if critical issues found — stricter budget
-        if _needs_retry(val_issues):
-            logger.info(f"[bot] retry triggered — issues={val_issues}")
-            try:
-                _retry_tokens = max(60, _max_tokens - 40)
-                reply_text_retry = _call_openai(_msgs, _retry_tokens)
-                reply_text_retry, retry_issues = _validate_reply(
-                    reply_text_retry, _history_dicts, memory, customer_message,
-                    products=_products_dicts,
-                )
-                # Only use retry result if it's cleaner
-                if len(retry_issues) < len(val_issues):
-                    reply_text = reply_text_retry
-                    val_issues = retry_issues
-                    logger.info(f"[bot] retry improved reply — issues now={retry_issues}")
-            except Exception as _retry_err:
-                logger.warning(f"[bot] retry failed — keeping first reply: {_retry_err}")
+            # Retry once if critical issues found — stricter budget
+            if _needs_retry(val_issues):
+                logger.info(f"[bot] retry triggered — issues={val_issues}")
+                try:
+                    _retry_tokens = max(60, _max_tokens - 40)
+                    reply_text_retry = _call_openai(_msgs, _retry_tokens)
+                    # If retry also triggered tool call, accept it
+                    if not _tool_call_data["triggered"]:
+                        reply_text_retry, retry_issues = _validate_reply(
+                            reply_text_retry, _history_dicts, memory, customer_message,
+                            products=_products_dicts,
+                        )
+                        if len(retry_issues) < len(val_issues):
+                            reply_text = reply_text_retry
+                            val_issues = retry_issues
+                            logger.info(f"[bot] retry improved reply — issues now={retry_issues}")
+                except Exception as _retry_err:
+                    logger.warning(f"[bot] retry failed — keeping first reply: {_retry_err}")
 
         # NUMBER 20 — Elite Reply Brain (post-processing quality layer, LOCKED 2026-05-01)
         # SAFETY: this block only rewrites reply_text for tone/banned-phrase cleanup.
         # It must never affect order creation, order persistence, or extracted_order.
         # Disable with env var ELITE_REPLY_ENGINE=false if regression appears.
-        try:
-            from services.reply_brain import elite_reply_pass
-            reply_text = elite_reply_pass(
-                reply=reply_text,
-                customer_message=customer_message,
-                history=_history_for_elite,
-                memory=memory,
-                products=_products_dicts,
-            )
-        except Exception as _elite_err:
-            logger.warning(f"[elite_reply] fallback — {_elite_err}")
+        if not _tool_call_data["triggered"]:
+            try:
+                from services.reply_brain import elite_reply_pass
+                reply_text = elite_reply_pass(
+                    reply=reply_text,
+                    customer_message=customer_message,
+                    history=_history_for_elite,
+                    memory=memory,
+                    products=_products_dicts,
+                )
+            except Exception as _elite_err:
+                logger.warning(f"[elite_reply] fallback — {_elite_err}")
 
     except Exception as e:
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
+
+    # Phase 2 — Function Calling: populate OrderBrain from place_order tool args
+    if _tool_call_data["triggered"] and _tool_call_data["args"] is not None:
+        _fc = _tool_call_data["args"]
+        try:
+            from services.order_brain import OrderBrain as _OB, OrderItem as _OItem
+            if _ob_session is None:
+                _ob_session = _OB.get_or_create(conversation_id, restaurant_id)
+            # Repopulate items from tool, using DB prices where available
+            _ob_session.items = []
+            for _fi in (_fc.get("items") or []):
+                _fi_name  = str(_fi.get("name", "")).strip()
+                _fi_qty   = max(1, int(_fi.get("qty", 1)))
+                _fi_price = float(_fi.get("unit_price", 0))
+                # Trust DB price over GPT price
+                for _p in _products_dicts:
+                    if _p.get("name", "").strip() == _fi_name:
+                        _fi_price = float(_p.get("price") or _fi_price)
+                        break
+                _ob_session.items.append(_OItem(
+                    name=_fi_name, qty=_fi_qty, price=_fi_price,
+                    note=str(_fi.get("note", "") or ""),
+                ))
+            # Set order fields
+            if _fc.get("customer_name"):
+                _ob_session.customer_name = str(_fc["customer_name"]).strip()
+            _ob_session.order_type = _fc.get("delivery_type", "delivery")
+            if _fc.get("address"):
+                _ob_session.address = str(_fc["address"]).strip()
+            if _fc.get("payment_method"):
+                _ob_session.payment_method = str(_fc["payment_method"]).strip()
+            _ob_session.confirmation_status = "confirmed"
+            reply_text = ""  # will be replaced by generate_confirmation_message below
+            logger.info(
+                f"[tool] _ob_session populated from place_order — "
+                f"items={len(_ob_session.items)} name={_ob_session.customer_name} "
+                f"type={_ob_session.order_type} conv={conversation_id}"
+            )
+        except Exception as _fce:
+            logger.warning(f"[tool] _ob_session populate failed: {_fce}")
+            # Fallback: build summary directly from tool args
+            _lines = [f"• {fi.get('name')} × {fi.get('qty')} — {int(fi.get('unit_price',0)):,} د.ع"
+                      for fi in (_fc.get("items") or [])]
+            _total = sum(fi.get("qty",1) * fi.get("unit_price",0) for fi in (_fc.get("items") or []))
+            reply_text = (
+                "✅ طلبك:\n" + "\n".join(_lines) +
+                f"\n──────────────\n💰 المجموع: {int(_total):,} د.ع"
+                f"\n👤 الاسم: {_fc.get('customer_name','')}"
+                + (f"\n📍 التوصيل إلى: {_fc['address']}" if _fc.get("address") else "\n🏪 استلام من المطعم")
+                + f"\n💳 الدفع: {_fc.get('payment_method','')}"
+                + f"\n\n{_fc.get('closing_message','حاضر 🌷 الشباب يجهزون هسه')}"
+            )
 
     # NUMBER 41 — Override reply with payment validation rejection if needed
     if _ob_invalid_pm_reply:
@@ -3073,22 +3196,19 @@ def _build_system_prompt(
   ❌ غلط: "أكيد 🌷 — وين العنوان؟"   ← تكرار سؤال عن معلومة ذُكرت
   ✅ صح: [ملخص ✅ كامل فوراً]
 
-**الخطوة 10 — الملخص النهائي:**
-أرسله مرة واحدة فقط بهذا الشكل:
+**الخطوة 10 — تأكيد الطلب:**
+⚠️ لا تكتب الملخص بنفسك — استدعِ أداة `place_order` مباشرة.
 
-✅ طلبك:
-• [اسم الوجبة] × [الكمية] — [السعر] د.ع
-• [إضافات إن وُجدت] × [الكمية] — [السعر] د.ع
-──────────────
-💰 المجموع: [الإجمالي] د.ع
-👤 الاسم: [الاسم — إلزامي إذا ذُكر]
-📍 العنوان: [العنوان] — للتوصيل فقط
-🏪 استلام من المطعم — للاستلام فقط
-💳 الدفع: [طريقة الدفع]
+استدعِ `place_order` بهذه البيانات:
+- items: كل صنف مطلوب مع اسمه كما في المنيو، الكمية، سعر الوحدة
+- customer_name: اسم العميل
+- delivery_type: "delivery" للتوصيل أو "pickup" للاستلام
+- address: العنوان — إلزامي إذا delivery
+- payment_method: طريقة الدفع
+- closing_message: جملة إغلاق ودية بالعراقي مثل "حاضر 🌷 الشباب يجهزون هسه"
 
-⚠️ لا تحذف الاسم إذا ذُكر في أي رسالة سابقة.
-⚠️ لا تحذف العنوان إذا ذُكر في أي رسالة سابقة.
-⚠️ لا تُرسل الملخص مرتين.
+❌ لا تكتب "✅ طلبك:" بنفسك — فقط استدعِ place_order.
+❌ لا تستدعِ place_order إذا ناقص أي معلومة أو قبل تأكيد العميل.
 
 ---
 
