@@ -58,7 +58,10 @@
         placeholder="example@restaurant.com" required>
     </div>
     <div>
-      <label class="block text-slate-300 text-sm mb-2">🔒 كلمة المرور</label>
+      <div class="flex items-center justify-between mb-2">
+        <a href="/reset-password" class="text-indigo-400 hover:text-indigo-300 text-xs transition">نسيت كلمة المرور؟</a>
+        <label class="text-slate-300 text-sm">🔒 كلمة المرور</label>
+      </div>
       <input id="restaurant_login_password_new"
         name="restaurant_login_password_new"
         type="password"
@@ -68,11 +71,6 @@
         class="w-full bg-white/10 border border-white/20 text-white rounded-xl px-4 py-3 text-sm
                focus:border-indigo-500 focus:bg-white/15 transition placeholder-slate-500"
         placeholder="••••••••" required>
-    </div>
-
-    <!-- Forgot password -->
-    <div class="text-left">
-      <a href="/reset-password" class="text-indigo-400 hover:text-indigo-300 text-xs transition">نسيت كلمة المرور؟</a>
     </div>
 
     <!-- Error -->
