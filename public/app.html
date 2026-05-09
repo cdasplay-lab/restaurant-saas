@@ -3603,7 +3603,7 @@ function openMenuImageModal(id) {
           <p class="text-slate-600 text-xs mt-2">JPG · PNG · WEBP — حتى 15 MB</p>
         </div>
         <div id="miPreviewWrap" class="${img?.image_url ? '' : 'hidden'}">
-          <img id="miPreview" src="${img?.image_url||''}" class="mx-auto rounded-xl max-h-40 object-contain mb-2" onerror="imgMissing(this)">
+          <img id="miPreview" ${img?.image_url ? `src="${img.image_url}"` : ''} class="mx-auto rounded-xl max-h-40 object-contain mb-2" onerror="this.onerror=null;this.style.display='none'">
           <p class="text-indigo-400 text-xs">✓ تم رفع الصورة — اضغط للتغيير</p>
         </div>
         <input type="file" id="miFileInput" accept="image/*" class="hidden" onchange="_miHandleDrop(this.files)">
