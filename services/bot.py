@@ -550,8 +550,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _openai_client = None
 
-# ── Phase 2: place_order Function Calling Tool ───────────────────────────────
-_PLACE_ORDER_TOOLS = [
+# ── Phase 2+4: Function Calling Tools (place_order + update_order) ───────────
+_ORDER_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -589,7 +589,44 @@ _PLACE_ORDER_TOOLS = [
                 "required": ["items", "customer_name", "delivery_type", "payment_method", "closing_message"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_order",
+            "description": (
+                "استدعِها كلما التقطت معلومة جديدة من العميل أثناء المحادثة "
+                "(صنف، كمية، اسم، عنوان، طريقة دفع، نوع توصيل). "
+                "استدعيها دائماً مع reply — الرد الذي ستقوله للعميل. "
+                "لا تستدعيها عند التأكيد النهائي — استخدم place_order بدلاً عنها."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "الأصناف المجمّعة حتى الآن (كل ما ذكره العميل)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name":       {"type": "string",  "description": "اسم الصنف"},
+                                "qty":        {"type": "integer", "description": "الكمية"},
+                                "unit_price": {"type": "number",  "description": "السعر"},
+                                "note":       {"type": "string",  "description": "ملاحظة (اختياري)"},
+                            },
+                            "required": ["name", "qty", "unit_price"],
+                        },
+                    },
+                    "customer_name":  {"type": "string", "description": "اسم العميل إذا ذُكر"},
+                    "delivery_type":  {"type": "string", "enum": ["delivery", "pickup"], "description": "نوع التوصيل إذا حُدِّد"},
+                    "address":        {"type": "string", "description": "العنوان إذا ذُكر"},
+                    "payment_method": {"type": "string", "description": "طريقة الدفع إذا ذُكرت"},
+                    "reply":          {"type": "string", "description": "الرد العربي القصير للعميل — إلزامي دائماً"},
+                },
+                "required": ["reply"],
+            },
+        },
+    },
 ]
 
 
@@ -1293,7 +1330,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         return msgs
 
     # Mutable container to communicate tool call result back to outer scope
-    _tool_call_data: dict = {"triggered": False, "args": None}
+    _tool_call_data: dict = {"triggered": False, "tool_name": None, "args": None}
 
     def _call_openai(msgs: list, max_tok: int) -> str:
         resp = client.chat.completions.create(
@@ -1301,19 +1338,19 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             messages=msgs,
             max_tokens=max_tok,
             temperature=_temperature,
-            tools=_PLACE_ORDER_TOOLS,
+            tools=_ORDER_TOOLS,
             tool_choice="auto",
         )
         msg = resp.choices[0].message
-        # Detect place_order tool call
         if msg.tool_calls:
             tc = msg.tool_calls[0]
-            if tc.function.name == "place_order":
-                try:
-                    import json as _tj
-                    args = _tj.loads(tc.function.arguments)
-                    _tool_call_data["triggered"] = True
-                    _tool_call_data["args"] = args
+            try:
+                import json as _tj
+                args = _tj.loads(tc.function.arguments)
+                _tool_call_data["triggered"] = True
+                _tool_call_data["tool_name"] = tc.function.name
+                _tool_call_data["args"] = args
+                if tc.function.name == "place_order":
                     logger.info(
                         f"[tool] place_order called — "
                         f"items={len(args.get('items', []))} "
@@ -1321,8 +1358,16 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                         f"conv={conversation_id}"
                     )
                     return "__FC_ORDER__"
-                except Exception as _tce:
-                    logger.warning(f"[tool] place_order parse failed: {_tce}")
+                elif tc.function.name == "update_order":
+                    logger.info(
+                        f"[tool] update_order called — "
+                        f"items={len(args.get('items', []))} "
+                        f"name={args.get('customer_name', '')} "
+                        f"conv={conversation_id}"
+                    )
+                    return args.get("reply", "")
+            except Exception as _tce:
+                logger.warning(f"[tool] {tc.function.name} parse failed: {_tce}")
         return (msg.content or "").strip()
 
     # ── Critical issues that warrant a retry ─────────────────────────────────
@@ -1393,57 +1438,77 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
 
-    # Phase 2 — Function Calling: populate OrderBrain from place_order tool args
+    # Phase 2+4 — Function Calling: handle place_order and update_order tools
     if _tool_call_data["triggered"] and _tool_call_data["args"] is not None:
         _fc = _tool_call_data["args"]
-        try:
+        _tool_name = _tool_call_data.get("tool_name", "place_order")
+
+        def _populate_ob_session_from_tool(fc, finalize=False):
+            """Populate _ob_session fields from tool args. finalize=True sets confirmation_status."""
+            nonlocal _ob_session
             from services.order_brain import OrderBrain as _OB, OrderItem as _OItem
             if _ob_session is None:
                 _ob_session = _OB.get_or_create(conversation_id, restaurant_id)
-            # Repopulate items from tool, using DB prices where available
-            _ob_session.items = []
-            for _fi in (_fc.get("items") or []):
-                _fi_name  = str(_fi.get("name", "")).strip()
-                _fi_qty   = max(1, int(_fi.get("qty", 1)))
-                _fi_price = float(_fi.get("unit_price", 0))
-                # Trust DB price over GPT price
-                for _p in _products_dicts:
-                    if _p.get("name", "").strip() == _fi_name:
-                        _fi_price = float(_p.get("price") or _fi_price)
-                        break
-                _ob_session.items.append(_OItem(
-                    name=_fi_name, qty=_fi_qty, price=_fi_price,
-                    note=str(_fi.get("note", "") or ""),
-                ))
-            # Set order fields
-            if _fc.get("customer_name"):
-                _ob_session.customer_name = str(_fc["customer_name"]).strip()
-            _ob_session.order_type = _fc.get("delivery_type", "delivery")
-            if _fc.get("address"):
-                _ob_session.address = str(_fc["address"]).strip()
-            if _fc.get("payment_method"):
-                _ob_session.payment_method = str(_fc["payment_method"]).strip()
-            _ob_session.confirmation_status = "confirmed"
-            reply_text = ""  # will be replaced by generate_confirmation_message below
-            logger.info(
-                f"[tool] _ob_session populated from place_order — "
-                f"items={len(_ob_session.items)} name={_ob_session.customer_name} "
-                f"type={_ob_session.order_type} conv={conversation_id}"
-            )
-        except Exception as _fce:
-            logger.warning(f"[tool] _ob_session populate failed: {_fce}")
-            # Fallback: build summary directly from tool args
-            _lines = [f"• {fi.get('name')} × {fi.get('qty')} — {int(fi.get('unit_price',0)):,} د.ع"
-                      for fi in (_fc.get("items") or [])]
-            _total = sum(fi.get("qty",1) * fi.get("unit_price",0) for fi in (_fc.get("items") or []))
-            reply_text = (
-                "✅ طلبك:\n" + "\n".join(_lines) +
-                f"\n──────────────\n💰 المجموع: {int(_total):,} د.ع"
-                f"\n👤 الاسم: {_fc.get('customer_name','')}"
-                + (f"\n📍 التوصيل إلى: {_fc['address']}" if _fc.get("address") else "\n🏪 استلام من المطعم")
-                + f"\n💳 الدفع: {_fc.get('payment_method','')}"
-                + f"\n\n{_fc.get('closing_message','حاضر 🌷 الشباب يجهزون هسه')}"
-            )
+            if fc.get("items"):
+                _ob_session.items = []
+                for _fi in fc["items"]:
+                    _fi_name  = str(_fi.get("name", "")).strip()
+                    _fi_qty   = max(1, int(_fi.get("qty", 1)))
+                    _fi_price = float(_fi.get("unit_price", 0))
+                    for _p in _products_dicts:
+                        if _p.get("name", "").strip() == _fi_name:
+                            _fi_price = float(_p.get("price") or _fi_price)
+                            break
+                    _ob_session.items.append(_OItem(
+                        name=_fi_name, qty=_fi_qty, price=_fi_price,
+                        note=str(_fi.get("note", "") or ""),
+                    ))
+            if fc.get("customer_name"):
+                _ob_session.customer_name = str(fc["customer_name"]).strip()
+            if fc.get("delivery_type"):
+                _ob_session.order_type = fc["delivery_type"]
+            if fc.get("address"):
+                _ob_session.address = str(fc["address"]).strip()
+            if fc.get("payment_method"):
+                _ob_session.payment_method = str(fc["payment_method"]).strip()
+            if finalize:
+                _ob_session.confirmation_status = "confirmed"
+
+        if _tool_name == "place_order":
+            try:
+                _populate_ob_session_from_tool(_fc, finalize=True)
+                reply_text = ""  # will be replaced by generate_confirmation_message below
+                logger.info(
+                    f"[tool] _ob_session populated from place_order — "
+                    f"items={len(_ob_session.items)} name={_ob_session.customer_name} "
+                    f"type={_ob_session.order_type} conv={conversation_id}"
+                )
+            except Exception as _fce:
+                logger.warning(f"[tool] place_order populate failed: {_fce}")
+                _lines = [f"• {fi.get('name')} × {fi.get('qty')} — {int(fi.get('unit_price',0)):,} د.ع"
+                          for fi in (_fc.get("items") or [])]
+                _total = sum(fi.get("qty",1) * fi.get("unit_price",0) for fi in (_fc.get("items") or []))
+                reply_text = (
+                    "✅ طلبك:\n" + "\n".join(_lines) +
+                    f"\n──────────────\n💰 المجموع: {int(_total):,} د.ع"
+                    f"\n👤 الاسم: {_fc.get('customer_name','')}"
+                    + (f"\n📍 التوصيل إلى: {_fc['address']}" if _fc.get("address") else "\n🏪 استلام من المطعم")
+                    + f"\n💳 الدفع: {_fc.get('payment_method','')}"
+                    + f"\n\n{_fc.get('closing_message','حاضر 🌷 الشباب يجهزون هسه')}"
+                )
+
+        elif _tool_name == "update_order":
+            try:
+                _populate_ob_session_from_tool(_fc, finalize=False)
+                _ob_save_state(conversation_id, _ob_session)
+                logger.info(
+                    f"[tool] _ob_session updated from update_order — "
+                    f"items={len(_ob_session.items if _ob_session else [])} "
+                    f"name={_ob_session.customer_name if _ob_session else ''} "
+                    f"conv={conversation_id}"
+                )
+            except Exception as _uoe:
+                logger.warning(f"[tool] update_order populate failed: {_uoe}")
 
     # NUMBER 41 — Override reply with payment validation rejection if needed
     if _ob_invalid_pm_reply:
@@ -1595,7 +1660,8 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                             logger.info(f"[upsell] appended: {_upsell_line!r} conv={conversation_id}")
                         else:
                             logger.debug(f"[upsell] skipped — refusal detected conv={conversation_id}")
-            else:
+            elif not _tool_call_data["triggered"]:
+                # Skip regex update when a tool already managed the state
                 OrderBrain.update_from_message(
                     _ob_session,
                     reply_text,
@@ -3196,19 +3262,23 @@ def _build_system_prompt(
   ❌ غلط: "أكيد 🌷 — وين العنوان؟"   ← تكرار سؤال عن معلومة ذُكرت
   ✅ صح: [ملخص ✅ كامل فوراً]
 
-**الخطوة 10 — تأكيد الطلب:**
-⚠️ لا تكتب الملخص بنفسك — استدعِ أداة `place_order` مباشرة.
+**الأدوات المتاحة لك — استخدمها بدقة:**
 
-استدعِ `place_order` بهذه البيانات:
-- items: كل صنف مطلوب مع اسمه كما في المنيو، الكمية، سعر الوحدة
-- customer_name: اسم العميل
-- delivery_type: "delivery" للتوصيل أو "pickup" للاستلام
-- address: العنوان — إلزامي إذا delivery
-- payment_method: طريقة الدفع
-- closing_message: جملة إغلاق ودية بالعراقي مثل "حاضر 🌷 الشباب يجهزون هسه"
+**أداة `update_order` — استخدمها أثناء جمع المعلومات:**
+→ استدعِها كلما التقطت معلومة جديدة: صنف، اسم، عنوان، دفع، نوع توصيل.
+→ دائماً أرسل `reply` — ردك القصير للعميل.
+→ لا تستدعيها عند التأكيد النهائي.
+مثال: عميل قال "برگر وكولا" → استدعِ update_order مع items + reply "تمام 🌷 — توصيل أم استلام؟"
+
+**أداة `place_order` — استخدمها فقط عند التأكيد النهائي:**
+→ استدعِها فقط إذا قال العميل كلمة تأكيد (ثبت/نعم/اي/تمام/...) وعندك كل المعلومات.
+→ items، customer_name، delivery_type، payment_method، closing_message — كلها إلزامية.
+→ address إلزامي إذا delivery_type = "delivery".
+→ closing_message: جملة إغلاق ودية بالعراقي مثل "حاضر 🌷 الشباب يجهزون هسه"
 
 ❌ لا تكتب "✅ طلبك:" بنفسك — فقط استدعِ place_order.
 ❌ لا تستدعِ place_order إذا ناقص أي معلومة أو قبل تأكيد العميل.
+❌ لا تكتب الرد خارج الأداة عندما تستدعي update_order — الرد يجي داخل حقل reply.
 
 ---
 
@@ -3281,15 +3351,6 @@ def _build_system_prompt(
 → لا ترسل الملخص النهائي إلا بعد "ثبت" أو "أكمل".
 مثال: زبون قال "كاش" → رد "أكيد 🌷" وانتظر — لا ترسل ✅ طلبك.
 """
-
-    # NUMBER 27 — Prepend order state at the beginning of the prompt for maximum LLM attention
-    if order_session is not None:
-        try:
-            _state_section = order_session.to_prompt_section()
-            if _state_section:
-                prompt = _state_section + "\n---\n\n" + prompt
-        except Exception:
-            pass
 
     # Emoji handling
     prompt += """
@@ -3950,23 +4011,6 @@ def _build_system_prompt(
         prompt += f"سياسة المطعم: {rest_description}\n"
         if "فقط" in rest_description:
             prompt += "❌ لا تقل 'نعم' أو 'أكيد' لأي منطقة أو خيار غير مذكور صراحةً في السياسة أعلاه.\n"
-
-    # NUMBER 29 — IMPERATIVE DIRECTIVE at absolute end (highest GPT-4o-mini attention)
-    # This overrides everything: bot MUST ask the specific next question, never greet fresh
-    if order_session is not None:
-        try:
-            _state_section = order_session.to_prompt_section()
-            _next_q = order_session.generate_next_directive(products)
-            if _state_section:
-                prompt += f"\n{'='*55}\n"
-                prompt += "⛔ أمر صارم غير قابل للتجاوز — الجلسة نشطة:\n\n"
-                prompt += _state_section
-                prompt += f"\n➤ رسالتك التالية للعميل يجب أن تكون:\n"
-                prompt += f"   «{_next_q}»\n"
-                prompt += "لا تقل 'هلا بيك' ولا 'أهلين' ولا أي ترحيب — الجلسة قائمة.\n"
-                prompt += f"{'='*55}\n"
-        except Exception:
-            pass
 
     # ── Slot Context — known slots, don't ask again ───────────────────────────
     if slot_context:
