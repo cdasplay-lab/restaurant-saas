@@ -2281,7 +2281,7 @@ def _build_system_prompt(
 
     # Working hours awareness
     import json as _json
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _tdeltas
 
     working_hours_raw = settings.get("working_hours") or restaurant.get("working_hours") or "{}"
     working_hours_status = ""
@@ -2289,7 +2289,8 @@ def _build_system_prompt(
     next_open_info = ""
     try:
         wh = _json.loads(working_hours_raw) if isinstance(working_hours_raw, str) else working_hours_raw
-        now = _dt.now()
+        # Always use Iraq time (UTC+3) — consistent with _is_restaurant_open_now
+        now = _dt.utcnow() + _tdeltas(hours=3)
         # Keys must match what the frontend saves: mon/tue/wed/thu/fri/sat/sun
         # Python weekday(): 0=Monday … 6=Sunday
         day_keys   = ["mon","tue","wed","thu","fri","sat","sun"]

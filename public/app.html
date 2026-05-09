@@ -1108,7 +1108,14 @@
 
           <!-- Working Hours -->
           <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
-            <h3 class="text-white font-semibold">🕐 أوقات العمل</h3>
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <h3 class="text-white font-semibold">🕐 أوقات العمل</h3>
+              <div class="flex items-center gap-3">
+                <span class="text-slate-400 text-xs" id="iraqClockDisplay"></span>
+                <span id="whStatusBadge" class="text-xs font-semibold px-3 py-1 rounded-full hidden"></span>
+              </div>
+            </div>
+            <p class="text-slate-500 text-xs">الأوقات بتوقيت العراق (UTC+3) — صيغة 24 ساعة. مثال: 22:00 = الساعة 10 مساءً، 00:00 = منتصف الليل.</p>
             <div id="workingHoursGrid" class="space-y-2"></div>
             <button onclick="saveWorkingHours()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ أوقات العمل</button>
           </div>
@@ -4991,6 +4998,54 @@ function copyText(text) {
 const DAYS_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 const DAY_KEYS = ['sun','mon','tue','wed','thu','fri','sat'];
 
+// Returns current Iraq time (UTC+3) as a Date object
+function _iraqNow() {
+  const now = new Date();
+  return new Date(now.getTime() + (3 * 60 - now.getTimezoneOffset()) * 60000);
+}
+
+// Returns true if restaurant is open RIGHT NOW given a working-hours object
+function _isOpenNow(wh) {
+  const now = _iraqNow();
+  const dayKeys = ['sun','mon','tue','wed','thu','fri','sat'];
+  const key = dayKeys[now.getDay()];
+  const day = wh[key];
+  if (!day || !day.open) return false;
+  const from = day.from || '00:00';
+  const to   = day.to   || '23:59';
+  const [fh, fm] = from.split(':').map(Number);
+  const [th, tm] = to.split(':').map(Number);
+  const nowMins  = now.getHours() * 60 + now.getMinutes();
+  const fromMins = fh * 60 + fm;
+  const toMins   = th * 60 + tm;
+  // Handle midnight crossover (e.g. 20:00–02:00)
+  if (toMins < fromMins) return nowMins >= fromMins || nowMins <= toMins;
+  return nowMins >= fromMins && nowMins <= toMins;
+}
+
+// Update the status badge in the working-hours card
+function _updateWhStatusBadge(wh) {
+  const badge = document.getElementById('whStatusBadge');
+  if (!badge) return;
+  const open = _isOpenNow(wh);
+  badge.className = `text-xs font-semibold px-3 py-1 rounded-full ${open ? 'bg-green-900 text-green-300' : 'bg-red-900/60 text-red-300'}`;
+  badge.textContent = open ? '🟢 مفتوح الآن' : '🔴 مغلق الآن';
+  badge.classList.remove('hidden');
+}
+
+// Collect current grid values into a wh object (used both for save and live badge)
+function _collectWh() {
+  const wh = {};
+  DAY_KEYS.forEach(k => {
+    wh[k] = {
+      open: document.getElementById(`wh-open-${k}`)?.checked || false,
+      from: document.getElementById(`wh-from-${k}`)?.value || '09:00',
+      to:   document.getElementById(`wh-to-${k}`)?.value   || '22:00',
+    };
+  });
+  return wh;
+}
+
 function renderWorkingHoursGrid(wh) {
   const grid = document.getElementById('workingHoursGrid');
   if (!grid) return;
@@ -5008,35 +5063,50 @@ function renderWorkingHoursGrid(wh) {
       <div id="wh-times-${k}" class="${day.open ? '' : 'opacity-40 pointer-events-none'} flex items-center gap-2 flex-1">
         <span class="text-slate-500 text-xs">من</span>
         <input type="time" id="wh-from-${k}" value="${day.from || '09:00'}"
+          onchange="_updateWhStatusBadge(_collectWh())"
           class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
         <span class="text-slate-500 text-xs">إلى</span>
         <input type="time" id="wh-to-${k}" value="${day.to || '22:00'}"
+          onchange="_updateWhStatusBadge(_collectWh())"
           class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
       </div>
     </div>`;
   }).join('');
+  _updateWhStatusBadge(wh);
 }
 
 function toggleDay(k) {
   const open = document.getElementById(`wh-open-${k}`).checked;
   const times = document.getElementById(`wh-times-${k}`);
   if (times) { times.classList.toggle('opacity-40', !open); times.classList.toggle('pointer-events-none', !open); }
+  _updateWhStatusBadge(_collectWh());
 }
 
 async function saveWorkingHours() {
-  const wh = {};
-  DAY_KEYS.forEach(k => {
-    wh[k] = {
-      open: document.getElementById(`wh-open-${k}`)?.checked || false,
-      from: document.getElementById(`wh-from-${k}`)?.value || '09:00',
-      to:   document.getElementById(`wh-to-${k}`)?.value   || '22:00',
-    };
-  });
+  const wh = _collectWh();
   try {
     await api.put('/api/settings', { working_hours: wh });
-    toast('تم حفظ أوقات العمل ✅', 'success');
+    _updateWhStatusBadge(wh);
+    const open = _isOpenNow(wh);
+    toast(`تم حفظ أوقات العمل ✅ — المطعم الآن: ${open ? 'مفتوح 🟢' : 'مغلق 🔴'}`, open ? 'success' : 'warning');
   } catch(e) { toast(e.message, 'error'); }
 }
+
+// Iraq clock ticker — updates every 30 seconds
+function _startIraqClock() {
+  function tick() {
+    const el = document.getElementById('iraqClockDisplay');
+    if (!el) return;
+    const now = _iraqNow();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+    el.textContent = `الآن (العراق): ${days[now.getDay()]} ${hh}:${mm}`;
+  }
+  tick();
+  setInterval(tick, 30000);
+}
+_startIraqClock();
 
 function _applyBusinessType(type) {
   window._businessType = type;
