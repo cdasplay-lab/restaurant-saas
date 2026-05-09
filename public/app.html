@@ -1115,9 +1115,27 @@
                 <span id="whStatusBadge" class="text-xs font-semibold px-3 py-1 rounded-full hidden"></span>
               </div>
             </div>
-            <p class="text-slate-500 text-xs">الأوقات بتوقيت العراق (UTC+3) — صيغة 24 ساعة. مثال: 22:00 = الساعة 10 مساءً، 00:00 = منتصف الليل.</p>
-            <div id="workingHoursGrid" class="space-y-2"></div>
-            <button onclick="saveWorkingHours()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ أوقات العمل</button>
+            <!-- Quick Presets -->
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-slate-500 text-xs">إعداد سريع:</span>
+              <button type="button" onclick="_applyGlobalPreset('09:00','22:00')"
+                class="text-xs bg-slate-700 hover:bg-indigo-700 text-slate-300 hover:text-white px-3 py-1 rounded-lg transition">
+                9ص – 10م (كل الأيام)
+              </button>
+              <button type="button" onclick="_applyGlobalPreset('10:00','23:00')"
+                class="text-xs bg-slate-700 hover:bg-indigo-700 text-slate-300 hover:text-white px-3 py-1 rounded-lg transition">
+                10ص – 11م (كل الأيام)
+              </button>
+              <button type="button" onclick="_applyGlobalPreset('00:00','23:59')"
+                class="text-xs bg-slate-700 hover:bg-indigo-700 text-slate-300 hover:text-white px-3 py-1 rounded-lg transition">
+                24 ساعة
+              </button>
+            </div>
+            <div id="workingHoursGrid" class="space-y-1"></div>
+            <div class="flex items-center gap-3 pt-1">
+              <button onclick="saveWorkingHours()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-2.5 rounded-xl transition">💾 حفظ أوقات العمل</button>
+              <span class="text-slate-500 text-xs">الزر "⬆ للكل" بجانب أي يوم ينسخ وقته لجميع الأيام</span>
+            </div>
           </div>
         </div>
 
@@ -4998,32 +5016,56 @@ function copyText(text) {
 const DAYS_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 const DAY_KEYS = ['sun','mon','tue','wed','thu','fri','sat'];
 
-// Returns current Iraq time (UTC+3) as a Date object
+// ── Working Hours helpers ───────────────────────────────────────
+
+// Iraq time (UTC+3)
 function _iraqNow() {
   const now = new Date();
   return new Date(now.getTime() + (3 * 60 - now.getTimezoneOffset()) * 60000);
 }
 
-// Returns true if restaurant is open RIGHT NOW given a working-hours object
-function _isOpenNow(wh) {
-  const now = _iraqNow();
-  const dayKeys = ['sun','mon','tue','wed','thu','fri','sat'];
-  const key = dayKeys[now.getDay()];
-  const day = wh[key];
-  if (!day || !day.open) return false;
-  const from = day.from || '00:00';
-  const to   = day.to   || '23:59';
-  const [fh, fm] = from.split(':').map(Number);
-  const [th, tm] = to.split(':').map(Number);
-  const nowMins  = now.getHours() * 60 + now.getMinutes();
-  const fromMins = fh * 60 + fm;
-  const toMins   = th * 60 + tm;
-  // Handle midnight crossover (e.g. 20:00–02:00)
-  if (toMins < fromMins) return nowMins >= fromMins || nowMins <= toMins;
-  return nowMins >= fromMins && nowMins <= toMins;
+// Human-readable Arabic label for a "HH:MM" string
+function _timeLabel(val) {
+  if (!val) return '—';
+  const [h, m] = val.split(':').map(Number);
+  const mm = String(m).padStart(2, '0');
+  if (val === '00:00') return 'منتصف الليل 🌙';
+  if (val === '23:59') return '11:59 — آخر الليل';
+  if (h === 12 && m === 0) return '12:00 — الظهر';
+  if (h < 12)  return `${h}:${mm} — صباحاً`;
+  if (h === 12) return `12:${mm} — ظهراً`;
+  return `${h - 12}:${mm} — مساءً`;
 }
 
-// Update the status badge in the working-hours card
+// Build <option> HTML for time selects (every 30 min, 00:00–23:30 + 23:59)
+function _timeOptionsHtml(selected) {
+  const vals = [];
+  for (let h = 0; h < 24; h++) {
+    vals.push(`${String(h).padStart(2,'0')}:00`);
+    vals.push(`${String(h).padStart(2,'0')}:30`);
+  }
+  vals.push('23:59');
+  return vals.map(v =>
+    `<option value="${v}" ${v === selected ? 'selected' : ''}>${_timeLabel(v)}</option>`
+  ).join('');
+}
+
+// Is the restaurant open right now based on wh object?
+function _isOpenNow(wh) {
+  const now = _iraqNow();
+  const key = DAY_KEYS[now.getDay()];
+  const day = wh[key];
+  if (!day || !day.open) return false;
+  const [fh, fm] = (day.from || '00:00').split(':').map(Number);
+  const [th, tm] = (day.to   || '23:59').split(':').map(Number);
+  const nowM  = now.getHours() * 60 + now.getMinutes();
+  const fromM = fh * 60 + fm;
+  const toM   = th * 60 + tm;
+  if (toM < fromM) return nowM >= fromM || nowM <= toM;
+  return nowM >= fromM && nowM <= toM;
+}
+
+// Live badge
 function _updateWhStatusBadge(wh) {
   const badge = document.getElementById('whStatusBadge');
   if (!badge) return;
@@ -5033,42 +5075,88 @@ function _updateWhStatusBadge(wh) {
   badge.classList.remove('hidden');
 }
 
-// Collect current grid values into a wh object (used both for save and live badge)
+// Collect current grid into wh object
 function _collectWh() {
   const wh = {};
   DAY_KEYS.forEach(k => {
     wh[k] = {
       open: document.getElementById(`wh-open-${k}`)?.checked || false,
-      from: document.getElementById(`wh-from-${k}`)?.value || '09:00',
-      to:   document.getElementById(`wh-to-${k}`)?.value   || '22:00',
+      from: document.getElementById(`wh-from-${k}`)?.value  || '09:00',
+      to:   document.getElementById(`wh-to-${k}`)?.value    || '22:00',
     };
   });
   return wh;
 }
+
+// Apply a preset to a single day row
+function _applyDayPreset(k, from, to) {
+  const f = document.getElementById(`wh-from-${k}`);
+  const t = document.getElementById(`wh-to-${k}`);
+  if (f) f.value = from;
+  if (t) t.value = to;
+  _updateWhStatusBadge(_collectWh());
+}
+
+// Copy one day's hours to ALL open days
+function _copyDayToAll(k) {
+  const from = document.getElementById(`wh-from-${k}`)?.value;
+  const to   = document.getElementById(`wh-to-${k}`)?.value;
+  if (!from || !to) return;
+  DAY_KEYS.forEach(dk => {
+    if (dk === k) return;
+    const f = document.getElementById(`wh-from-${dk}`);
+    const t = document.getElementById(`wh-to-${dk}`);
+    if (f) f.value = from;
+    if (t) t.value = to;
+  });
+  _updateWhStatusBadge(_collectWh());
+  toast('تم تطبيق الأوقات على جميع الأيام ✅', 'success');
+}
+
+// Apply a global preset to ALL days (enable all days with the given hours)
+function _applyGlobalPreset(from, to) {
+  DAY_KEYS.forEach(k => {
+    const cb = document.getElementById(`wh-open-${k}`);
+    if (cb) cb.checked = true;
+    const times = document.getElementById(`wh-times-${k}`);
+    if (times) { times.classList.remove('opacity-40','pointer-events-none'); }
+    _applyDayPreset(k, from, to);
+  });
+  _updateWhStatusBadge(_collectWh());
+}
+
+const _selClass = 'bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1.5 text-sm focus:border-indigo-500 cursor-pointer';
 
 function renderWorkingHoursGrid(wh) {
   const grid = document.getElementById('workingHoursGrid');
   if (!grid) return;
   grid.innerHTML = DAY_KEYS.map((k, i) => {
     const day = wh[k] || { open: false, from: '09:00', to: '22:00' };
-    return `<div class="flex items-center gap-3 py-2 border-b border-slate-700/50 last:border-0">
-      <label class="flex items-center gap-2 w-28 cursor-pointer flex-shrink-0">
+    const from = day.from || '09:00';
+    const to   = day.to   || '22:00';
+    return `
+    <div class="flex items-center gap-2 py-2 border-b border-slate-700/50 last:border-0 flex-wrap">
+      <label class="flex items-center gap-2 w-24 cursor-pointer flex-shrink-0">
         <div class="relative">
           <input type="checkbox" id="wh-open-${k}" ${day.open ? 'checked' : ''} onchange="toggleDay('${k}')" class="sr-only peer">
           <div class="w-9 h-4 bg-slate-700 rounded-full peer peer-checked:bg-indigo-600 transition"></div>
           <div class="absolute top-0.5 right-0.5 w-3 h-3 bg-white rounded-full peer-checked:translate-x-[-20px] transition"></div>
         </div>
-        <span class="text-slate-300 text-sm">${DAYS_AR[i]}</span>
+        <span class="text-slate-300 text-sm font-medium">${DAYS_AR[i]}</span>
       </label>
-      <div id="wh-times-${k}" class="${day.open ? '' : 'opacity-40 pointer-events-none'} flex items-center gap-2 flex-1">
+      <div id="wh-times-${k}" class="${day.open ? '' : 'opacity-40 pointer-events-none'} flex items-center gap-2 flex-1 flex-wrap">
         <span class="text-slate-500 text-xs">من</span>
-        <input type="time" id="wh-from-${k}" value="${day.from || '09:00'}"
-          onchange="_updateWhStatusBadge(_collectWh())"
-          class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
+        <select id="wh-from-${k}" onchange="_updateWhStatusBadge(_collectWh())" class="${_selClass}">
+          ${_timeOptionsHtml(from)}
+        </select>
         <span class="text-slate-500 text-xs">إلى</span>
-        <input type="time" id="wh-to-${k}" value="${day.to || '22:00'}"
-          onchange="_updateWhStatusBadge(_collectWh())"
-          class="bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1 text-sm focus:border-indigo-500 w-24">
+        <select id="wh-to-${k}" onchange="_updateWhStatusBadge(_collectWh())" class="${_selClass}">
+          ${_timeOptionsHtml(to)}
+        </select>
+        <button onclick="_copyDayToAll('${k}')" title="نسخ لجميع الأيام"
+          class="text-slate-500 hover:text-indigo-400 text-xs px-1.5 py-1 rounded transition" type="button">
+          ⬆ للكل
+        </button>
       </div>
     </div>`;
   }).join('');
@@ -5092,16 +5180,15 @@ async function saveWorkingHours() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-// Iraq clock ticker — updates every 30 seconds
+// Iraq clock ticker
 function _startIraqClock() {
   function tick() {
     const el = document.getElementById('iraqClockDisplay');
     if (!el) return;
     const now = _iraqNow();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-    el.textContent = `الآن (العراق): ${days[now.getDay()]} ${hh}:${mm}`;
+    const hh = String(now.getHours()).padStart(2,'0');
+    const mm = String(now.getMinutes()).padStart(2,'0');
+    el.textContent = `الآن بالعراق: ${DAYS_AR[now.getDay()]} ${hh}:${mm}`;
   }
   tick();
   setInterval(tick, 30000);
