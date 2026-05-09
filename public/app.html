@@ -3685,7 +3685,7 @@ async function _miHandleDrop(files) {
   try {
     const fd = new FormData(); fd.append('file', file);
     const res = await fetch(`${window.API_BASE || ''}/api/upload/menu-image`, {
-      method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }, body: fd
+      method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, body: fd
     });
     const data = await res.json();
     clearInterval(tick);
@@ -5377,7 +5377,7 @@ async function submitPaymentProof() {
   msgEl.classList.remove('hidden');
 
   try {
-    const tok = localStorage.getItem('auth_token');
+    const tok = localStorage.getItem('token');
     const r = await fetch(`${window.API_BASE || ''}/api/billing/payment-proof`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${tok}` },
