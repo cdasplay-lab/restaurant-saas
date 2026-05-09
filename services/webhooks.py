@@ -4,7 +4,6 @@ Webhook handlers for Telegram, WhatsApp, Instagram, and Facebook Messenger.
 import uuid
 import json
 import os
-import io
 import base64
 import logging
 import threading
@@ -14,6 +13,7 @@ import httpx
 
 import database
 from services import bot
+from services import story_cache as _sc
 from services.ws_manager import ws_manager
 
 logger = logging.getLogger("restaurant-saas")
@@ -28,6 +28,22 @@ def _get_conv_lock(conv_id: str) -> threading.Lock:
         if conv_id not in _conv_locks:
             _conv_locks[conv_id] = threading.Lock()
         return _conv_locks[conv_id]
+
+
+_BLOCKED_SUB_STATUSES = {"expired", "suspended", "cancelled"}
+
+def _subscription_active(restaurant_id: str) -> bool:
+    """Return False if the restaurant's subscription is blocked. Fails open on DB error."""
+    try:
+        conn = database.get_db()
+        sub  = conn.execute("SELECT status FROM subscriptions WHERE restaurant_id=?", (restaurant_id,)).fetchone()
+        rest = conn.execute("SELECT status FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
+        conn.close()
+        sub_status  = (sub  and sub["status"])  or "active"
+        rest_status = (rest and rest["status"]) or "active"
+        return sub_status not in _BLOCKED_SUB_STATUSES and rest_status not in _BLOCKED_SUB_STATUSES
+    except Exception:
+        return True  # fail-open: don't block if DB check fails
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -110,9 +126,12 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
     voice_transcript = ""
 
     voice_obj = message.get("voice") or message.get("audio")
+    voice_error_code = ""
+    voice_processing_sent = False
     if voice_obj and not text:
         media_type = "voice"
         file_id = voice_obj.get("file_id", "")
+        voice_duration = int(voice_obj.get("duration", 0))
 
         conn_tmp = database.get_db()
         ch_tmp = conn_tmp.execute(
@@ -123,10 +142,18 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
         conn_tmp.close()
 
         if bot_token and file_id:
-            media_url, voice_transcript = _download_and_transcribe_telegram(
-                bot_token, file_id
+            # Send wait message before the slow download+transcription
+            from services.voice_service import VOICE_PROCESSING_AR as _VPRO
+            if _subscription_active(restaurant_id):
+                try:
+                    _send_telegram(bot_token, chat_id, _VPRO)
+                    voice_processing_sent = True
+                except Exception:
+                    pass
+            media_url, voice_transcript, voice_error_code = _download_and_transcribe_telegram(
+                bot_token, file_id, duration=voice_duration
             )
-        text = voice_transcript or "[رسالة صوتية]"
+        text = "[رسالة صوتية]" if voice_error_code else (voice_transcript or "[رسالة صوتية]")
 
     # Handle photo messages via OpenAI Vision
     photo_obj = message.get("photo")
@@ -181,52 +208,64 @@ def handle_telegram(restaurant_id: str, update: dict) -> None:
             "bot_token": bot_token,
             "chat_id": chat_id,
         }
-        extra = {"media_type": media_type, "media_url": media_url, "voice_transcript": voice_transcript}
+        extra = {
+            "media_type": media_type,
+            "media_url": media_url,
+            "voice_transcript": voice_transcript,
+            "voice_error_code": voice_error_code,
+            "voice_processing_sent": voice_processing_sent,
+        }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
         conn.close()
 
 
-def _download_and_transcribe_telegram(bot_token: str, file_id: str) -> tuple:
-    """Download a voice file from Telegram and transcribe via Whisper. Returns (file_url, transcript)."""
+def _download_and_transcribe_telegram(
+    bot_token: str, file_id: str, duration: int = 0
+) -> tuple:
+    """
+    Download a Telegram voice file and transcribe via voice_service.
+    Returns (file_url, transcript, error_code).
+    """
+    from services import voice_service as _vs
     try:
         with httpx.Client(timeout=15) as client:
-            # Get file path from Telegram
             r = client.get(
                 f"https://api.telegram.org/bot{bot_token}/getFile",
                 params={"file_id": file_id}
             )
             r.raise_for_status()
-            file_path = r.json().get("result", {}).get("file_path", "")
+            file_info = r.json().get("result", {})
+            file_path = file_info.get("file_path", "")
+            file_size = int(file_info.get("file_size", 0))
             if not file_path:
-                return "", ""
+                return "", "", _vs.ERR_FAILED
+
+            # Size pre-check before downloading
+            if file_size and file_size > _vs.VOICE_MAX_BYTES:
+                logger.warning(
+                    f"[telegram] voice too large: {file_size} bytes > {_vs.VOICE_MAX_BYTES}"
+                )
+                return f"https://api.telegram.org/file/bot{bot_token}/{file_path}", "", _vs.ERR_TOO_LARGE
 
             file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
 
-            # Download the audio bytes
-            audio_resp = client.get(file_url)
-            audio_resp.raise_for_status()
-            audio_bytes = audio_resp.content
+        audio_bytes = _vs.download_audio_from_url(file_url)
+        if not audio_bytes:
+            # download_audio_from_url already enforces size cap (returns b"" if exceeded)
+            if file_size and file_size > _vs.VOICE_MAX_BYTES:
+                return file_url, "", _vs.ERR_TOO_LARGE
+            return file_url, "", _vs.ERR_FAILED
 
-        # Transcribe with Whisper
-        client_openai = _get_openai()
-        if not client_openai:
-            return file_url, ""
-
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "voice.ogg"
-
-        result = client_openai.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="ar",
+        tr = _vs.transcribe_voice_message(
+            audio_bytes, filename="voice.ogg", mime_type="audio/ogg",
+            channel="telegram", duration_seconds=duration,
         )
-        transcript = result.text.strip()
-        return file_url, transcript
+        return file_url, tr["text"], tr.get("error_code", "")
 
     except Exception as e:
         logger.error(f"[telegram] voice transcription error: {e}")
-        return "", ""
+        return "", "", _vs.ERR_FAILED
 
 
 def _vision_describe(img_bytes: bytes, restaurant_id: str, platform: str = "") -> str:
@@ -482,20 +521,36 @@ def _match_story_to_product(img_bytes: bytes, restaurant_id: str) -> dict:
 
 
 def _analyze_story(media_url: str, story_id: str, restaurant_id: str,
-                   access_token: str = "", platform: str = "") -> str:
+                   access_token: str = "", platform: str = "") -> dict:
     """
-    Full story analysis pipeline. Returns a rich context string for the bot.
-    Handles both image stories and video stories (via thumbnail).
+    Full story analysis pipeline.
+    Returns a dict: {context_str, product_id, product_name, product_price,
+                     product_category, confidence, is_video}
     """
+    def _result(context_str: str, match: dict = None, is_video: bool = False) -> dict:
+        p = (match or {}).get("product") or {}
+        return {
+            "context_str": context_str,
+            "product_id": p.get("id", ""),
+            "product_name": p.get("name", ""),
+            "product_price": float(p.get("price", 0) or 0),
+            "product_category": p.get("category", ""),
+            "confidence": (match or {}).get("confidence", "low"),
+            "is_video": is_video,
+        }
+
     if not media_url:
-        return "[العميل يرد على ستوري للمطعم — اسأله بودية عما يرغب به]"
+        return _result("[العميل يرد على ستوري للمطعم — اسأله بودية عما يرغب به]")
 
     img_bytes, is_video = _fetch_story_media(media_url, story_id, access_token)
     video_tag = " [فيديو]" if is_video else ""
+    analysis_tag = " (video_thumbnail_only)" if is_video else ""
 
     if not img_bytes:
-        # Video with no thumbnail — still engage warmly
-        return f"[العميل يرد على ستوري فيديو للمطعم — رحّب به واسأله عما يشتهيه]"
+        return _result(
+            f"[العميل يرد على ستوري فيديو للمطعم — رحّب به واسأله عما يشتهيه]{analysis_tag}",
+            is_video=True,
+        )
 
     match = _match_story_to_product(img_bytes, restaurant_id)
     product = match.get("product")
@@ -506,42 +561,247 @@ def _analyze_story(media_url: str, story_id: str, restaurant_id: str,
         price_str = f"{int(product['price']):,}" if product.get("price") else ""
         price_part = f" — {price_str} د.ع" if price_str else ""
         conf_note = "" if confidence == "high" else " (تقريباً)"
-        return (
+        ctx = (
             f"[العميل يرد على ستوري{video_tag} يعرض: {product['name']}{price_part}{conf_note}]"
-            f"\nسياق للبوت: هذا المنتج موجود في قائمتك. استغل الفرصة وابدأ flow البيع مباشرة."
+            f"\nسياق للبوت: هذا المنتج موجود في قائمتك. استغل الفرصة وابدأ flow البيع مباشرة.{analysis_tag}"
         )
+        return _result(ctx, match=match, is_video=is_video)
 
     if description and description not in ("محتوى من المطعم", ""):
-        return f"[العميل يرد على ستوري{video_tag} يظهر: {description} — اسأله إذا يريد تجربته]"
+        ctx = f"[العميل يرد على ستوري{video_tag} يظهر: {description} — اسأله إذا يريد تجربته]{analysis_tag}"
+        return _result(ctx, match=match, is_video=is_video)
 
-    return f"[العميل يرد على ستوري{video_tag} للمطعم — رحّب به وابدأ محادثة البيع]"
+    return _result(
+        f"[العميل يرد على ستوري{video_tag} للمطعم — رحّب به وابدأ محادثة البيع]{analysis_tag}",
+        is_video=is_video,
+    )
+
+
+def _analyze_story_cached(
+    media_url: str, story_id: str, restaurant_id: str,
+    access_token: str = "", platform: str = "",
+) -> dict:
+    """
+    Cache-aware wrapper around _analyze_story.
+    Returns same dict as _analyze_story. Never raises.
+    """
+    channel = platform or "instagram"
+    cached = _sc.get_cached_story(restaurant_id, channel, story_id, media_url)
+    if cached is not None:
+        logger.info(
+            f"[story-cache] HIT restaurant={restaurant_id[:8]} story={story_id[:20] if story_id else 'url-key'}"
+        )
+        return cached
+
+    logger.info(
+        f"[story-cache] MISS — running Vision API restaurant={restaurant_id[:8]} story={story_id[:20] if story_id else 'url'}"
+    )
+    try:
+        result = _analyze_story(media_url, story_id, restaurant_id, access_token, platform)
+        is_failure = not result.get("product_name") and result.get("confidence", "low") == "low"
+        # Build match_data shape expected by store_story_cache
+        match_data = {
+            "product": {
+                "id": result["product_id"],
+                "name": result["product_name"],
+                "price": result["product_price"],
+                "category": result["product_category"],
+            } if result.get("product_id") else None,
+            "confidence": result["confidence"],
+            "description": result.get("product_name", ""),
+        }
+        _sc.store_story_cache(
+            restaurant_id, channel, story_id, media_url,
+            match_data, result["context_str"], result["is_video"],
+            is_failure=is_failure,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[story-cache] analysis error: {e}")
+        return {
+            "context_str": "[العميل يرد على ستوري للمطعم — رحّب به وابدأ محادثة البيع]",
+            "product_id": "", "product_name": "", "product_price": 0.0,
+            "product_category": "", "confidence": "low", "is_video": False,
+        }
+
+
+# ── Deterministic story reply (NUMBER 33) ────────────────────────────────────
+
+_STORY_ORDER_TRIGGERS = {
+    # نية الشراء / الطلب — عراقي
+    "اريد", "أريد", "ابي", "أبي", "بدي", "ودي", "ودني", "حابب", "حاب", "حابي",
+    "باخذ", "بآخذ", "اخذ", "آخذ", "خذلي", "اخذلي", "خذيلي",
+    "جهزلي", "جهزلنا", "جهز", "جهزي", "جهزوا", "جهّزلي",
+    "اطلب", "أطلب", "طلبت", "بطلب", "نطلب", "تطلب", "طلبي", "طلب",
+    "اشتري", "أشتري", "بشتري", "اشتريلي",
+    "واحد", "اثنين", "ثنتين", "ثلاثة", "اربعة", "خمسة",
+    "هذا", "هذاك", "هذي", "هاي", "هاذا", "هاذي", "هذول",
+    "اريد هذا", "أريد هذا", "ابي اطلب", "أبي أطلب", "حابب اطلب",
+    "زبوني", "طلبتي", "ابي اسوي طلب", "اريد اطلب",
+    # خليجي / سعودي
+    "ودي اطلب", "ابغى", "أبغى", "ابغ", "أبغ", "بغيت",
+    "اطلبلي", "اطلبيلي", "ودني اطلب",
+    # لبناني / شامي
+    "بدي", "بدي هيدا", "كيف بطلب", "كيفية الطلب",
+    # إجراء مباشر
+    "اضيف", "أضيف", "ضيفلي", "ضيف", "اكمل", "أكمل", "تأكيد", "اكد",
+}
+_STORY_PRICE_TRIGGERS = {
+    # عراقي
+    "شكد", "شقد", "شگد", "شچد", "بشكد", "بشقد", "بشگد",
+    "كم سعره", "كم ثمنه", "كم يكلف", "يكلف كم", "سعره كم",
+    "السعر كم", "الثمن كم", "سعره شكد", "بكم الواحد",
+    "السعر", "الثمن", "سعره", "سعرها", "سعر", "ثمنه", "ثمنها",
+    "بكم", "بچم", "بگم", "كم",
+    "الكلفة", "تكلفة", "تكلف", "كلفته", "كلفتها",
+    # خليجي / سعودي
+    "بكام", "كام", "بكم يكون", "وش سعره", "وش ثمنه",
+    # لبناني / شامي
+    "قديش", "قداش", "كم تمنو", "تمنو قديش",
+}
+_STORY_AVAIL_TRIGGERS = {
+    # عراقي
+    "موجود", "موجوده", "متوفر", "متوفره",
+    "عدكم", "عدك", "عندكم", "عندك", "عنده", "عندهم",
+    "تعدك", "تعدكم",
+    "في", "لو في", "لو موجود", "لو متوفر",
+    "تتوفر", "يتوفر", "تلكون", "لكو",
+    # خليجي / سعودي
+    "عندكم", "يتوفر عندكم", "موجود عندكم", "فيه",
+    "يوجد", "تلقون",
+    # لبناني / شامي
+    "عندكن", "في عندكن", "موجود عندكن",
+}
+_STORY_EMOJI_ONLY = {
+    "🔥", "😍", "❤️", "🤤", "😋", "👍", "🌹", "❤", "💜", "🤩",
+    "😻", "💛", "😮", "👏", "💯", "🙌", "✨", "💫", "🫶", "🤌",
+    "💚", "💙", "🧡", "💖", "💗", "😱", "🥰", "😘", "👌", "🫡",
+    "😲", "🤯", "😤", "💥", "⭐", "🌟",
+}
+
+
+def _is_emoji_only(text: str) -> bool:
+    """True when the message contains only emoji characters (no Arabic/Latin text)."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    for ch in stripped:
+        if ch in _STORY_EMOJI_ONLY:
+            continue
+        cp = ord(ch)
+        # Allow standard emoji/symbol unicode ranges
+        if (0x1F300 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF) or cp in (0xFE0F, 0x200D):
+            continue
+        return False
+    return True
+
+
+def _build_deterministic_story_reply(
+    customer_msg: str, story_ctx: dict, restaurant_id: str,
+) -> str:
+    """
+    Return a deterministic reply string when story has a matched product
+    and the customer message fits a known intent pattern.
+    Returns "" if no deterministic reply is appropriate (→ fall through to AI).
+    """
+    product_name = story_ctx.get("product_name", "")
+    product_price = story_ctx.get("product_price", 0)
+    confidence = story_ctx.get("confidence", "low")
+
+    if not product_name or confidence not in ("high", "medium"):
+        # Unknown story or low confidence: give a gentle redirect
+        msg_norm = customer_msg.strip()
+        is_order_ish = any(t in msg_norm for t in _STORY_ORDER_TRIGGERS)
+        is_price_ish = any(t in msg_norm for t in _STORY_PRICE_TRIGGERS)
+        is_emoji = _is_emoji_only(msg_norm)
+        if is_order_ish or is_price_ish or is_emoji:
+            return (
+                "وصلتني ردة فعلك على الستوري 🌷 "
+                "بس حتى أتأكد، تحب أدزلك المنيو أو تكتبلي شنو المنتج اللي تقصده؟"
+            )
+        return ""
+
+    price_str = f"{int(product_price):,} د.ع" if product_price else ""
+    msg_norm = customer_msg.strip()
+
+    # Check product availability (real-time from DB)
+    product_available = True
+    if story_ctx.get("product_id"):
+        try:
+            conn = database.get_db()
+            row = conn.execute(
+                "SELECT available FROM products WHERE id=? AND restaurant_id=?",
+                (story_ctx["product_id"], restaurant_id)
+            ).fetchone()
+            conn.close()
+            if row is not None:
+                product_available = bool(row["available"])
+        except Exception:
+            pass
+
+    if not product_available:
+        return (
+            f"حالياً {product_name} مو متوفر 🌷 "
+            "أگدر أقترحلك الأقرب من المنيو — شنو تحب؟"
+        )
+
+    # Price inquiry
+    if any(t in msg_norm for t in _STORY_PRICE_TRIGGERS):
+        price_part = f"سعره {price_str}" if price_str else "راجع معنا للسعر"
+        return f"{product_name} {price_part} 🌷 تحب أجهزلك واحد؟"
+
+    # Availability check
+    if any(t in msg_norm for t in _STORY_AVAIL_TRIGGERS):
+        return f"إي متوفر 🌷 {product_name}" + (f" — {price_str}" if price_str else "") + ". تحب أجهزلك واحد؟"
+
+    # Order intent or emoji-only
+    is_order_intent = any(t in msg_norm for t in _STORY_ORDER_TRIGGERS)
+    is_emoji = _is_emoji_only(msg_norm)
+
+    if is_emoji:
+        price_part = f"سعره {price_str}" if price_str else ""
+        return (
+            f"يعجبك؟ 🌷 هذا {product_name}" +
+            (f" {price_part}" if price_part else "") +
+            ". تحب أجهزلك واحد؟"
+        )
+
+    if is_order_intent:
+        return (
+            f"أكيد 🌷 أجهزلك {product_name}. "
+            "تحبه توصيل لو استلام؟"
+        )
+
+    return ""
 
 
 def _download_and_transcribe_whatsapp_voice(media_id: str, access_token: str) -> tuple:
-    """Resolve a WhatsApp voice media ID, download it, and transcribe via Whisper. Returns (url, transcript)."""
+    """
+    Resolve a WhatsApp voice media ID, download safely, and transcribe.
+    Returns (url, transcript, error_code).
+    """
+    from services import voice_service as _vs
     try:
         auth = {"Authorization": f"Bearer {access_token}"}
-        with httpx.Client(timeout=20) as client:
+        with httpx.Client(timeout=15) as client:
             r = client.get(f"https://graph.facebook.com/v19.0/{media_id}", headers=auth)
             r.raise_for_status()
             media_url = r.json().get("url", "")
             if not media_url:
-                return "", ""
-            audio_bytes = client.get(media_url, headers=auth).content
+                return "", "", _vs.ERR_FAILED
 
-        client_openai = _get_openai()
-        if not client_openai:
-            return media_url, ""
+        audio_bytes = _vs.download_audio_from_url(media_url, headers=auth)
+        if not audio_bytes:
+            return media_url, "", _vs.ERR_TOO_LARGE if media_url else _vs.ERR_FAILED
 
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "voice.ogg"
-        result = client_openai.audio.transcriptions.create(
-            model="whisper-1", file=audio_file, language="ar"
+        tr = _vs.transcribe_voice_message(
+            audio_bytes, filename="voice.ogg", mime_type="audio/ogg", channel="whatsapp"
         )
-        return media_url, result.text.strip()
+        return media_url, tr["text"], tr.get("error_code", "")
+
     except Exception as e:
         logger.error(f"[whatsapp] voice transcription error: {e}")
-        return "", ""
+        return "", "", _vs.ERR_FAILED
 
 
 def _download_and_describe_whatsapp_image(media_id: str, access_token: str, restaurant_id: str) -> tuple:
@@ -626,18 +886,30 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
     elif msg_type in ("audio", "voice"):
         media_type = "voice"
         media_id = msg.get(msg_type, {}).get("id", "")
+        wa_voice_error_code = ""
+        wa_voice_processing_sent = False
         conn_pre = database.get_db()
         ch_pre = conn_pre.execute(
             "SELECT * FROM channels WHERE restaurant_id=? AND type='whatsapp'",
             (restaurant_id,)
         ).fetchone()
         token_pre = ch_pre["token"] if ch_pre else None
+        phone_num_id_pre = ch_pre["phone_number_id"] if ch_pre and "phone_number_id" in ch_pre.keys() else None
         conn_pre.close()
         if media_id and token_pre:
-            media_url, voice_transcript = _download_and_transcribe_whatsapp_voice(
+            from services.voice_service import VOICE_PROCESSING_AR as _VPRO_WA
+            wa_sender = msg.get("from", "")
+            # Send processing wait message before slow transcription
+            if wa_sender and phone_num_id_pre and _subscription_active(restaurant_id):
+                try:
+                    _send_whatsapp(token_pre, phone_num_id_pre, wa_sender, _VPRO_WA)
+                    wa_voice_processing_sent = True
+                except Exception:
+                    pass
+            media_url, voice_transcript, wa_voice_error_code = _download_and_transcribe_whatsapp_voice(
                 media_id, token_pre
             )
-        text = voice_transcript or "[رسالة صوتية]"
+        text = "[رسالة صوتية]" if wa_voice_error_code else (voice_transcript or "[رسالة صوتية]")
 
     if not text:
         return
@@ -679,6 +951,8 @@ def handle_whatsapp(restaurant_id: str, data: dict) -> None:
             "media_type": media_type,
             "media_url": media_url,
             "voice_transcript": voice_transcript,
+            "voice_error_code": wa_voice_error_code if media_type == "voice" else "",
+            "voice_processing_sent": wa_voice_processing_sent if media_type == "voice" else False,
         }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
@@ -748,6 +1022,8 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
     media_type = ""
     media_url_ig = ""
     voice_transcript_ig = ""
+    ig_voice_error_code = ""
+    ig_voice_processing_sent = False
 
     # Handle attachments — image first, then audio/voice
     attachments = message.get("attachments", [])
@@ -770,6 +1046,21 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             audio_url = att.get("payload", {}).get("url", "")
             media_url_ig = audio_url
             if audio_url:
+                # Fetch token early to send processing wait message
+                _conn_ig = database.get_db()
+                _ch_ig = _conn_ig.execute(
+                    "SELECT * FROM channels WHERE restaurant_id=? AND type='instagram'",
+                    (restaurant_id,)
+                ).fetchone()
+                _token_ig = _ch_ig["token"] if _ch_ig else None
+                _conn_ig.close()
+                from services.voice_service import VOICE_PROCESSING_AR as _VPRO_IG
+                if _token_ig and sender_id and _subscription_active(restaurant_id):
+                    try:
+                        _send_facebook_messenger(_token_ig, sender_id, _VPRO_IG)
+                        ig_voice_processing_sent = True
+                    except Exception:
+                        pass
                 try:
                     from services import voice_service as _vs
                     audio_bytes = _vs.download_audio_from_url(audio_url)
@@ -779,13 +1070,19 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
                             channel="instagram", restaurant_id=restaurant_id,
                         )
                         voice_transcript_ig = tr["text"]
+                        ig_voice_error_code = tr.get("error_code", "")
                         logger.info(
                             f"[ig-voice] transcription status={tr['transcription_status']} "
                             f"len={len(voice_transcript_ig)} restaurant={restaurant_id[:8]}"
                         )
+                    else:
+                        from services import voice_service as _vs
+                        ig_voice_error_code = _vs.ERR_FAILED
                 except Exception as _ve:
                     logger.error(f"[ig-voice] transcription error: {_ve}")
-            text = voice_transcript_ig or "[رسالة صوتية]"
+                    from services import voice_service as _vs
+                    ig_voice_error_code = _vs.ERR_FAILED
+            text = "[رسالة صوتية]" if ig_voice_error_code else (voice_transcript_ig or "[رسالة صوتية]")
             break
 
     # Detect story reply context
@@ -826,12 +1123,14 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
         if not ch:
             logger.warning(f"[ig-error] no instagram channel row for restaurant={restaurant_id[:8]}")
 
-        # Analyze story media smartly (image OR video thumbnail)
+        # Analyze story media with cache (image OR video thumbnail)
+        story_ctx_data = {}
         if replied_story_id and replied_story_media_url:
-            story_context = _analyze_story(
+            story_ctx_data = _analyze_story_cached(
                 replied_story_media_url, replied_story_id,
                 restaurant_id, access_token or "", "instagram"
             )
+            story_context = story_ctx_data.get("context_str", "")
             logger.info(f"[ig-parsed] story_context: {story_context[:80]}")
 
         customer = _find_or_create_customer(
@@ -864,10 +1163,13 @@ def handle_instagram(restaurant_id: str, data: dict) -> None:
             "media_type": media_type,
             "media_url": media_url_ig,
             "voice_transcript": voice_transcript_ig,
+            "voice_error_code": ig_voice_error_code,
+            "voice_processing_sent": ig_voice_processing_sent,
             "replied_story_id": replied_story_id,
             "replied_story_text": replied_story_text,
             "replied_story_media_url": replied_story_media_url,
             "story_context": story_context,
+            "story_ctx_data": story_ctx_data,
         }
         logger.info(f"[ig-parsed] calling _process_incoming — text={text[:60]}")
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
@@ -934,6 +1236,8 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
     media_type_fb = ""
     media_url_fb = ""
     voice_transcript_fb = ""
+    fb_voice_error_code = ""
+    fb_voice_processing_sent = False
     replied_story_id_fb = ""
     replied_story_media_url_fb = ""
     story_context_fb = ""
@@ -959,6 +1263,21 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
             audio_url = att.get("payload", {}).get("url", "")
             media_url_fb = audio_url
             if audio_url:
+                # Fetch token early to send processing wait message
+                _conn_fb = database.get_db()
+                _ch_fb = _conn_fb.execute(
+                    "SELECT * FROM channels WHERE restaurant_id=? AND type='facebook'",
+                    (restaurant_id,)
+                ).fetchone()
+                _token_fb = _ch_fb["token"] if _ch_fb else None
+                _conn_fb.close()
+                from services.voice_service import VOICE_PROCESSING_AR as _VPRO_FB
+                if _token_fb and sender_id and _subscription_active(restaurant_id):
+                    try:
+                        _send_facebook_messenger(_token_fb, sender_id, _VPRO_FB)
+                        fb_voice_processing_sent = True
+                    except Exception:
+                        pass
                 try:
                     from services import voice_service as _vs
                     audio_bytes = _vs.download_audio_from_url(audio_url)
@@ -968,13 +1287,19 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
                             channel="facebook", restaurant_id=restaurant_id,
                         )
                         voice_transcript_fb = tr["text"]
+                        fb_voice_error_code = tr.get("error_code", "")
                         logger.info(
                             f"[fb-voice] transcription status={tr['transcription_status']} "
                             f"len={len(voice_transcript_fb)} restaurant={restaurant_id[:8]}"
                         )
+                    else:
+                        from services import voice_service as _vs
+                        fb_voice_error_code = _vs.ERR_FAILED
                 except Exception as _ve:
                     logger.error(f"[fb-voice] transcription error: {_ve}")
-            text = voice_transcript_fb or "[رسالة صوتية]"
+                    from services import voice_service as _vs
+                    fb_voice_error_code = _vs.ERR_FAILED
+            text = "[رسالة صوتية]" if fb_voice_error_code else (voice_transcript_fb or "[رسالة صوتية]")
             break
 
     # Detect story reply (Facebook uses same structure as Instagram)
@@ -1006,12 +1331,14 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
         ).fetchone()
         page_token = ch["token"] if ch else None
 
-        # Analyze story media
+        # Analyze story media with cache
+        story_ctx_data_fb = {}
         if replied_story_id_fb and replied_story_media_url_fb:
-            story_context_fb = _analyze_story(
+            story_ctx_data_fb = _analyze_story_cached(
                 replied_story_media_url_fb, replied_story_id_fb,
                 restaurant_id, page_token or "", "facebook"
             )
+            story_context_fb = story_ctx_data_fb.get("context_str", "")
             logger.info(f"[facebook] story_context: {story_context_fb[:80]}")
 
         customer = _find_or_create_customer(
@@ -1044,9 +1371,12 @@ def handle_facebook(restaurant_id: str, data: dict) -> None:
             "media_type": media_type_fb,
             "media_url": media_url_fb,
             "voice_transcript": voice_transcript_fb,
+            "voice_error_code": fb_voice_error_code,
+            "voice_processing_sent": fb_voice_processing_sent,
             "replied_story_id": replied_story_id_fb,
             "replied_story_media_url": replied_story_media_url_fb,
             "story_context": story_context_fb,
+            "story_ctx_data": story_ctx_data_fb,
         }
         _process_incoming(restaurant_id, customer, conversation, text, channel_data, extra)
     finally:
@@ -1168,19 +1498,40 @@ def _process_incoming(
             mode = conv_row["mode"] if conv_row else "bot"
 
             if mode == "bot":
-                # Voice failed transcription — send safe Arabic fallback, skip OpenAI
+                # Voice guard — handle all error codes and failed transcriptions
                 if extra.get("media_type") == "voice" and content == "[رسالة صوتية]":
-                    from services.voice_service import VOICE_FALLBACK_AR
-                    _vfb_reply = VOICE_FALLBACK_AR
+                    from services import voice_service as _vs
+                    _verr = extra.get("voice_error_code", "")
+                    if _verr == _vs.ERR_TOO_LARGE:
+                        _vfb_reply = _vs.VOICE_TOO_LARGE_AR
+                    elif _verr == _vs.ERR_TOO_LONG:
+                        _vfb_reply = _vs.VOICE_TOO_LONG_AR
+                    elif _verr == _vs.ERR_UNCLEAR:
+                        _vfb_reply = _vs.VOICE_UNCLEAR_AR
+                    else:
+                        _vfb_reply = _vs.VOICE_FALLBACK_AR
                     logger.info(
-                        f"[voice-fallback] req={req_id} conv={conv_id} "
-                        f"sending safe fallback (transcription failed)"
+                        f"[voice-guard] req={req_id} conv={conv_id} "
+                        f"error_code={_verr!r} reply_len={len(_vfb_reply)}"
                     )
-                    _send_reply(channel_data, _vfb_reply)
                     recipient_id = (
                         channel_data.get("chat_id") or
                         channel_data.get("to") or
                         channel_data.get("recipient_id") or ""
+                    )
+                    # Log the processing "wait" message already sent to the customer
+                    if extra.get("voice_processing_sent"):
+                        conn.execute(
+                            """INSERT INTO outbound_messages
+                               (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                               VALUES (?, ?, ?, ?, ?, ?, 'sent', '')""",
+                            (str(uuid.uuid4()), restaurant_id, conv_id, platform, recipient_id,
+                             _vs.VOICE_PROCESSING_AR[:500])
+                        )
+                    _send_reply(channel_data, _vfb_reply)
+                    conn.execute(
+                        "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
+                        (str(uuid.uuid4()), conv_id, _vfb_reply)
                     )
                     conn.execute(
                         """INSERT INTO outbound_messages
@@ -1188,20 +1539,51 @@ def _process_incoming(
                            VALUES (?, ?, ?, ?, ?, ?, 'sent', '')""",
                         (str(uuid.uuid4()), restaurant_id, conv_id, platform, recipient_id, _vfb_reply[:500])
                     )
-                    conn.execute(
-                        "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
-                        (str(uuid.uuid4()), conv_id, _vfb_reply)
-                    )
                     conn.commit()
                     return
+
+                # ── Deterministic story reply (NUMBER 33) ───────────────────
+                if extra.get("replied_story_id"):
+                    story_ctx_data = extra.get("story_ctx_data") or {}
+                    det_reply = _build_deterministic_story_reply(
+                        content, story_ctx_data, restaurant_id
+                    )
+                    if det_reply:
+                        logger.info(
+                            f"[story-det] req={req_id} conv={conv_id} "
+                            f"product={story_ctx_data.get('product_name','?')!r} "
+                            f"reply_len={len(det_reply)}"
+                        )
+                        _send_reply(channel_data, det_reply)
+                        recipient_id = (
+                            channel_data.get("chat_id") or
+                            channel_data.get("to") or
+                            channel_data.get("recipient_id") or ""
+                        )
+                        conn.execute(
+                            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
+                            (str(uuid.uuid4()), conv_id, det_reply)
+                        )
+                        conn.execute(
+                            """INSERT INTO outbound_messages
+                               (id, restaurant_id, conversation_id, platform, recipient_id, content, status, error)
+                               VALUES (?, ?, ?, ?, ?, ?, 'sent', '')""",
+                            (str(uuid.uuid4()), restaurant_id, conv_id, platform, recipient_id, det_reply[:500])
+                        )
+                        conn.commit()
+                        return
 
                 # Build context for bot — use rich story_context if available
                 bot_input = content
                 if extra.get("replied_story_id"):
                     story_ctx = extra.get("story_context") or "[العميل يرد على ستوري للمطعم]"
-                    bot_input = f"{story_ctx}\nرد العميل: {content}"
+                    bot_input = (
+                        f"{story_ctx}\n\n"
+                        f"تعليمات: الزبون يرد على الستوري. إذا قال 'هذا' أو 'اريد' أو أرسل إيموجي "
+                        f"فهو يقصد المنتج المذكور في الستوري. ابدأ flow البيع مباشرة.\n\n"
+                        f"رد العميل: {content}"
+                    )
                 elif extra.get("media_type") == "voice":
-                    # Transcription succeeded — pass text directly; [فويس] prefix keeps bot context
                     bot_input = f"[فويس] {content}"
 
                 logger.info(f"[bot-call] req={req_id} conv={conv_id} restaurant={restaurant_id}")

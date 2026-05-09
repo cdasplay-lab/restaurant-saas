@@ -1290,19 +1290,34 @@ def _migrate_db(conn):
         pass
     conn.commit()
 
-    # ── Data fix: every WhatsApp channel must have a verify_token ─────────────
-    # The column exists but may be empty for channels connected before this was added.
-    import uuid as _uuid
-    empty_wa = conn.execute(
-        "SELECT id FROM channels WHERE type='whatsapp' AND (verify_token IS NULL OR verify_token='')"
-    ).fetchall()
-    for row in empty_wa:
-        conn.execute(
-            "UPDATE channels SET verify_token=? WHERE id=?",
-            (str(_uuid.uuid4()), row["id"] if hasattr(row, "keys") else row[0])
+    # ── story_context_cache — NUMBER 33: Vision API cache by story_id ──────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS story_context_cache (
+            id TEXT PRIMARY KEY,
+            cache_key TEXT UNIQUE NOT NULL,
+            restaurant_id TEXT NOT NULL,
+            channel TEXT DEFAULT 'instagram',
+            platform_story_id TEXT DEFAULT '',
+            media_url_hash TEXT DEFAULT '',
+            story_type TEXT DEFAULT 'unknown',
+            matched_product_id TEXT DEFAULT '',
+            matched_product_name TEXT DEFAULT '',
+            matched_product_price REAL DEFAULT 0,
+            matched_category TEXT DEFAULT '',
+            confidence TEXT DEFAULT 'low',
+            analysis_summary TEXT DEFAULT '',
+            raw_analysis_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL
         )
-    if empty_wa:
-        conn.commit()
+    """)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_story_cache_key ON story_context_cache(cache_key, expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_story_cache_restaurant ON story_context_cache(restaurant_id, channel)")
+    except Exception:
+        pass
+    conn.commit()
 
     if IS_POSTGRES:
         # PostgreSQL supports ADD COLUMN IF NOT EXISTS
@@ -1320,6 +1335,23 @@ def _migrate_db(conn):
             except Exception:
                 pass
         conn.commit()
+
+    # ── Data fix: every WhatsApp channel must have a verify_token ─────────────
+    # Runs after migrations so verify_token column is guaranteed to exist.
+    try:
+        import uuid as _uuid
+        empty_wa = conn.execute(
+            "SELECT id FROM channels WHERE type='whatsapp' AND (verify_token IS NULL OR verify_token='')"
+        ).fetchall()
+        for row in empty_wa:
+            conn.execute(
+                "UPDATE channels SET verify_token=? WHERE id=?",
+                (str(_uuid.uuid4()), row["id"] if hasattr(row, "keys") else row[0])
+            )
+        if empty_wa:
+            conn.commit()
+    except Exception:
+        pass
 
     # ── Data fix: full Arabic backfill for default plans (after migrations) ───
     # name_ar and other new columns are guaranteed to exist by this point.
@@ -1451,6 +1483,17 @@ def _log_db_config():
 def init_db():
     _log_db_config()
     print(f"[DB] init_db starting — backend={'PostgreSQL' if IS_POSTGRES else 'SQLite'}")
+    # Warn loudly if running SQLite in a production-like environment.
+    # Data is stored on the local filesystem and WILL be wiped on every Render/Railway deploy.
+    if not IS_POSTGRES:
+        _is_prod = any(os.getenv(v) for v in ("RENDER", "RAILWAY_ENVIRONMENT", "HEROKU_APP_NAME", "FLY_APP_NAME"))
+        _has_port = bool(os.getenv("PORT"))  # any cloud host sets PORT
+        if _is_prod or _has_port:
+            print(
+                "\n⚠️  WARNING: Running SQLite in a cloud environment.\n"
+                "   Data WILL be lost on every redeploy (ephemeral filesystem).\n"
+                "   Set DATABASE_URL to a PostgreSQL connection string to persist data.\n"
+            )
     conn = get_db()
 
     # ── Create schema ────────────────────────────────────────────────────────

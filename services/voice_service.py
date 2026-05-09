@@ -28,9 +28,37 @@ _OPENAI_API_KEY              = os.getenv("OPENAI_API_KEY", "")
 
 VOICE_MAX_BYTES = int(VOICE_MAX_AUDIO_MB * 1024 * 1024)
 
-# Customer-facing safe fallback — never mention AI, Whisper, or transcription.
-VOICE_FALLBACK_AR  = "وصلني الفويس 🌷 بس ما كدرت أسمعه بوضوح، تكدر تكتبلي الطلب؟"
-VOICE_TOO_LARGE_AR = "وصلني الفويس 🌷 بس حجمه كبير، ممكن تكتبلي الطلب؟"
+# Customer-facing messages — never mention AI, Whisper, or transcription.
+VOICE_PROCESSING_AR = "وصلني الفويس 🌷 لحظة أسمعه وأرجعلك"
+VOICE_FALLBACK_AR   = "وصلني الفويس 🌷 بس ما كدرت أسمعه بوضوح، تكدر تكتبلي الطلب؟"
+VOICE_TOO_LARGE_AR  = "الفويس طويل شوي 🌷 دزلي الطلب مختصر أو اكتبه حتى أخدمك أسرع"
+VOICE_TOO_LONG_AR   = "الفويس طويل شوي 🌷 دزلي الطلب مختصر أو اكتبه حتى أخدمك أسرع"
+VOICE_UNCLEAR_AR    = "الفويس مو واضح كفاية 🌷 تكدر تكتبه حتى أكمل طلبك؟"
+
+# Error codes (internal, never shown to customer)
+ERR_TOO_LARGE  = "audio_too_large"
+ERR_TOO_LONG   = "audio_too_long"
+ERR_UNCLEAR    = "audio_unclear"
+ERR_FAILED     = "transcription_failed"
+ERR_DISABLED   = "transcription_disabled"
+
+# ── Unclear transcript detection ─────────────────────────────────────────────
+
+_MIN_MEANINGFUL_CHARS = 4     # shorter than this = unclear
+_GIBBERISH_SYMBOLS = set("!@#$%^&*()_+=[]{}|;':\",./<>?\\`~")
+
+def is_unclear_transcript(text: str) -> bool:
+    """Return True if the transcript is too short, empty, or gibberish to be useful."""
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
+    if len(stripped) < _MIN_MEANINGFUL_CHARS:
+        return True
+    # Mostly symbols / non-Arabic non-Latin chars
+    alpha_count = sum(1 for c in stripped if c.isalpha())
+    if alpha_count < 2:
+        return True
+    return False
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -106,24 +134,49 @@ def download_audio_from_url(
     url: str,
     headers: Optional[dict] = None,
     timeout: int = 20,
+    max_bytes: int = 0,
 ) -> bytes:
     """
     Download audio from a URL safely. Returns empty bytes on any failure.
-    Enforces VOICE_MAX_BYTES size limit.
+    Enforces max_bytes cap (defaults to VOICE_MAX_BYTES).
+    Uses Content-Length pre-check + streaming byte cap.
     """
     if not url:
         return b""
+    cap = max_bytes or VOICE_MAX_BYTES
     try:
         import httpx
-        with httpx.Client(timeout=timeout) as client:
-            r = client.get(url, headers=headers or {}, follow_redirects=True)
-        if r.status_code != 200:
-            logger.warning(f"[voice] download failed — status={r.status_code} url={url[:80]}")
-            return b""
-        data = r.content
-        if len(data) > VOICE_MAX_BYTES:
-            logger.warning(f"[voice] downloaded audio exceeds limit: {len(data)} bytes")
-            return b""
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            # Head-only to check Content-Length first (best effort)
+            try:
+                head = client.head(url, headers=headers or {})
+                cl = int(head.headers.get("content-length", 0))
+                if cl > cap:
+                    logger.warning(f"[voice] Content-Length {cl} > cap {cap} — aborting download")
+                    return b""
+            except Exception:
+                pass  # HEAD not supported — fall through to streaming
+
+            # Stream download with byte cap
+            chunks = []
+            downloaded = 0
+            with client.stream("GET", url, headers=headers or {}) as resp:
+                if resp.status_code != 200:
+                    logger.warning(f"[voice] download failed — status={resp.status_code} url={url[:80]}")
+                    return b""
+                # Content-Length from the actual GET response
+                cl_get = int(resp.headers.get("content-length", 0))
+                if cl_get > cap:
+                    logger.warning(f"[voice] Content-Length (GET) {cl_get} > cap — aborting")
+                    return b""
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    downloaded += len(chunk)
+                    if downloaded > cap:
+                        logger.warning(f"[voice] stream exceeded cap {cap} bytes — aborting")
+                        return b""
+                    chunks.append(chunk)
+
+        data = b"".join(chunks)
         logger.info(f"[voice] downloaded {len(data)} bytes from {url[:80]}")
         return data
     except Exception as e:
@@ -137,33 +190,54 @@ def transcribe_voice_message(
     mime_type: str = "audio/ogg",
     channel: str = "unknown",
     restaurant_id: str = "",
+    duration_seconds: int = 0,
 ) -> dict:
     """
     High-level helper: download + transcribe + return full result dict.
 
     Returns:
         {
-            "text": str,                # customer text to use as input
-            "voice_transcript": str,    # same as text (for DB storage compat)
-            "transcription_status": str,
-            "transcription_error": str,
+            "text": str,
+            "voice_transcript": str,
+            "transcription_status": str,   # success | skipped | failed
+            "transcription_error": str,    # error code, e.g. audio_too_large
             "transcription_provider": str,
             "transcribed_at": str,
-            "fallback_reply": str,      # Arabic message to send if status != "success"
+            "fallback_reply": str,         # Arabic reply if status != "success"
+            "error_code": str,             # ERR_* constant for structured handling
         }
     """
     import datetime
-    fallback = VOICE_FALLBACK_AR
 
     if not audio_bytes:
-        return _voice_result("", "failed", "no audio data", "", fallback)
+        return _voice_result("", "failed", "no audio data", "", VOICE_FALLBACK_AR, ERR_FAILED)
 
+    # Duration guard (if caller knows the duration from metadata)
+    if duration_seconds and duration_seconds > VOICE_MAX_DURATION_SECONDS:
+        logger.warning(
+            f"[voice] duration {duration_seconds}s > limit {VOICE_MAX_DURATION_SECONDS}s"
+        )
+        return _voice_result("", "skipped", ERR_TOO_LONG, "", VOICE_TOO_LONG_AR, ERR_TOO_LONG)
+
+    # Size guard
     if len(audio_bytes) > VOICE_MAX_BYTES:
-        return _voice_result("", "skipped", "audio too large", "", VOICE_TOO_LARGE_AR)
+        size_mb = len(audio_bytes) / (1024 * 1024)
+        logger.warning(f"[voice] audio too large: {size_mb:.1f} MB > {VOICE_MAX_AUDIO_MB} MB limit")
+        return _voice_result("", "skipped", ERR_TOO_LARGE, "", VOICE_TOO_LARGE_AR, ERR_TOO_LARGE)
 
     result = transcribe_audio(audio_bytes, filename=filename, mime_type=mime_type)
     now_str = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Unclear transcript guard
+    if result["status"] == "success" and is_unclear_transcript(result["text"]):
+        return _voice_result(
+            result["text"], "success", ERR_UNCLEAR,
+            result["provider"], VOICE_UNCLEAR_AR, ERR_UNCLEAR,
+            transcribed_at=now_str,
+        )
+
+    fallback = VOICE_FALLBACK_AR if result["status"] != "success" else ""
+    err_code = ERR_FAILED if result["status"] != "success" else ""
     return {
         "text": result["text"],
         "voice_transcript": result["text"],
@@ -171,17 +245,19 @@ def transcribe_voice_message(
         "transcription_error": result["error"],
         "transcription_provider": result["provider"],
         "transcribed_at": now_str if result["status"] == "success" else "",
-        "fallback_reply": fallback if result["status"] != "success" else "",
+        "fallback_reply": fallback,
+        "error_code": err_code,
     }
 
 
-def _voice_result(text, status, error, provider, fallback):
+def _voice_result(text, status, error, provider, fallback, error_code="", transcribed_at=""):
     return {
         "text": text,
         "voice_transcript": text,
         "transcription_status": status,
         "transcription_error": error,
         "transcription_provider": provider,
-        "transcribed_at": "",
+        "transcribed_at": transcribed_at,
         "fallback_reply": fallback,
+        "error_code": error_code,
     }
