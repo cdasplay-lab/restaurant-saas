@@ -84,6 +84,9 @@ CONFIRMATION_KEYWORDS = [
     "تمام أكمل", "نعم أكمل", "تمام نكمل",
     # Iraqi Arabic affirmations when session is complete
     "اي ثبت", "صح ثبت", "اقفل الطلب", "أغلق الطلب", "اختم الطلب",
+    # Bare affirmations — safe because is_complete() guard prevents false fire
+    "نعم", "ايوه", "أيوه", "آه", "اوكي", "اوكى", "okay", "ok",
+    "تمام", "صحيح", "اي",
 ]
 
 CANCELLATION_KEYWORDS = [

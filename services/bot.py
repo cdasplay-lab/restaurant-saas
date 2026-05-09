@@ -472,7 +472,8 @@ def _detect_intent_fast(message: str) -> str:
     msg = message.strip()
     checks = [
         (["[فويس]", "[voice]", "[audio]"],                       "voice_order"),
-        (["ثبت", "أكمل", "أكمله", "ثبته", "نعم", "تمام ثبت"],  "repeated_confirmation"),
+        (["ثبت", "أكمل", "أكمله", "ثبته", "نعم", "تمام ثبت",
+           "ايوه", "أيوه", "آه", "اوكي", "اوكى", "okay", "ok", "تمام", "اي"],  "repeated_confirmation"),
         (["شكر", "مشكور", "يسلم", "تسلم", "الله يعطيك"],        "thanks"),
         (["أنت بوت", "بوت؟", "شنو اسمك", "منو انت"],            "identity_question"),
         (["بكم", "سعر", "شسعر", "شكد", "ثمن"],                  "price_question"),
@@ -642,7 +643,8 @@ def _detect_menu_image_intent(message: str) -> bool:
 
 
 def _get_menu_images(restaurant_id: str, category_hint: str = "") -> list:
-    """Return active menu images, filtered by category if a matching one is found."""
+    """Return active menu images, filtered by category if a matching one is found.
+    Falls back to products.image_url if menu_images table is empty."""
     conn = database.get_db()
     try:
         rows = conn.execute(
@@ -651,6 +653,17 @@ def _get_menu_images(restaurant_id: str, category_hint: str = "") -> list:
             (restaurant_id,)
         ).fetchall()
         all_imgs = [dict(r) for r in rows]
+
+        # Fallback: if no dedicated menu images, use product images
+        if not all_imgs:
+            prod_rows = conn.execute(
+                "SELECT id, name AS title, image_url, category FROM products "
+                "WHERE restaurant_id=? AND available=1 "
+                "AND image_url IS NOT NULL AND image_url != '' "
+                "ORDER BY category ASC, name ASC",
+                (restaurant_id,)
+            ).fetchall()
+            all_imgs = [dict(r) for r in prod_rows]
     finally:
         conn.close()
 
