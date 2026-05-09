@@ -1443,26 +1443,28 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         _fc = _tool_call_data["args"]
         _tool_name = _tool_call_data.get("tool_name", "place_order")
 
-        def _populate_ob_session_from_tool(fc, finalize=False):
-            """Populate _ob_session fields from tool args. finalize=True sets confirmation_status."""
+        def _populate_ob_session_from_tool(fc, finalize=False) -> list:
+            """
+            Populate _ob_session fields from tool args.
+            finalize=True sets confirmation_status = 'confirmed'.
+            Returns list of unknown item names (empty = all items matched DB).
+            """
             nonlocal _ob_session
             from services.order_brain import OrderBrain as _OB, OrderItem as _OItem
+            from services.tool_safety import validate_tool_items
             if _ob_session is None:
                 _ob_session = _OB.get_or_create(conversation_id, restaurant_id)
+            unknown_names: list = []
             if fc.get("items"):
-                _ob_session.items = []
-                for _fi in fc["items"]:
-                    _fi_name  = str(_fi.get("name", "")).strip()
-                    _fi_qty   = max(1, int(_fi.get("qty", 1)))
-                    _fi_price = float(_fi.get("unit_price", 0))
-                    for _p in _products_dicts:
-                        if _p.get("name", "").strip() == _fi_name:
-                            _fi_price = float(_p.get("price") or _fi_price)
-                            break
-                    _ob_session.items.append(_OItem(
-                        name=_fi_name, qty=_fi_qty, price=_fi_price,
-                        note=str(_fi.get("note", "") or ""),
-                    ))
+                validated, unknown_names = validate_tool_items(fc["items"], _products_dicts)
+                if validated:
+                    _ob_session.items = [
+                        _OItem(
+                            name=v["name"], qty=v["qty"], price=v["unit_price"],
+                            note=v.get("note", ""),
+                        )
+                        for v in validated
+                    ]
             if fc.get("customer_name"):
                 _ob_session.customer_name = str(fc["customer_name"]).strip()
             if fc.get("delivery_type"):
@@ -1473,16 +1475,27 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 _ob_session.payment_method = str(fc["payment_method"]).strip()
             if finalize:
                 _ob_session.confirmation_status = "confirmed"
+            return unknown_names
 
         if _tool_name == "place_order":
             try:
-                _populate_ob_session_from_tool(_fc, finalize=True)
-                reply_text = ""  # will be replaced by generate_confirmation_message below
-                logger.info(
-                    f"[tool] _ob_session populated from place_order — "
-                    f"items={len(_ob_session.items)} name={_ob_session.customer_name} "
-                    f"type={_ob_session.order_type} conv={conversation_id}"
-                )
+                _unknown = _populate_ob_session_from_tool(_fc, finalize=True)
+                if _unknown:
+                    # Items not in menu — cannot confirm, ask clarification
+                    from services.tool_safety import validate_update_order_reply as _vr
+                    reply_text = _vr("", _ob_session, _unknown)
+                    if _ob_session:
+                        _ob_session.confirmation_status = "collecting"
+                    logger.warning(
+                        f"[tool] place_order blocked — unknown items: {_unknown} conv={conversation_id}"
+                    )
+                else:
+                    reply_text = ""  # will be replaced by generate_confirmation_message below
+                    logger.info(
+                        f"[tool] _ob_session populated from place_order — "
+                        f"items={len(_ob_session.items)} name={_ob_session.customer_name} "
+                        f"type={_ob_session.order_type} conv={conversation_id}"
+                    )
             except Exception as _fce:
                 logger.warning(f"[tool] place_order populate failed: {_fce}")
                 _lines = [f"• {fi.get('name')} × {fi.get('qty')} — {int(fi.get('unit_price',0)):,} د.ع"
@@ -1499,13 +1512,16 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
         elif _tool_name == "update_order":
             try:
-                _populate_ob_session_from_tool(_fc, finalize=False)
+                from services.tool_safety import validate_update_order_reply as _vr
+                _unknown = _populate_ob_session_from_tool(_fc, finalize=False)
+                # Validate and sanitize GPT's reply before sending to customer
+                reply_text = _vr(reply_text, _ob_session, _unknown)
                 _ob_save_state(conversation_id, _ob_session)
                 logger.info(
                     f"[tool] _ob_session updated from update_order — "
                     f"items={len(_ob_session.items if _ob_session else [])} "
                     f"name={_ob_session.customer_name if _ob_session else ''} "
-                    f"conv={conversation_id}"
+                    f"unknown={_unknown} conv={conversation_id}"
                 )
             except Exception as _uoe:
                 logger.warning(f"[tool] update_order populate failed: {_uoe}")
