@@ -82,29 +82,54 @@ def strip_prices_from_reply(text: str) -> str:
 def find_best_product_match(name: str, products: list) -> Optional[dict]:
     """
     Return the best-matching product dict for a given item name.
-    Priority: exact → product-name-in-item-name → item-name-in-product-name.
-    Returns None if no match.
+
+    Tiers (first hit wins, then word-level best-score):
+    1. Exact match
+    2. Product name contained in item name  ("برجر دجاج" contains "برجر")
+    3. Item name contained in product name  ("كولا" in "بيبسي كولا")
+    4. Word-level overlap ≥ 1 word of len≥3 ("برجر كلاسيك" shares "برجر" with "برجر لحم")
     """
     if not name or not products:
         return None
     name_l = name.strip().lower()
 
-    # Exact match
+    # 1. Exact
     for p in products:
         if p.get("name", "").strip().lower() == name_l:
             return p
 
-    # Product name is contained in the item name (e.g. "برجر دجاج" contains "برجر")
+    # 2. Product name ⊆ item name
     for p in products:
         p_l = p.get("name", "").strip().lower()
         if p_l and p_l in name_l:
             return p
 
-    # Item name is contained in a product name (e.g. "برجر" is in "برجر لحم خاص")
+    # 3. Item name ⊆ product name
     for p in products:
         p_l = p.get("name", "").strip().lower()
         if p_l and name_l in p_l:
             return p
+
+    # 4. Word-level: longest shared meaningful word
+    name_words = set(w for w in name_l.split() if len(w) >= 3)
+    if name_words:
+        best, best_score = None, 0
+        for p in products:
+            p_l = p.get("name", "").strip().lower()
+            p_words = set(p_l.split())
+            # Exact word intersection first
+            score = len(name_words & p_words)
+            if score == 0:
+                # Substring within a word (e.g. "برجر" within longer word)
+                score = sum(
+                    1 for nw in name_words
+                    if any(nw in pw or pw in nw for pw in p_words if len(pw) >= 3)
+                )
+            if score > best_score:
+                best_score = score
+                best = p
+        if best_score > 0:
+            return best
 
     return None
 

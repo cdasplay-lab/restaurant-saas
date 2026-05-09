@@ -422,6 +422,40 @@ class OrderSession:
             f"{self.customer_name}، {self.phone}، {self.payment_method}. تثبت؟"
         )
 
+    def order_summary_for_confirmation(self, delivery_fee: int = 0) -> str:
+        """Pre-confirmation summary shown before customer types ثبت."""
+        lines = []
+        items_sum = 0
+        for item in self.items:
+            item_total = int(item.price) * item.qty
+            items_sum += item_total
+            note_str = f" ({item.notes})" if item.notes else ""
+            lines.append(f"• {item.name} × {item.qty}{note_str}")
+
+        msg = "تمام 🌷 هذا ملخص طلبك:\n" + "\n".join(lines)
+
+        _fee = delivery_fee if (self.order_type == "delivery" and delivery_fee > 0) else 0
+        total = items_sum + _fee
+        if total > 0:
+            if _fee > 0:
+                msg += f"\n🚚 رسوم التوصيل: {_fee:,} د.ع"
+            msg += f"\n──────────────\n💰 المجموع: {int(total):,} د.ع"
+
+        if self.order_type == "delivery":
+            msg += f"\n📍 توصيل — {self.address or '—'}"
+        else:
+            msg += "\n🏪 استلام من المطعم"
+
+        if self.customer_name:
+            msg += f"\n👤 {self.customer_name}"
+        if self.phone:
+            msg += f" — {self.phone}"
+        if self.payment_method:
+            msg += f"\n💳 {self.payment_method}"
+
+        msg += "\n\nنثبت الطلب؟ 🌷"
+        return msg
+
     def items_total(self) -> int:
         """NUMBER 38 — Sum of all item prices × quantities (excludes delivery fee)."""
         return sum(int(it.price) * it.qty for it in self.items)

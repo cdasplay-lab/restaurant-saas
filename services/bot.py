@@ -1461,7 +1461,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     _ob_session.items = [
                         _OItem(
                             name=v["name"], qty=v["qty"], price=v["unit_price"],
-                            note=v.get("note", ""),
+                            notes=v.get("note", ""),
                         )
                         for v in validated
                     ]
@@ -1476,6 +1476,30 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             if finalize:
                 _ob_session.confirmation_status = "confirmed"
             return unknown_names
+
+        def _backend_next_reply(ob, prods_list, unknowns, fee=0) -> str:
+            """
+            Deterministic reply for update_order — backend controls conversation flow.
+            GPT only extracts fields; this function decides what to ask next.
+            """
+            if unknowns:
+                names_str = "، ".join(f"«{n}»" for n in unknowns[:2])
+                extra = " وغيرها" if len(unknowns) > 2 else ""
+                return (
+                    f"ما لقيت {names_str}{extra} بالمنيو 🌷 — "
+                    f"تكدر تشوف المنيو وتكلني شنو بالضبط تريد؟"
+                )
+            if ob is None:
+                return "وصلت 🌷 — شنو تحب تطلب؟"
+            if ob.is_complete():
+                return ob.order_summary_for_confirmation(delivery_fee=fee)
+            from services.order_brain import _FIELD_QUESTION
+            next_f = ob.next_missing_field()
+            if next_f == "items":
+                return ob.generate_next_directive(prods_list)
+            if next_f and next_f in _FIELD_QUESTION:
+                return "تمام 🌷 — " + _FIELD_QUESTION[next_f]
+            return ob.generate_next_directive(prods_list) or "كمّلنا؟ 🌷"
 
         if _tool_name == "place_order":
             try:
@@ -1512,19 +1536,20 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
         elif _tool_name == "update_order":
             try:
-                from services.tool_safety import validate_update_order_reply as _vr
                 _unknown = _populate_ob_session_from_tool(_fc, finalize=False)
-                # Validate and sanitize GPT's reply before sending to customer
-                reply_text = _vr(reply_text, _ob_session, _unknown)
+                _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
+                reply_text = _backend_next_reply(
+                    _ob_session, _products_dicts, _unknown, fee=_delivery_fee
+                )
                 _ob_save_state(conversation_id, _ob_session)
                 logger.info(
-                    f"[tool] _ob_session updated from update_order — "
+                    f"[tool] update_order → next_reply computed — "
                     f"items={len(_ob_session.items if _ob_session else [])} "
                     f"name={_ob_session.customer_name if _ob_session else ''} "
                     f"unknown={_unknown} conv={conversation_id}"
                 )
             except Exception as _uoe:
-                logger.warning(f"[tool] update_order populate failed: {_uoe}")
+                logger.warning(f"[tool] update_order failed: {_uoe}")
 
     # NUMBER 41 — Override reply with payment validation rejection if needed
     if _ob_invalid_pm_reply:
