@@ -149,8 +149,13 @@ class _PgConnection:
         sql = re.sub(r"datetime\('now',\s*(%s)\s*\|\|\s*'([^']+)'\)", r"(NOW() + (\1 || '\2')::interval)", sql, flags=re.IGNORECASE)
         # datetime('now', '-N unit') → (NOW() + INTERVAL '-N unit')
         sql = re.sub(r"datetime\('now',\s*'([^']+)'\)", r"(NOW() + INTERVAL '\1')", sql, flags=re.IGNORECASE)
-        # datetime('now') → NOW()
-        sql = re.sub(r"datetime\('now'\)", "NOW()", sql, flags=re.IGNORECASE)
+        # datetime('now') → text-comparable UTC string (matches SQLite TEXT storage format)
+        # Must stay as TEXT so comparisons against TEXT columns (expires_at, etc.) work without cast.
+        sql = re.sub(
+            r"datetime\('now'\)",
+            "to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')",
+            sql, flags=re.IGNORECASE
+        )
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql, params or [])
         return _PgCursor(cur)
@@ -189,6 +194,12 @@ class _PgConnection:
 
     def close(self):
         if self._pool is not None:
+            # Always rollback before returning to pool — a failed query leaves the
+            # connection in ABORTED state; the next thread would get InFailedSqlTransaction.
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             self._pool.putconn(self._conn)
         else:
             self._conn.close()

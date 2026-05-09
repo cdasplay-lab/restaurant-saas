@@ -754,6 +754,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             shift_commands_list = [(r["command_text"] if hasattr(r, "keys") else r[0]) for r in sc_rows]
         except Exception as _sce:
             logger.debug(f"[bot] shift_commands load failed: {_sce}")
+            try:
+                conn.rollback()  # recover connection from ABORTED state before next query
+            except Exception:
+                pass
 
         # Load exception playbook entries
         exception_playbook_list = []
