@@ -5838,6 +5838,7 @@ async function init() {
   // Auto-refresh active conversation messages every 8s
   setInterval(async () => {
     if (!S.activeConv) return;
+    if (document.querySelector('[id^="msg-edit-"]:not(.hidden)')) return; // user is editing
     try {
       const msgs = await api.get(`/api/conversations/${S.activeConv}/messages`);
       renderMessages(msgs, false); // false = don't force scroll if user scrolled up
@@ -5984,7 +5985,9 @@ async function init() {
         api.get('/api/conversations').then(convs => { S.convs = convs; renderConvList(); }).catch(() => {});
         // If active conv matches, refresh messages
         if (S.activeConv && ev.conv_id === S.activeConv) {
-          api.get(`/api/conversations/${S.activeConv}/messages`).then(msgs => renderMessages(msgs, false)).catch(() => {});
+          if (!document.querySelector('[id^="msg-edit-"]:not(.hidden)')) {
+            api.get(`/api/conversations/${S.activeConv}/messages`).then(msgs => renderMessages(msgs, false)).catch(() => {});
+          }
         }
       }
 
