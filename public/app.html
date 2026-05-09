@@ -3587,60 +3587,58 @@ function openMenuImageModal(id) {
       <h2 class="text-white font-bold">${img ? 'تعديل الصورة' : 'إضافة صورة منيو'}</h2>
       <button onclick="closeModal()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
     </div>
-    <div class="space-y-3">
+    <div class="space-y-4">
 
-      <!-- Upload zone -->
-      <div id="miUploadZone" class="border-2 border-dashed border-slate-600 hover:border-indigo-500 rounded-xl p-4 text-center cursor-pointer transition"
+      <!-- Upload zone — primary action -->
+      <div id="miUploadZone"
+           class="border-2 border-dashed border-slate-600 hover:border-indigo-500 rounded-2xl p-8 text-center cursor-pointer transition"
            onclick="document.getElementById('miFileInput').click()"
-           ondragover="event.preventDefault();this.classList.add('border-indigo-400')"
-           ondragleave="this.classList.remove('border-indigo-400')"
-           ondrop="event.preventDefault();this.classList.remove('border-indigo-400');_miHandleDrop(event.dataTransfer.files)">
+           ondragover="event.preventDefault();this.classList.add('border-indigo-400','bg-indigo-500/5')"
+           ondragleave="this.classList.remove('border-indigo-400','bg-indigo-500/5')"
+           ondrop="event.preventDefault();this.classList.remove('border-indigo-400','bg-indigo-500/5');_miHandleDrop(event.dataTransfer.files)">
         <div id="miUploadPlaceholder" class="${img?.image_url ? 'hidden' : ''}">
-          <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-500 mb-2"></i>
-          <p class="text-slate-400 text-sm">اسحب صورة هنا أو <span class="text-indigo-400 underline">اختر من جهازك</span></p>
-          <p class="text-slate-600 text-xs mt-1">JPG، PNG، WEBP — حتى 15 MB</p>
+          <i class="fa-solid fa-cloud-arrow-up text-4xl text-slate-500 mb-3"></i>
+          <p class="text-white text-sm font-medium">اسحب الصورة هنا</p>
+          <p class="text-slate-500 text-xs mt-1">أو <span class="text-indigo-400 underline">اختر من جهازك</span></p>
+          <p class="text-slate-600 text-xs mt-2">JPG · PNG · WEBP — حتى 15 MB</p>
         </div>
         <div id="miPreviewWrap" class="${img?.image_url ? '' : 'hidden'}">
-          <img id="miPreview" src="${img?.image_url||''}" class="mx-auto rounded-lg max-h-36 object-contain" onerror="this.src=''">
-          <p class="text-slate-500 text-xs mt-1">اضغط للتغيير</p>
+          <img id="miPreview" src="${img?.image_url||''}" class="mx-auto rounded-xl max-h-40 object-contain mb-2" onerror="imgMissing(this)">
+          <p class="text-indigo-400 text-xs">✓ تم رفع الصورة — اضغط للتغيير</p>
         </div>
         <input type="file" id="miFileInput" accept="image/*" class="hidden" onchange="_miHandleDrop(this.files)">
       </div>
-      <div id="miUploadProgress" class="hidden">
-        <div class="flex items-center gap-2 text-slate-400 text-xs">
-          <div class="spinner w-4 h-4"></div><span>جاري الرفع...</span>
+
+      <!-- Upload progress -->
+      <div id="miUploadProgress" class="hidden bg-slate-800 rounded-xl px-4 py-3">
+        <div class="flex items-center gap-3 text-slate-300 text-sm">
+          <div class="spinner w-4 h-4 flex-shrink-0"></div>
+          <div class="flex-1">
+            <div class="flex justify-between mb-1"><span>جاري الرفع...</span><span id="miUploadPct">0%</span></div>
+            <div class="h-1 bg-slate-700 rounded-full"><div id="miUploadBar" class="h-1 bg-indigo-500 rounded-full transition-all" style="width:0%"></div></div>
+          </div>
         </div>
       </div>
 
-      <!-- URL fallback -->
+      <!-- hidden URL store -->
+      <input type="hidden" id="miUrl" value="${img?.image_url||''}">
+
+      <!-- Optional: name only -->
       <div>
-        <label class="text-slate-400 text-xs mb-1 block">أو أدخل رابط الصورة مباشرة</label>
-        <input id="miUrl" value="${img?.image_url||''}" placeholder="https://..." dir="ltr"
-          oninput="_miUrlChanged(this.value)"
-          class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+        <label class="text-slate-400 text-xs mb-1 block">اسم الصورة (اختياري)</label>
+        <input id="miTitle" value="${img?.title||''}" placeholder="مثال: منيو الوجبات الرئيسية"
+          class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none">
       </div>
 
-      <div class="grid grid-cols-2 gap-3">
+      <!-- Active toggle only -->
+      <label class="flex items-center gap-3 cursor-pointer bg-slate-800/50 rounded-xl px-4 py-3">
+        <input type="checkbox" id="miActive" ${(!img || img.is_active) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
         <div>
-          <label class="text-slate-400 text-xs mb-1 block">العنوان</label>
-          <input id="miTitle" value="${img?.title||''}" placeholder="مثال: المنيو الكامل" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
+          <div class="text-white text-sm font-medium">نشطة — تُرسل للعملاء</div>
+          <div class="text-slate-500 text-xs">البوت يستخدمها عند سؤال العملاء عن المنيو</div>
         </div>
-        <div>
-          <label class="text-slate-400 text-xs mb-1 block">الفئة</label>
-          <input id="miCategory" value="${img?.category||''}" placeholder="مثال: وجبات، مشروبات" list="miCategoryList" class="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:border-indigo-500">
-          <datalist id="miCategoryList">${[...new Set(_menuImages.map(i=>i.category).filter(Boolean))].map(c=>`<option value="${c}">`).join('')}</datalist>
-        </div>
-      </div>
-      <div class="flex items-center justify-between">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" id="miActive" ${(!img || img.is_active) ? 'checked' : ''} class="w-4 h-4 rounded accent-indigo-600">
-          <span class="text-slate-400 text-sm">نشطة (تُرسل للعملاء)</span>
-        </label>
-        <div>
-          <label class="text-slate-400 text-xs ml-2">الترتيب</label>
-          <input id="miOrder" type="number" value="${img?.sort_order||0}" min="0" class="w-16 bg-slate-900 border border-slate-700 text-white rounded-lg px-2 py-1.5 text-sm text-center focus:border-indigo-500">
-        </div>
-      </div>
+      </label>
+
     </div>
     <div class="flex gap-2 mt-5">
       <button onclick="saveMenuImage('${id||''}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm transition font-semibold">حفظ</button>
@@ -3654,6 +3652,7 @@ async function _miHandleDrop(files) {
   const file = files[0];
   if (!file.type.startsWith('image/')) return toast('الملف يجب أن يكون صورة', 'error');
   if (file.size > 15 * 1024 * 1024) return toast('الصورة أكبر من 15 MB', 'error');
+
   // Local preview immediately
   const reader = new FileReader();
   reader.onload = e => {
@@ -3665,24 +3664,47 @@ async function _miHandleDrop(files) {
     if (ph) ph.classList.add('hidden');
   };
   reader.readAsDataURL(file);
-  // Upload to server
+
+  // Auto-fill name from filename if empty
+  const titleEl = document.getElementById('miTitle');
+  if (titleEl && !titleEl.value.trim()) {
+    titleEl.value = file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+  }
+
+  // Upload with progress simulation
   document.getElementById('miUploadProgress')?.classList.remove('hidden');
+  const bar = document.getElementById('miUploadBar');
+  const pct = document.getElementById('miUploadPct');
+  let prog = 0;
+  const tick = setInterval(() => {
+    prog = Math.min(prog + Math.random() * 15, 85);
+    if (bar) bar.style.width = prog + '%';
+    if (pct) pct.textContent = Math.round(prog) + '%';
+  }, 200);
+
   try {
     const fd = new FormData(); fd.append('file', file);
-    const res = await fetch(`${API_BASE}/api/upload/menu-image`, {
+    const res = await fetch(`${window.API_BASE || ''}/api/upload/menu-image`, {
       method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }, body: fd
     });
     const data = await res.json();
+    clearInterval(tick);
+    if (bar) bar.style.width = '100%';
+    if (pct) pct.textContent = '100%';
     if (!res.ok) throw new Error(data.detail || 'فشل الرفع');
     if (data.url) {
       const urlEl = document.getElementById('miUrl');
       if (urlEl) urlEl.value = data.url;
-      toast('تم رفع الصورة', 'success');
+      toast('✓ تم رفع الصورة بنجاح', 'success');
     } else {
-      toast('Supabase غير مضبوط — استخدم رابطاً خارجياً', 'warning');
+      toast('Supabase غير مضبوط — الصورة لن تُحفظ', 'warning');
     }
-  } catch(e) { toast(e.message, 'error'); }
-  finally { document.getElementById('miUploadProgress')?.classList.add('hidden'); }
+  } catch(e) {
+    clearInterval(tick);
+    toast(e.message, 'error');
+  } finally {
+    setTimeout(() => document.getElementById('miUploadProgress')?.classList.add('hidden'), 600);
+  }
 }
 
 function _miUrlChanged(url) {
@@ -3701,12 +3723,12 @@ function _miUrlChanged(url) {
 
 async function saveMenuImage(id) {
   const url = document.getElementById('miUrl').value.trim();
-  if (!url) { toast('الصورة مطلوبة — ارفع صورة أو أدخل رابطاً', 'error'); return; }
+  if (!url) { toast('ارفع صورة أولاً', 'error'); return; }
   const data = {
     image_url: url,
-    title: document.getElementById('miTitle').value.trim(),
-    category: document.getElementById('miCategory').value.trim(),
-    sort_order: parseInt(document.getElementById('miOrder').value) || 0,
+    title: document.getElementById('miTitle').value.trim() || 'صورة منيو',
+    category: '',
+    sort_order: _menuImages.length,
     is_active: document.getElementById('miActive').checked,
   };
   try {
