@@ -468,6 +468,16 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
     status TEXT DEFAULT 'pending',
     error TEXT DEFAULT '',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
 )
 """
 
@@ -1456,6 +1466,9 @@ def init_db():
     try:
         conn.execute(
             "INSERT OR IGNORE INTO platform_config (key, value) VALUES ('support_phone', '9647710005018')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO platform_config (key, value) VALUES ('platform_name', 'منصة المطاعم')"
         )
         conn.commit()
     except Exception:

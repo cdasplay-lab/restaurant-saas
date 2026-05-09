@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title id="docTitle">منصة إدارة المطاعم — ابدأ مجاناً</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0f172a; color: #e2e8f0; }
+  .gradient-text { background: linear-gradient(135deg, #818cf8 0%, #a78bfa 50%, #38bdf8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .hero-bg { background: radial-gradient(ellipse at 60% 0%, rgba(99,102,241,0.15) 0%, transparent 60%), radial-gradient(ellipse at 0% 80%, rgba(56,189,248,0.1) 0%, transparent 60%); }
+  .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+  .card:hover { background: rgba(255,255,255,0.07); border-color: rgba(99,102,241,0.3); }
+  .plan-popular { background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.15)); border-color: rgba(99,102,241,0.5) !important; }
+  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-12px)} }
+  .float { animation: float 4s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────────────── -->
+<header class="sticky top-0 z-50 bg-slate-950/80 backdrop-blur border-b border-white/5">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-xl">🍽️</div>
+      <span id="headerName" class="text-white font-bold text-lg">منصة المطاعم</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="/login" class="text-slate-400 hover:text-white text-sm transition px-3 py-2">تسجيل الدخول</a>
+      <a href="/register" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition">ابدأ مجاناً</a>
+    </div>
+  </div>
+</header>
+
+<!-- ── HERO ───────────────────────────────────────────────── -->
+<section class="hero-bg pt-20 pb-24 px-4 text-center">
+  <div class="max-w-4xl mx-auto">
+    <div class="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium px-4 py-2 rounded-full mb-6">
+      <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+      تجربة مجانية 14 يوم — بدون بطاقة ائتمان
+    </div>
+    <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-6">
+      إدارة مطعمك<br>
+      <span class="gradient-text">بذكاء اصطناعي</span>
+    </h1>
+    <p class="text-slate-400 text-lg sm:text-xl max-w-2xl mx-auto mb-10">
+      منصة متكاملة تربط مطعمك بعملائك عبر انستغرام وفيسبوك. بوت ذكي يستقبل الطلبات ويرد على الاستفسارات تلقائياً.
+    </p>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+      <a href="/register"
+        class="w-full sm:w-auto bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500
+               text-white font-bold px-8 py-4 rounded-2xl text-lg transition shadow-lg shadow-indigo-500/25">
+        ابدأ تجربتك المجانية ←
+      </a>
+      <a href="/login"
+        class="w-full sm:w-auto bg-white/5 border border-white/10 hover:bg-white/10 text-white font-medium px-8 py-4 rounded-2xl text-lg transition">
+        لديك حساب؟ سجّل الدخول
+      </a>
+    </div>
+    <!-- Preview image placeholder -->
+    <div class="mt-16 float max-w-4xl mx-auto bg-slate-900/80 border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
+      <div class="bg-slate-800/60 px-4 py-3 flex items-center gap-2 border-b border-white/5">
+        <span class="w-3 h-3 rounded-full bg-red-500/60"></span>
+        <span class="w-3 h-3 rounded-full bg-yellow-500/60"></span>
+        <span class="w-3 h-3 rounded-full bg-green-500/60"></span>
+        <span class="text-slate-500 text-xs mr-2">لوحة التحكم — مطعم النخبة</span>
+      </div>
+      <div class="grid grid-cols-3 gap-3 p-4">
+        <div class="bg-indigo-600/10 border border-indigo-500/20 rounded-xl p-4 text-center">
+          <div class="text-2xl font-bold text-white">248</div>
+          <div class="text-indigo-400 text-xs mt-1">طلب هذا الشهر</div>
+        </div>
+        <div class="bg-green-600/10 border border-green-500/20 rounded-xl p-4 text-center">
+          <div class="text-2xl font-bold text-white">$3,420</div>
+          <div class="text-green-400 text-xs mt-1">إجمالي الإيرادات</div>
+        </div>
+        <div class="bg-purple-600/10 border border-purple-500/20 rounded-xl p-4 text-center">
+          <div class="text-2xl font-bold text-white">94%</div>
+          <div class="text-purple-400 text-xs mt-1">رضا العملاء</div>
+        </div>
+      </div>
+      <div class="px-4 pb-4 flex gap-2">
+        <div class="flex-1 bg-slate-800/50 rounded-xl p-3">
+          <div class="text-xs text-slate-500 mb-2">آخر المحادثات</div>
+          <div class="space-y-2">
+            <div class="flex items-center gap-2"><span class="w-6 h-6 bg-indigo-500/30 rounded-full flex-shrink-0"></span><span class="text-xs text-slate-300">أريد طلب برغر + بطاطس</span></div>
+            <div class="flex items-center gap-2"><span class="w-6 h-6 bg-green-500/30 rounded-full flex-shrink-0"></span><span class="text-xs text-slate-300">ما هي أوقات الدوام؟</span></div>
+          </div>
+        </div>
+        <div class="flex-1 bg-slate-800/50 rounded-xl p-3">
+          <div class="text-xs text-slate-500 mb-2">الطلبات الجديدة</div>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between"><span class="text-xs text-slate-300">طلب #248</span><span class="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full">جديد</span></div>
+            <div class="flex items-center justify-between"><span class="text-xs text-slate-300">طلب #247</span><span class="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">مكتمل</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── TRUST SIGNALS ──────────────────────────────────────── -->
+<section class="py-10 border-y border-white/5">
+  <div class="max-w-5xl mx-auto px-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+    <div class="flex flex-col items-center gap-2">
+      <span class="text-2xl">🤖</span>
+      <span class="text-white text-sm font-semibold">بوت عربي متخصص</span>
+      <span class="text-slate-500 text-xs">يفهم لهجتك ويستخرج الطلبات</span>
+    </div>
+    <div class="flex flex-col items-center gap-2">
+      <span class="text-2xl">⚡</span>
+      <span class="text-white text-sm font-semibold">إعداد في دقائق</span>
+      <span class="text-slate-500 text-xs">بدون خبرة تقنية مطلوبة</span>
+    </div>
+    <div class="flex flex-col items-center gap-2">
+      <span class="text-2xl">💬</span>
+      <span class="text-white text-sm font-semibold">دعم فني مباشر</span>
+      <span class="text-slate-500 text-xs">عبر واتساب في أي وقت</span>
+    </div>
+    <div class="flex flex-col items-center gap-2">
+      <span class="text-2xl">🔓</span>
+      <span class="text-white text-sm font-semibold">بدون التزام</span>
+      <span class="text-slate-500 text-xs">14 يوم مجاناً • إلغاء متى تريد</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ───────────────────────────────────────────── -->
+<section class="py-20 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-3">كل ما تحتاجه في مكان واحد</h2>
+      <p class="text-slate-400 text-lg">من استقبال الطلبات إلى تحليل البيانات — منصة متكاملة لنجاح مطعمك</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-indigo-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">🤖</div>
+        <h3 class="text-white font-semibold text-lg mb-2">بوت ذكاء اصطناعي</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">يرد على استفسارات العملاء ويستخرج الطلبات تلقائياً بالعربية. يعمل 24 ساعة بدون توقف.</p>
+      </div>
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-pink-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">📱</div>
+        <h3 class="text-white font-semibold text-lg mb-2">تعدد المنصات</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">تواصل مع عملائك عبر انستغرام وفيسبوك وتيليغرام وواتساب من لوحة تحكم واحدة.</p>
+      </div>
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-green-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">📦</div>
+        <h3 class="text-white font-semibold text-lg mb-2">إدارة الطلبات</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">تتبع الطلبات من الاستلام حتى التسليم بعرض كانبان مرئي. تحديث الحالة بنقرة واحدة.</p>
+      </div>
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-amber-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">🍔</div>
+        <h3 class="text-white font-semibold text-lg mb-2">إدارة القائمة</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">أضف منتجاتك مع صور ومتغيرات الأحجام. استورد قائمتك من PDF أو Excel بالذكاء الاصطناعي.</p>
+      </div>
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-blue-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">📊</div>
+        <h3 class="text-white font-semibold text-lg mb-2">تحليلات متقدمة</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">تقارير يومية وأسبوعية للإيرادات والمنتجات الأكثر طلباً وأوقات الذروة.</p>
+      </div>
+
+      <div class="card rounded-2xl p-6 transition">
+        <div class="w-12 h-12 bg-purple-500/15 rounded-xl flex items-center justify-center text-2xl mb-4">👥</div>
+        <h3 class="text-white font-semibold text-lg mb-2">إدارة الفريق</h3>
+        <p class="text-slate-400 text-sm leading-relaxed">أضف موظفين بصلاحيات مختلفة. راقب النشاط وسجّل العمليات بشكل كامل.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ────────────────────────────────────────── -->
+<section class="py-20 px-4 bg-slate-900/50">
+  <div class="max-w-4xl mx-auto">
+    <div class="text-center mb-14">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-3">كيف يعمل؟</h2>
+      <p class="text-slate-400">ابدأ في 3 خطوات بسيطة</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-8 relative">
+      <div class="text-center">
+        <div class="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-bold text-xl mx-auto mb-4">1</div>
+        <h3 class="text-white font-semibold mb-2">أنشئ حسابك</h3>
+        <p class="text-slate-400 text-sm">سجّل مجاناً في ثوانٍ. لا تحتاج بطاقة ائتمان. 14 يوم تجربة كاملة.</p>
+      </div>
+      <div class="text-center">
+        <div class="w-14 h-14 bg-purple-600 rounded-2xl flex items-center justify-center text-white font-bold text-xl mx-auto mb-4">2</div>
+        <h3 class="text-white font-semibold mb-2">أضف منتجاتك</h3>
+        <p class="text-slate-400 text-sm">أدخل قائمة طعامك يدوياً أو استوردها تلقائياً من ملف PDF أو Excel.</p>
+      </div>
+      <div class="text-center">
+        <div class="w-14 h-14 bg-sky-600 rounded-2xl flex items-center justify-center text-white font-bold text-xl mx-auto mb-4">3</div>
+        <h3 class="text-white font-semibold mb-2">وصّل قنواتك</h3>
+        <p class="text-slate-400 text-sm">اربط حسابات انستغرام وفيسبوك. البوت يبدأ العمل فوراً.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PRICING ─────────────────────────────────────────────── -->
+<section class="py-20 px-4">
+  <div class="max-w-5xl mx-auto">
+    <div class="text-center mb-14">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-3">خطط بسيطة وشفافة</h2>
+      <p class="text-slate-400">ابدأ مجاناً وطوّر خطتك عند النمو</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+
+      <!-- Trial -->
+      <div class="card rounded-2xl p-6 transition">
+        <div class="text-green-400 font-bold text-sm mb-1">تجريبي</div>
+        <div class="text-3xl font-extrabold text-white mb-1">مجاني</div>
+        <div class="text-slate-500 text-xs mb-5">14 يوم</div>
+        <ul class="space-y-2 text-sm text-slate-400 mb-6">
+          <li class="flex items-center gap-2"><span class="text-green-400">✓</span> 10 منتجات</li>
+          <li class="flex items-center gap-2"><span class="text-green-400">✓</span> قناة واحدة</li>
+          <li class="flex items-center gap-2"><span class="text-green-400">✓</span> بوت ذكاء اصطناعي</li>
+          <li class="flex items-center gap-2"><span class="text-green-400">✓</span> 2 موظفين</li>
+        </ul>
+        <a href="/register?plan=trial" class="block text-center bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold py-2.5 rounded-xl transition">ابدأ مجاناً</a>
+      </div>
+
+      <!-- Starter -->
+      <div class="card rounded-2xl p-6 transition">
+        <div class="text-blue-400 font-bold text-sm mb-1">ستارتر</div>
+        <div class="text-3xl font-extrabold text-white mb-1">$29</div>
+        <div class="text-slate-500 text-xs mb-5">شهرياً</div>
+        <ul class="space-y-2 text-sm text-slate-400 mb-6">
+          <li class="flex items-center gap-2"><span class="text-blue-400">✓</span> 50 منتج</li>
+          <li class="flex items-center gap-2"><span class="text-blue-400">✓</span> قناتان</li>
+          <li class="flex items-center gap-2"><span class="text-blue-400">✓</span> بوت ذكاء اصطناعي</li>
+          <li class="flex items-center gap-2"><span class="text-blue-400">✓</span> 5 موظفين</li>
+        </ul>
+        <a href="/register?plan=starter" class="block text-center bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-sm font-semibold py-2.5 rounded-xl transition">اشترك الآن</a>
+      </div>
+
+      <!-- Professional (popular) -->
+      <div class="plan-popular card rounded-2xl p-6 transition relative">
+        <div class="absolute -top-3 right-4 bg-indigo-600 text-white text-xs font-bold px-3 py-1 rounded-full">الأكثر شيوعاً</div>
+        <div class="text-purple-400 font-bold text-sm mb-1">احترافي</div>
+        <div class="text-3xl font-extrabold text-white mb-1">$79</div>
+        <div class="text-slate-500 text-xs mb-5">شهرياً</div>
+        <ul class="space-y-2 text-sm text-slate-400 mb-6">
+          <li class="flex items-center gap-2"><span class="text-purple-400">✓</span> 200 منتج</li>
+          <li class="flex items-center gap-2"><span class="text-purple-400">✓</span> 4 قنوات</li>
+          <li class="flex items-center gap-2"><span class="text-purple-400">✓</span> بوت متقدم + تدريب</li>
+          <li class="flex items-center gap-2"><span class="text-purple-400">✓</span> 15 موظف</li>
+        </ul>
+        <a href="/register?plan=professional" class="block text-center bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold py-2.5 rounded-xl transition">اشترك الآن</a>
+      </div>
+
+      <!-- Enterprise -->
+      <div class="card rounded-2xl p-6 transition">
+        <div class="text-orange-400 font-bold text-sm mb-1">مؤسسي</div>
+        <div class="text-3xl font-extrabold text-white mb-1">$199</div>
+        <div class="text-slate-500 text-xs mb-5">شهرياً</div>
+        <ul class="space-y-2 text-sm text-slate-400 mb-6">
+          <li class="flex items-center gap-2"><span class="text-orange-400">✓</span> منتجات غير محدودة</li>
+          <li class="flex items-center gap-2"><span class="text-orange-400">✓</span> 10 قنوات</li>
+          <li class="flex items-center gap-2"><span class="text-orange-400">✓</span> دعم أولوية</li>
+          <li class="flex items-center gap-2"><span class="text-orange-400">✓</span> موظفون غير محدودون</li>
+        </ul>
+        <a href="/register?plan=enterprise" class="block text-center bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/30 text-orange-300 text-sm font-semibold py-2.5 rounded-xl transition">اشترك الآن</a>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ────────────────────────────────────────────────── -->
+<section class="py-20 px-4">
+  <div class="max-w-2xl mx-auto text-center">
+    <div class="bg-gradient-to-br from-indigo-600/20 to-purple-600/20 border border-indigo-500/20 rounded-3xl p-10">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">جاهز لتطوير مطعمك؟</h2>
+      <p class="text-slate-400 text-lg mb-8">انضم إلى مئات المطاعم التي تدير أعمالها بذكاء</p>
+      <a href="/register"
+        class="inline-block bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500
+               text-white font-bold px-10 py-4 rounded-2xl text-lg transition shadow-lg shadow-indigo-500/25">
+        ابدأ تجربتك المجانية ←
+      </a>
+      <p class="text-slate-500 text-sm mt-4">14 يوم مجاناً • بدون بطاقة ائتمان • إلغاء في أي وقت</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ──────────────────────────────────────────────── -->
+<footer class="border-t border-white/5 py-8 px-4">
+  <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-sm">🍽️</div>
+      <span id="footerName" class="text-white font-semibold text-sm">منصة المطاعم</span>
+    </div>
+    <div class="flex flex-wrap items-center justify-center gap-4 text-slate-500 text-sm">
+      <a id="waSupport" href="https://wa.me/9647710005018" target="_blank" class="hover:text-green-400 transition flex items-center gap-1">💬 واتساب</a>
+      <a href="/terms" class="hover:text-slate-300 transition">الشروط والأحكام</a>
+      <a href="/data-deletion" class="hover:text-slate-300 transition">حذف البيانات</a>
+      <a href="/register" class="hover:text-slate-300 transition">إنشاء حساب</a>
+      <a href="/login" class="hover:text-slate-300 transition">تسجيل الدخول</a>
+    </div>
+    <p id="footerCopy" class="text-slate-600 text-xs">© 2025 منصة المطاعم. جميع الحقوق محفوظة.</p>
+  </div>
+</footer>
+
+<script>
+  fetch('/api/platform/config')
+    .then(r => r.json())
+    .then(cfg => {
+      const name = cfg.platform_name || 'منصة المطاعم';
+      const year = new Date().getFullYear();
+      document.querySelectorAll('#headerName, #footerName').forEach(el => el.textContent = name);
+      document.title = name + ' — ابدأ مجاناً';
+      const copyEl = document.getElementById('footerCopy');
+      if (copyEl) copyEl.textContent = `© ${year} ${name}. جميع الحقوق محفوظة.`;
+      if (cfg.support_phone) {
+        const wa = document.getElementById('waSupport');
+        if (wa) wa.href = 'https://wa.me/' + cfg.support_phone;
+      }
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>

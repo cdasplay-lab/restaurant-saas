@@ -3,6 +3,9 @@ import uuid
 import json
 import logging
 import asyncio
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -29,6 +32,23 @@ import tempfile
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("restaurant-saas")
 
+# ── Sentry error monitoring ───────────────────────────────────────────────────
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            integrations=[StarletteIntegration(), FastApiIntegration()],
+            traces_sample_rate=0.05,
+            send_default_pii=False,
+        )
+        logger.info("[sentry] initialized")
+    except Exception as _se:
+        logger.warning(f"[sentry] init failed: {_se}")
+
 SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey_change_in_production_123456789")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
@@ -40,6 +60,37 @@ META_VERIFY_TOKEN  = os.getenv("META_VERIFY_TOKEN", "")
 # WhatsApp Embedded Signup Configuration ID (different from APP_ID)
 # Get from: Meta Business Manager → Apps → Your App → Facebook Login for Business → Create Configuration
 META_WA_CONFIG_ID  = os.getenv("META_WA_CONFIG_ID", "")
+
+# ── Email (SMTP) ──────────────────────────────────────────────────────────────
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
+
+
+def _send_email(to: str, subject: str, body_html: str) -> bool:
+    """Send HTML email via SMTP. Silently skips if SMTP not configured."""
+    if not SMTP_HOST or not SMTP_USER:
+        logger.debug(f"[email] SMTP not configured — skipped email to {to}")
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM
+        msg["To"] = to
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as srv:
+            srv.ehlo()
+            srv.starttls()
+            srv.login(SMTP_USER, SMTP_PASS)
+            srv.sendmail(SMTP_FROM, [to], msg.as_string())
+        logger.info(f"[email] sent to={to} subject={subject!r}")
+        return True
+    except Exception as exc:
+        logger.error(f"[email] failed to={to}: {exc}")
+        return False
+
 
 # ── Simple in-process rate limiter (no external dependency) ──────────────────
 import time as _time
@@ -2581,6 +2632,18 @@ async def register(request: Request, data: RegisterReq):
     finally:
         conn.close()
 
+    _btype_label = "الكافيه" if data.business_type == "cafe" else "المطعم"
+    _send_email(
+        data.email.lower().strip(),
+        f"مرحباً بك في منصة {data.restaurant_name.strip()} 🎉",
+        f"""<div dir="rtl" style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;background:#f8fafc;border-radius:12px">
+  <h2 style="color:#1e293b;margin-bottom:8px">أهلاً {data.owner_name.strip()} 👋</h2>
+  <p style="color:#475569;margin-bottom:8px">تم إنشاء حساب {_btype_label} <strong>{data.restaurant_name.strip()}</strong> بنجاح.</p>
+  <p style="color:#475569;margin-bottom:20px">يمكنك الآن إدارة منتجاتك، متابعة الطلبات، والتواصل مع عملائك عبر الذكاء الاصطناعي.</p>
+  <a href="{BASE_URL}/app" style="display:inline-block;background:#6366f1;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:600">ابدأ الآن</a>
+</div>"""
+    )
+
     token = create_token({"sub": uid, "restaurant_id": rid})
     return {
         "token": token,
@@ -2590,6 +2653,76 @@ async def register(request: Request, data: RegisterReq):
             "restaurant_name": data.restaurant_name.strip(), "plan": plan,
         },
     }
+
+
+class ForgotPasswordReq(BaseModel):
+    email: str
+
+
+class ResetPasswordReq(BaseModel):
+    token: str
+    password: str
+
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(request: Request, data: ForgotPasswordReq):
+    ip = request.client.host if request.client else "unknown"
+    if not _check_rate(ip, limit=3, window=300, scope="forgot"):
+        raise HTTPException(429, "طلبات كثيرة — حاول بعد 5 دقائق")
+    conn = database.get_db()
+    try:
+        user = conn.execute(
+            "SELECT id, name, email FROM users WHERE email=?",
+            (data.email.lower().strip(),)
+        ).fetchone()
+        if user:
+            conn.execute(
+                "UPDATE password_reset_tokens SET used=1 WHERE user_id=? AND used=0",
+                (user["id"],)
+            )
+            token = _secrets.token_urlsafe(32)
+            expires = (datetime.utcnow() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "INSERT INTO password_reset_tokens (id, user_id, token, expires_at) VALUES (?,?,?,?)",
+                (str(uuid.uuid4()), user["id"], token, expires)
+            )
+            conn.commit()
+            reset_url = f"{BASE_URL}/reset-password?token={token}"
+            _send_email(
+                user["email"],
+                "استعادة كلمة المرور — منصتك",
+                f"""<div dir="rtl" style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;background:#f8fafc;border-radius:12px">
+  <h2 style="color:#1e293b;margin-bottom:8px">مرحباً {user['name']} 👋</h2>
+  <p style="color:#475569;margin-bottom:20px">طلبت استعادة كلمة المرور. اضغط الزر أدناه لإعادة تعيينها:</p>
+  <a href="{reset_url}" style="display:inline-block;background:#6366f1;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:600;margin-bottom:20px">إعادة تعيين كلمة المرور</a>
+  <p style="color:#94a3b8;font-size:13px">الرابط صالح لمدة ساعة واحدة فقط.<br>إذا لم تطلب ذلك، تجاهل هذه الرسالة.</p>
+</div>"""
+            )
+    finally:
+        conn.close()
+    return {"message": "إذا كان البريد الإلكتروني مسجلاً، ستصلك رسالة خلال دقائق"}
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password_endpoint(data: ResetPasswordReq):
+    if len(data.password) < 6:
+        raise HTTPException(400, "كلمة المرور يجب أن تكون 6 أحرف على الأقل")
+    conn = database.get_db()
+    try:
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            "SELECT * FROM password_reset_tokens WHERE token=? AND used=0 AND expires_at > ?",
+            (data.token, now)
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "الرابط غير صالح أو منتهي الصلاحية")
+        pw_hash = _bcrypt.hashpw(data.password.encode(), _bcrypt.gensalt()).decode()
+        conn.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, row["user_id"]))
+        conn.execute("UPDATE password_reset_tokens SET used=1 WHERE id=?", (row["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "تم تغيير كلمة المرور بنجاح"}
 
 
 @app.get("/api/auth/me")
@@ -11764,6 +11897,15 @@ async def pwa_sw():
 
 @app.get("/")
 async def root():
+    landing = "public/landing.html"
+    if os.path.isfile(landing):
+        return FileResponse(landing)
+    return FileResponse("public/login.html")
+
+
+@app.get("/login")
+@app.get("/login.html")
+async def login_page():
     return FileResponse("public/login.html")
 
 
@@ -11776,6 +11918,11 @@ async def app_page():
 @app.get("/register.html")
 async def register_page():
     return FileResponse("public/register.html")
+
+
+@app.get("/reset-password")
+async def reset_password_page():
+    return FileResponse("public/reset-password.html")
 
 
 @app.get("/super/login")

@@ -17,6 +17,15 @@
   :root { --sidebar-w: 240px; }
   #sidebar { width: var(--sidebar-w); }
   #main { margin-right: var(--sidebar-w); }
+  /* ── Mobile sidebar ───────────────────────────── */
+  #sidebarOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 48; }
+  @media (max-width: 767px) {
+    #sidebar { transform: translateX(var(--sidebar-w)); transition: transform .25s ease; }
+    #sidebar.sidebar-open { transform: translateX(0); }
+    #main { margin-right: 0 !important; }
+    #sidebarOverlay.overlay-open { display: block; }
+    #hambBtn { display: flex !important; }
+  }
   .nav-item { transition: all .15s; }
   .nav-item.active { background: rgba(99,102,241,.2); color: #818cf8; }
   .nav-item:not(.active):hover { background: rgba(255,255,255,.05); }
@@ -178,6 +187,7 @@
 <body class="bg-slate-900 text-slate-200">
 
 <!-- ── SIDEBAR ──────────────────────────────────────────────── -->
+<div id="sidebarOverlay" onclick="closeSidebar()"></div>
 <aside id="sidebar" class="fixed top-0 right-0 h-full bg-slate-950 border-l border-slate-800 flex flex-col z-50">
   <div class="px-5 py-5 border-b border-slate-800">
     <div class="flex items-center gap-3">
@@ -272,8 +282,13 @@
 <main id="main" class="min-h-screen">
 
   <!-- Header -->
-  <header class="bg-slate-950 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
-    <h2 id="pageTitle" class="text-white font-semibold text-lg">لوحة التحكم</h2>
+  <header class="bg-slate-950 border-b border-slate-800 px-4 sm:px-6 py-4 flex items-center gap-3 justify-between sticky top-0 z-40">
+    <button id="hambBtn" onclick="toggleSidebar()"
+      class="hidden items-center justify-center w-9 h-9 flex-shrink-0 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition"
+      title="القائمة">
+      <i class="fa-solid fa-bars text-lg"></i>
+    </button>
+    <h2 id="pageTitle" class="text-white font-semibold text-lg flex-1">لوحة التحكم</h2>
     <div class="flex items-center gap-3">
       <div id="headerUrgent" class="hidden flex items-center gap-1.5 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-1.5">
         <i class="fa-solid fa-triangle-exclamation"></i>
@@ -2008,6 +2023,15 @@ const PAGES = {
   'ai-training': { title: 'تدريب الذكاء',  load: () => typeof loadAiTraining  === 'function' ? loadAiTraining()  : null },
 };
 
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('sidebar-open');
+  document.getElementById('sidebarOverlay').classList.toggle('overlay-open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('sidebar-open');
+  document.getElementById('sidebarOverlay').classList.remove('overlay-open');
+}
+
 function navigate(page) {
   if (!PAGES[page]) page = 'dashboard';
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -2018,6 +2042,7 @@ function navigate(page) {
   if (navLink) navLink.classList.add('active');
   safeSetText('pageTitle', PAGES[page].title);
   try { PAGES[page].load(); } catch(e) { console.error('[navigate] load error for', page, e); }
+  if (window.innerWidth < 768) closeSidebar();
 }
 
 window.addEventListener('hashchange', () => {
