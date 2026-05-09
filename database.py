@@ -145,6 +145,12 @@ class _PgConnection:
         sql = re.sub(r"strftime\('%Y-%m',\s*([^)]+)\)", r"to_char((\1)::timestamp, 'YYYY-MM')", sql)
         # strftime('%H', col) → to_char((col)::timestamp, 'HH24')
         sql = re.sub(r"strftime\('%H',\s*([^)]+)\)", r"to_char((\1)::timestamp, 'HH24')", sql)
+        # datetime('now', %s || ' days') → (NOW() + (%s || ' days')::interval)  [parameterized]
+        sql = re.sub(r"datetime\('now',\s*(%s)\s*\|\|\s*'([^']+)'\)", r"(NOW() + (\1 || '\2')::interval)", sql, flags=re.IGNORECASE)
+        # datetime('now', '-N unit') → (NOW() + INTERVAL '-N unit')
+        sql = re.sub(r"datetime\('now',\s*'([^']+)'\)", r"(NOW() + INTERVAL '\1')", sql, flags=re.IGNORECASE)
+        # datetime('now') → NOW()
+        sql = re.sub(r"datetime\('now'\)", "NOW()", sql, flags=re.IGNORECASE)
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql, params or [])
         return _PgCursor(cur)

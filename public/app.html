@@ -5489,7 +5489,7 @@ function openBranchModal(branch = null) {
       ${isEdit ? `<label class="flex items-center gap-2 cursor-pointer mt-1"><input type="checkbox" id="bActive" ${branch.is_active ? 'checked' : ''} class="rounded"><span class="text-slate-300 text-sm">فعّال</span></label>` : ''}
     </div>
     <div class="flex gap-2 mt-5">
-      <button onclick="saveBranch(${isEdit ? `'${branch.id}'` : 'null'})" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-lg">${isEdit ? 'حفظ التغييرات' : 'إضافة الفرع'}</button>
+      <button onclick="saveBranch(${isEdit ? "'" + branch.id + "'" : 'null'})" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-lg">${isEdit ? 'حفظ التغييرات' : 'إضافة الفرع'}</button>
       <button onclick="closeModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg">إلغاء</button>
     </div>
   `);
