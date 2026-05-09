@@ -3854,7 +3854,6 @@ async def upload_menu_image(
     file: UploadFile = File(...),
     user=Depends(require_role("owner", "manager")),
 ):
-    """Upload a menu section image to Supabase Storage and return the public URL."""
     from services import storage as _storage
 
     ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -3867,17 +3866,26 @@ async def upload_menu_image(
         raise HTTPException(400, "حجم الصورة يجب أن يكون أقل من 15 MB")
 
     fname = f"{uuid.uuid4()}{ext}"
-    storage_path = _storage.menu_image_path(user["restaurant_id"], fname)
 
-    public_url = _storage.upload_bytes(
-        content,
-        _storage.BUCKET_MENUS,
-        storage_path,
-        content_type=file.content_type or "image/jpeg",
-    )
+    # Try Supabase first
+    public_url = None
+    try:
+        storage_path = _storage.menu_image_path(user["restaurant_id"], fname)
+        public_url = _storage.upload_bytes(
+            content, _storage.BUCKET_MENUS, storage_path,
+            content_type=file.content_type or "image/jpeg",
+        )
+    except Exception as e:
+        logging.warning(f"Supabase upload failed, falling back to local: {e}")
 
+    # Fallback: save locally under uploads/menu-images/
     if not public_url:
-        return {"url": "", "message": "Supabase not configured — configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"}
+        local_dir = Path("uploads/menu-images")
+        local_dir.mkdir(parents=True, exist_ok=True)
+        local_path = local_dir / fname
+        local_path.write_bytes(content)
+        base = os.getenv("BASE_URL", "").rstrip("/")
+        public_url = f"{base}/uploads/menu-images/{fname}"
 
     return {"url": public_url}
 
@@ -11309,6 +11317,7 @@ if os.path.exists("public"):
 
 _UPLOAD_DIR = Path("uploads/payment_proofs")
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+Path("uploads/menu-images").mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
