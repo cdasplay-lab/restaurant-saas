@@ -49,8 +49,36 @@ if _SENTRY_DSN:
     except Exception as _se:
         logger.warning(f"[sentry] init failed: {_se}")
 
-SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey_change_in_production_123456789")
-ALGORITHM = "HS256"
+# ── JWT Secret — no unsafe fallback in production ─────────────────────────────
+_JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY", "")
+_UNSAFE_DEFAULTS = {
+    "supersecretkey_change_in_production_123456789",
+    "change_this_secret_in_production_minimum_32_chars",
+    "change_this_secret_123",
+    "your_jwt_secret_here",
+}
+_is_dev = os.getenv("ENVIRONMENT", "development") in ("development", "dev", "test", "testing")
+
+if not _JWT_SECRET:
+    if _is_dev:
+        _JWT_SECRET = "dev_only_insecure_jwt_secret_do_not_use_in_production"
+        logger.warning("⚠️  JWT_SECRET not set — using insecure dev-only secret. NEVER use in production!")
+    else:
+        raise RuntimeError(
+            "FATAL: JWT_SECRET (or SECRET_KEY) must be set in production. "
+            "Generate one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+        )
+elif _JWT_SECRET in _UNSAFE_DEFAULTS:
+    if _is_dev:
+        logger.warning("⚠️  JWT_SECRET uses a known default placeholder — replace before deploying!")
+    else:
+        raise RuntimeError(
+            "FATAL: JWT_SECRET uses a known unsafe default. "
+            "Generate a real one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+        )
+
+SECRET_KEY = _JWT_SECRET
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL        = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
@@ -672,8 +700,56 @@ def _run_super_admin_password_reset():
         logger.error(f"Super admin password reset failed: {_e}")
 
 
+# ── Production Startup Validation ────────────────────────────────────────────
+def _validate_production_env() -> None:
+    """Validate critical env vars in production. Raises RuntimeError on blockers."""
+    _env = os.getenv("ENVIRONMENT", "development").lower()
+    _is_production = _env in ("production", "prod") or bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+    if not _is_production:
+        logger.info(f"[startup] ENVIRONMENT={_env} — skipping production validation")
+        return
+
+    blockers: list = []
+
+    # 1. JWT_SECRET must be set and not a known default
+    _jwt = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY", "")
+    _unsafe_defaults = {
+        "supersecretkey_change_in_production_123456789",
+        "change_this_secret_in_production_minimum_32_chars",
+        "change_this_secret_123",
+        "your_jwt_secret_here",
+    }
+    if not _jwt:
+        blockers.append("JWT_SECRET (or SECRET_KEY) must be set in production")
+    elif _jwt in _unsafe_defaults:
+        blockers.append("JWT_SECRET uses a known unsafe default — generate a real one")
+
+    # 2. BASE_URL must not be localhost
+    _base = os.getenv("BASE_URL", "")
+    if not _base or "localhost" in _base or _base.startswith("http://127."):
+        blockers.append("BASE_URL must not be localhost in production — webhooks will not work")
+
+    # 3. Warn if using SQLite in production
+    if not os.getenv("DATABASE_URL"):
+        logger.warning("⚠️  DATABASE_URL not set — using SQLite in production is not recommended")
+
+    # 4. ALLOWED_ORIGINS must not be "*" in production
+    _origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if not _origins or _origins == "*":
+        logger.warning("⚠️  ALLOWED_ORIGINS not set or '*' — CORS is open to all origins in production")
+
+    if blockers:
+        for b in blockers:
+            logger.error(f"🚫 PRODUCTION BLOCKER: {b}")
+        raise RuntimeError(f"Production startup blocked: {'; '.join(blockers)}")
+
+    logger.info("[startup] Production env validation passed ✅")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validate_production_env()
     database.init_db()
     _run_super_admin_password_reset()
     asyncio.create_task(_subscription_cleanup_job())
@@ -690,13 +766,23 @@ _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 if _raw_origins.strip() in ("", "*"):
     # dev / unset — wildcard origins cannot be combined with allow_credentials=True
     # in Starlette 0.37+ (raises ValueError). Use wildcard + credentials=False instead.
-    ALLOWED_ORIGINS = ["*"]
-    _CORS_CREDENTIALS = False
-    if os.getenv("NODE_ENV") == "production" or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RENDER"):
+    _is_prod_env = (
+        os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+        or os.getenv("NODE_ENV") == "production"
+        or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+        or bool(os.getenv("RENDER"))
+    )
+    if _is_prod_env:
         logger.warning(
             "⚠️  ALLOWED_ORIGINS=* في بيئة إنتاج — اضبط المتغير في Railway/Render:\n"
             "    ALLOWED_ORIGINS=https://yourapp.netlify.app,https://yourdomain.com"
         )
+        # In production: refuse wildcard — require explicit origins
+        ALLOWED_ORIGINS = []
+        _CORS_CREDENTIALS = False
+    else:
+        ALLOWED_ORIGINS = ["*"]
+        _CORS_CREDENTIALS = False
 else:
     ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
     _CORS_CREDENTIALS = True   # safe: specific origins + credentials

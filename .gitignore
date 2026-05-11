@@ -1,17 +1,50 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
 .env
 .env.local
+.env.*.local
+
+# ── Database files (use DATABASE_URL in production) ─────────────────────────
 *.db
 *.sqlite
 *.db-journal
 *.db-wal
 *.db-shm
+
+# ── Uploads (use Supabase in production) ────────────────────────────────────
 uploads/
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
+*.pyc
+*.pyo
 .venv/
+venv/
+*.egg-info/
+
+# ── Node.js ──────────────────────────────────────────────────────────────────
 node_modules/
+
+# ── Build output ─────────────────────────────────────────────────────────────
 dist/
 build/
+
+# ── Backup files ─────────────────────────────────────────────────────────────
 *.bak
+
+# ── OS files ─────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+
+# ── Mobile (Capacitor) ──────────────────────────────────────────────────────
 android/
 ios/
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── Claude settings (per-developer, contains local paths and permissions) ─────
+.claude/settings.json
+.claude/settings.local.json
+
+archive/db-backup/
