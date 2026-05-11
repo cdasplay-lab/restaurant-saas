@@ -1,0 +1,94 @@
+NUMBER 11 — Full Analytics Audit
+Run: 7113238 — 2026-04-25 13:33
+======================================================================
+✅ AUTH R1 token obtained
+✅ AUTH R2 token obtained
+✅ R1 /api/analytics/overview returns 200
+✅ R2 /api/analytics/overview returns 200
+✅ R1 /api/analytics/orders returns 200
+✅ R2 /api/analytics/orders returns 200
+✅ R1 /api/analytics/revenue returns 200
+✅ R2 /api/analytics/revenue returns 200
+✅ R1 /api/analytics/conversations returns 200
+✅ R2 /api/analytics/conversations returns 200
+✅ R1 /api/analytics/customers returns 200
+✅ R2 /api/analytics/customers returns 200
+✅ R1 /api/analytics/products returns 200
+✅ R2 /api/analytics/products returns 200
+✅ R1 /api/analytics/channels returns 200
+✅ R2 /api/analytics/channels returns 200
+✅ R1 /api/analytics/bot-performance returns 200
+✅ R2 /api/analytics/bot-performance returns 200
+✅ R1 /api/analytics/recent-activity returns 200
+✅ R2 /api/analytics/recent-activity returns 200
+✅ R1 /api/analytics/summary returns 200
+✅ R2 /api/analytics/summary returns 200
+✅ R1 /api/analytics/weekly-revenue returns 200
+✅ R2 /api/analytics/weekly-revenue returns 200
+✅ R1 /api/analytics/channel-breakdown returns 200
+✅ R2 /api/analytics/channel-breakdown returns 200
+✅ R1 /api/analytics/top-products returns 200
+✅ R2 /api/analytics/top-products returns 200
+✅ R1 /api/analytics/top-customers returns 200
+✅ R2 /api/analytics/top-customers returns 200
+✅ R1 /api/analytics/bot-stats returns 200
+✅ R2 /api/analytics/bot-stats returns 200
+✅ R1 /api/analytics/order-funnel returns 200
+✅ R2 /api/analytics/order-funnel returns 200
+✅ ISOLATION-01 R1 total_orders == 3
+✅ ISOLATION-01 R2 total_orders == 1
+✅ ISOLATION-02 R1 revenue == 34000
+✅ ISOLATION-02 R2 revenue == 8000
+✅ ISOLATION-02 R2 revenue < R1 revenue
+✅ ISOLATION-03 R1 customers == 2
+✅ ISOLATION-03 R2 customers == 1
+✅ ISOLATION-04 R1 conversations == 3
+✅ ISOLATION-04 R2 conversations == 1
+✅ ISOLATION-05 R1 channels = {telegram,whatsapp}
+✅ ISOLATION-05 R2 channels = {instagram}
+✅ ISOLATION-05 R1 has NO instagram orders
+✅ ISOLATION-05 R2 has NO telegram orders
+✅ ISOLATION-06 R1 products do NOT include شاورما (R2's)
+✅ ISOLATION-06 R2 products do NOT include برجر (R1's)
+✅ ISOLATION-07 R1 human_mode == 1
+✅ ISOLATION-07 R2 human_mode == 0
+✅ ISOLATION-08 R1 unread convs == 1 (whatsapp has 2 msgs)
+✅ ISOLATION-08 R2 unread convs == 1 (instagram has 1 msg)
+✅ ISOLATION-09 R1 top products include زينگر
+✅ ISOLATION-09 R2 top products include شاورما
+✅ ISOLATION-09 R1 top products do NOT include شاورما
+✅ ISOLATION-10 bot-performance R1 has bot_reply_count
+✅ ISOLATION-10 bot-performance values are non-negative
+✅ INCREMENT-01 R1 total_orders increased by 1
+✅ INCREMENT-02 R2 total_orders unchanged
+✅ INCREMENT-03 R1 revenue increased by 15000
+✅ INCREMENT-04 R2 revenue unchanged after R1 order
+✅ INCREMENT-05 R1 facebook conversations == 1
+✅ INCREMENT-06 R2 has no facebook conversations
+✅ EMPTY-01 overview returns zeros (not None)
+✅ EMPTY-02 orders returns zeros
+✅ EMPTY-03 revenue returns zeros
+✅ EMPTY-04 conversations returns zeros
+✅ EMPTY-05 channels returns empty array
+✅ EMPTY-06 products returns zero total
+✅ EMPTY-07 bot-performance returns zeros
+✅ EMPTY-08 weekly revenue is 7 zero-filled days
+✅ NOHARD-01 R1 and R2 total_orders are different
+✅ NOHARD-02 R1 revenue > R2 revenue
+✅ NOHARD-03 conversion_rate is not hardcoded 68
+✅ NOHARD-04 bot success_rate is not hardcoded 87
+✅ NOHARD-05 no hardcoded satisfaction=4.7 field
+✅ METRIC-01 R1 pending_orders == 1
+✅ METRIC-02 R1 completed_orders == 1
+✅ METRIC-03 R1 cancelled_orders == 1
+✅ METRIC-04 R1 top product is زينگر (2 ordered)
+✅ METRIC-05 R1 human_mode_count == 1
+✅ METRIC-06 R1 bot_mode_count == 2
+✅ METRIC-07 products items include revenue field
+✅ METRIC-08 recent-activity has recent_orders
+✅ METRIC-09 recent-activity has recent_conversations
+✅ METRIC-10 bot-performance has all required fields
+
+======================================================================
+Total: 87/87 (100%)
+✅ NUMBER 11 CLOSED

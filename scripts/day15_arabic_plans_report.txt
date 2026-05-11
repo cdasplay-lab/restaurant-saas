@@ -1,0 +1,64 @@
+Arabic Plans Check  62/62
+
+✅ 1.1 all 4 default Arabic plan codes exist — found={'test_plan_7212273', 'custom_7212151', 'test_plan_7211232', 'test_plan_7212292', 'custom_7212311', 'enterprise', 'custom_7212273', 'starter', 'test_plan_7212280', 'test_plan_7212312', 'test_plan_7212209', 'trial', 'custom_7212292', 'test_plan_7212287', 'custom_7150721', 'test_plan_7229010', 'custom_7229009', 'custom_7212209', 'custom_7212280', 'custom_7212196', 'test_plan_7150721', 'custom_7212312', 'professional', 'custom_7212287', 'custom_7229010', 'custom_7211232', 'custom_7212187', 'free', 'test_plan_7212196'}
+✅ 1.2 professional: has name_ar — الخطة الاحترافية
+✅ 1.3 professional: has Arabic description
+✅ 1.4 professional: has features_json list — ["ربط عدة قنوات (Telegram/WhatsApp/Instagram/Facebook)","ردود ذكاء اصطناعي متقدمة","ذاكرة للزبائن والطلبات السابقة","اقتراحات بيع ورفع قيمة الطلب","إدارة الطلبات كاملة","الفويس","فهم الصور والمنيو","الرد على الستوري","تحليلات كاملة","متابعة أداء القنوات","تحويل للموظف","تنبيهات ومتابعة حالة القنوات"]
+✅ 1.5 professional: has excluded_features_json list — ["دعم مخصص 24/7","تطويرات خاصة حسب الطلب","فروع غير محدودة","SLA خاص"]
+✅ 1.2 free: has name_ar — الخطة المجانية
+✅ 1.3 free: has Arabic description
+✅ 1.4 free: has features_json list — ["دخول إلى لوحة التحكم","إضافة عدد محدود من المنتجات","تجربة شكل المنصة","عرض إعدادات المطعم الأساسية"]
+✅ 1.5 free: has excluded_features_json list — ["ربط قنوات التواصل","ردود الذكاء الاصطناعي","استقبال طلبات حقيقية","التحليلات المتقدمة","الفويس والصور والستوري","دعم فني مخصص"]
+✅ 1.2 enterprise: has name_ar — خطة المؤسسات
+✅ 1.3 enterprise: has Arabic description
+✅ 1.4 enterprise: has features_json list — ["كل مزايا الخطة الاحترافية","حدود أعلى للمحادثات والمنتجات","دعم أولوية","مساعدة في الإعداد والربط","أكثر من فرع إذا مدعوم","إعدادات خاصة حسب المطعم","تقارير متقدمة","صلاحيات فريق أوسع","متابعة تشغيل أقوى","إمكانية تخصيص بعض الردود والقواعد"]
+✅ 1.5 enterprise: has excluded_features_json list — ["أي ميزة خارج الاتفاق المكتوب","تكاليف بوابات الدفع الخارجية إن وجدت"]
+✅ 1.2 starter: has name_ar — الخطة الأساسية
+✅ 1.3 starter: has Arabic description
+✅ 1.4 starter: has features_json list — ["قناة واحدة","AI أساسي","100 منتج","دعم عبر البريد"]
+✅ 1.5 starter: has excluded_features_json list — ["تعدد القنوات","الفويس","الستوري"]
+✅ 2.1 professional.is_recommended = 1
+✅ 2.2 professional.badge set — الأكثر طلبًا
+✅ 2.3 professional.badge_text_ar set
+✅ 3.1 free.max_channels = 0
+✅ 3.2 free.ai_enabled = 0
+✅ 3.3 free.max_conversations_per_month = 0
+✅ 4.1 SA: list plans 200
+✅ 4.2 starter plan in SA list
+✅ 4.3 SA: PATCH plan returns ok
+✅ 4.4 name_ar updated in DB — {'name_ar': 'الأساسية-7230060', 'price': 9.99, 'currency': 'USD'}
+✅ 4.5 price updated in DB — {'name_ar': 'الأساسية-7230060', 'price': 9.99, 'currency': 'USD'}
+✅ 5.1 included features updated (4 items) — ['قناة واحدة', 'AI أساسي', '100 منتج', 'دعم عبر البريد']
+✅ 5.2 excluded features updated (3 items) — ['تعدد القنوات', 'الفويس', 'الستوري']
+✅ 6.1 billing/plans returns 200
+✅ 6.2 at least 1 plan returned — count=23
+✅ 6.3 starter visible to restaurant
+✅ 6.4 display_name field present
+✅ 6.5 features array present
+✅ 6.6 excluded_features array present
+✅ 7.1 hidden plan not visible to restaurant — codes=['free', 'professional', 'enterprise', 'custom_7150721', 'custom_7211232', 'custom_7212196', 'custom_7212209', 'custom_7212273', 'custom_7212287', 'custom_7212292', 'custom_7212312', 'custom_7229010', 'test_plan_7150721', 'test_plan_7211232', 'test_plan_7212196', 'test_plan_7212209', 'test_plan_7212273', 'test_plan_7212280', 'test_plan_7212287', 'test_plan_7212292', 'test_plan_7212312', 'test_plan_7229010']
+✅ 8.1 inactive plan not visible to restaurant — codes=['free', 'professional', 'enterprise', 'custom_7150721', 'custom_7211232', 'custom_7212196', 'custom_7212209', 'custom_7212273', 'custom_7212287', 'custom_7212292', 'custom_7212312', 'custom_7229010', 'test_plan_7150721', 'test_plan_7211232', 'test_plan_7212196', 'test_plan_7212209', 'test_plan_7212273', 'test_plan_7212280', 'test_plan_7212287', 'test_plan_7212292', 'test_plan_7212312', 'test_plan_7229010']
+✅ 9.1 restaurant owner cannot PATCH plans (403) — got response with restaurant token — should have been 403
+✅ 9.2 status 403 for restaurant owner patching plans — got 403
+✅ 10.1 SA creates plan 200
+✅ 10.2 new plan name_ar in DB
+✅ 10.3 new plan ai_enabled=1 in DB
+✅ 11.1 proof submit with plan_id returns 200 — HTTP 200: {"ok":true,"request_id":"8f1ef616-85f1-431c-8c23-f4cf98ab13f6","status":"pending","storage_mode":"local","message":"تم استلام طلب الدفع — سيراجعه المشرف قريباً","proof_url":"/uploads/payment_proofs/8f
+✅ 11.2 proof response has request_id — {'ok': True, 'request_id': '8f1ef616-85f1-431c-8c23-f4cf98ab13f6', 'status': 'pending', 'storage_mod
+✅ 11.3 proof stored with plan_id
+✅ 11.4 proof amount auto-filled from plan price — 15.0
+✅ 11.5 proof currency auto-filled from plan
+✅ 12.1 approve returns ok
+✅ 12.2 subscription created after approval
+✅ 12.3 subscription plan code matches — custom_7230060
+✅ 13.1 free plan ai_enabled=0 in DB
+✅ 13.2 free plan max_channels=0 in DB
+✅ 13.3 professional voice_enabled=1
+✅ 13.4 professional story_reply_enabled=1
+✅ 13.5 professional advanced_analytics_enabled=1
+✅ 13.6 enterprise priority_support_enabled=1
+✅ 13.7 enterprise setup_assistance_enabled=1
+✅ 14.1 professional display_name is Arabic — الخطة الاحترافية
+✅ 14.2 professional display_badge present — الأكثر طلبًا
+✅ 14.3 professional is_recommended=1 in API — 1
+✅ 15.1 R2 plan unchanged after R1 operations — r1={'plan': 'custom_7230060'}, r2={'plan': 'free'}

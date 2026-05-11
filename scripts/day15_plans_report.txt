@@ -1,0 +1,73 @@
+✅ SETUP tokens
+✅ SETUP super_admin token
+✅ A.1 subscription_plans table exists and has rows
+✅ A.2 'free' plan seeded
+✅ A.3 'starter' plan seeded
+✅ A.4 'professional' plan seeded
+✅ A.5 'enterprise' plan seeded
+✅ A.6 starter: price > 0 (after SA set)
+✅ A.7 starter: is_public=1
+✅ A.8 starter: duration_days=30
+✅ A.9 starter: max_products > 0
+✅ A.10 free: is_public=1 (visible for comparison)
+✅ B.1 create plan returns 200
+✅ B.2 create plan returns id
+✅ B.3 plan stored in DB
+✅ B.4 plan: price=9999
+✅ B.5 plan: duration_days=45
+✅ B.6 plan: max_products=30
+✅ B.7 edit plan returns 200
+✅ B.8 edit: price updated to 8888
+✅ B.9 edit: max_products updated to 25
+✅ B.10 super admin list includes new plan
+✅ B.11 disable plan returns 200
+✅ B.12 disabled plan: is_active=0
+✅ C.1 billing/plans returns 200
+✅ C.2 billing/plans returns list
+✅ C.3 starter visible to restaurant
+✅ C.4 professional visible to restaurant
+✅ C.5 free IS visible (is_public=1, shown for comparison)
+✅ C.6 disabled test plan NOT visible
+✅ C.7 plan has id field
+✅ C.8 plan has name field
+✅ C.9 plan has price field
+✅ C.10 plan has duration_days field
+✅ C.11 plan has features array
+✅ D.1 disabled plan_id rejected (400): got 400
+✅ D.2 starter plan_id found in DB
+✅ D.3 proof submit with plan_id returns 200: {"ok":true,"request_id":"54644800-006b-4f55-9543-551f59ccd286","status":"pending","storage_mode":"none","message":"تم استلام طلب الدفع — سيراجعه المشرف قريباً","proof_url":""}
+✅ D.4 request_id returned
+✅ D.5 DB row: plan=starter
+✅ D.6 DB row: plan_id stored
+✅ D.7 DB row: amount auto-filled from plan
+✅ D.8 DB row: currency matches plan
+✅ D.9 legacy plan code still works: {"ok":true,"request_id":"2a63dd84-9ba6-4361-bc1c-f6726a756b94","status":"pending","storage_mode":"none","message":"تم استلام طلب الدفع — سيراجعه المشرف قريباً","proof_url":""}
+✅ D.10 invalid plan code rejected (400): got 400
+✅ E.1 approve returns 200
+✅ E.2 plan=starter in response
+✅ E.3 subscription.status=active
+✅ E.4 subscription.plan=starter
+✅ E.5 period_end non-empty
+✅ E.6 period_end ~30 days (from plan.duration_days): days_left=29
+✅ E.7 features.max_products matches plan
+✅ E.8 features.channels_allowed matches plan
+✅ F.1 custom plan created
+✅ F.2 R2 proof with custom plan returns 200: {"ok":true,"request_id":"99bdd085-ed72-42fa-95ba-4d17fe2b1570","status":"pending","storage_mode":"no
+✅ F.3 R2 subscription active
+✅ F.4 R2 plan = custom plan code
+✅ F.5 R2 max_products=77 from DB plan
+✅ F.6 R2 channels=6 from DB plan
+✅ F.7 R2 period_end ~60 days (from plan.duration_days=60): days_left=59
+✅ F.8 R1 plan unchanged (starter)
+✅ G.1 restaurant cannot create plans (403)
+✅ G.2 restaurant cannot edit plans (403)
+✅ G.3 restaurant cannot disable plans (403)
+✅ G.4 restaurant cannot list all plans via super endpoint (403)
+✅ H.1 plan_created logged in billing_audit_logs
+✅ H.2 plan_updated logged
+✅ H.3 plan_disabled logged
+✅ I.1 all plans have DB id: plans=['plan_free', 'plan_starter', 'plan_professional', 'plan_enterprise', 'cd8fb3a5-1bbd-46f6-99f9-084bb5eef1bf', '75c3dd4e-69b7-4d28-a018-19e683bdec39', 'c81b19bb-f9e5-4dd8-bbc5-048d33d83745', '4c0243e7-711b-482d-a41e-3c9ec2c18a6f', 'df3b1d83-2032-4548-af10-788be8b67b38', '078b19ed-474f-4fcb-bdfb-302436cd7d8b', 'dd3204a3-8e8b-4d75-9779-912d2efb5bdd', 'f3931bf1-64d3-423f-a894-3e2314fe99bf', 'eba355e0-96eb-4637-a70f-d93054274bfb', '7d83a525-05d5-4620-aea8-e27d008fa5e2', '684bbc1f-e3af-4108-a7ac-693bafbb41c6', '0df8df7c-26f3-4fc4-a6fa-4877f641ea74', 'e9edb7d1-5f2c-4428-8a11-2a497d47879c', '97129026-d784-4259-bc6a-d70ab2899d82', '425c516c-bc8f-45da-8b23-875fc4628868', 'a850439c-3234-41cf-9b65-c10a7be70dfa', 'd8c87cb7-0d87-4fb1-a2c9-dad2c9c3e262', '0e938a2a-13fe-4a83-b989-dd9777e36101', 'a009ba21-c946-4226-9b0f-11bd0f7baa28', 'df7c0dbb-5c92-4d91-9610-3f476a1d83e1', '9501862c-8bc7-4878-b2ff-b6f2745adcaf']
+✅ I.2 my-payment-requests includes plan_name
+✅ I.3 plan_name matches starter name
+
+Total: 71/71

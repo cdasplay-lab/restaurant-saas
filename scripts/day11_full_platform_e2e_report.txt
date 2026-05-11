@@ -1,0 +1,275 @@
+NUMBER 11 — Full Platform E2E Simulation Matrix
+Run: 7128113 — 2026-04-25 17:44
+4 channels × 3 scenarios = 12 simulations
+================================================================================
+
+SCENARIOS EXECUTED:
+  telegram/A
+  telegram/B
+  telegram/C
+  whatsapp/A
+  whatsapp/B
+  whatsapp/C
+  instagram/A
+  instagram/B
+  instagram/C
+  facebook/A
+  facebook/B
+  facebook/C
+
+CHANNEL-BY-CHANNEL PASS/FAIL:
+Scenario            A:order    A:channel     A:bot      B:dedup    C:handoff  
+------------------------------------------------------------------------------
+telegram/A             ✅           ✅           ✅           ✅           ✅      
+telegram/B             ✅           ✅           ✅           ✅           ✅      
+telegram/C             ✅           ✅           ✅           ✅           ✅      
+whatsapp/A             ✅           ✅           ✅           ✅           ✅      
+whatsapp/B             ✅           ✅           ✅           ✅           ✅      
+whatsapp/C             ✅           ✅           ✅           ✅           ✅      
+instagram/A            ✅           ✅           ✅           ✅           ✅      
+instagram/B            ✅           ✅           ✅           ✅           ✅      
+instagram/C            ✅           ✅           ✅           ✅           ✅      
+facebook/A             ✅           ✅           ✅           ✅           ✅      
+facebook/B             ✅           ✅           ✅           ✅           ✅      
+facebook/C             ✅           ✅           ✅           ✅           ✅      
+
+DATABASE PROOF:
+  R1: orders=2 custs=4 convs=4 msgs=46 outbound=22 dedup_entries=24
+  R2: orders=2 custs=4 convs=4 msgs=46 outbound=22 dedup_entries=24
+
+API PROOF:
+  R1 /api/orders: 2 rows
+  R2 /api/orders: 2 rows
+
+ANALYTICS PROOF:
+  R1 overview: orders=2 convs=4 custs=4 revenue=22000.0 human_mode=2
+  R2 overview: orders=2 convs=4 custs=4 revenue=19000.0
+  R1 revenue: total=22000.0 weekly_days=7
+  R1 channels: ['telegram', 'whatsapp']
+  R2 channels: ['facebook', 'instagram']
+
+ORDERS PER CHANNEL:
+  telegram: order_id=ac70b180 method=AUTO
+  whatsapp: order_id=eb254a29 method=AUTO
+  instagram: order_id=9b2a5d1f method=AUTO
+  facebook: order_id=a20fb1dc method=AUTO
+
+CROSS-TENANT ISOLATION:
+  R1 products (API): ['برجر كلاسيك', 'زينگر']
+  R2 products (API): ['دجاج مشوي', 'شاورما دجاج']
+  R1/R2 product overlap: []
+
+DUPLICATE SAFETY:
+  telegram: orders_per_conv=1 (must be 1) dedup_entries=12
+  whatsapp: orders_per_conv=1 (must be 1) dedup_entries=12
+  instagram: orders_per_conv=1 (must be 1) dedup_entries=12
+  facebook: orders_per_conv=1 (must be 1) dedup_entries=12
+
+ROOT CAUSES FOUND:
+  1. Telegram + WhatsApp handle_X() did not pass channel= to _find_or_create_conversation()
+     → conversations had channel='' instead of 'telegram'/'whatsapp'
+     → FIXED in services/webhooks.py
+  2. analytics_conversations + analytics_customers called q() after conn.close()
+     → HTTP 500 on those endpoints
+     → FIXED in main.py
+
+ALL CHECK RESULTS:
+================================================================================
+✅ SETUP R1 token
+✅ SETUP R2 token
+✅ telegram/A 1.event_ids logged
+✅ telegram/A 2.conversation exists
+✅ telegram/A 2.conversation.restaurant_id
+✅ telegram/A 2.conversation.channel
+✅ telegram/A 2.conversation.customer_id set
+✅ telegram/A 3.customer created
+✅ telegram/A 3.customer.restaurant_id
+✅ telegram/A 3.customer.platform
+✅ telegram/A 4.customer messages stored
+✅ telegram/A 4.bot replies stored
+✅ telegram/A 4.bot replies non-empty
+✅ telegram/A 4.no wrong-restaurant products in replies
+✅ telegram/A 4.outbound_messages logged
+✅ telegram/A 5.order auto-created by bot
+✅ telegram/A 5.order.restaurant_id correct
+✅ telegram/A 5.order.conversation_id set
+✅ telegram/A 5.order.customer_id set
+✅ telegram/A 5.order.channel correct
+✅ telegram/A 5.order_items stored
+✅ telegram/A 5.order.total correct
+✅ whatsapp/A 1.event_ids logged
+✅ whatsapp/A 2.conversation exists
+✅ whatsapp/A 2.conversation.restaurant_id
+✅ whatsapp/A 2.conversation.channel
+✅ whatsapp/A 2.conversation.customer_id set
+✅ whatsapp/A 3.customer created
+✅ whatsapp/A 3.customer.restaurant_id
+✅ whatsapp/A 3.customer.platform
+✅ whatsapp/A 4.customer messages stored
+✅ whatsapp/A 4.bot replies stored
+✅ whatsapp/A 4.bot replies non-empty
+✅ whatsapp/A 4.no wrong-restaurant products in replies
+✅ whatsapp/A 4.outbound_messages logged
+✅ whatsapp/A 5.order auto-created by bot
+✅ whatsapp/A 5.order.restaurant_id correct
+✅ whatsapp/A 5.order.conversation_id set
+✅ whatsapp/A 5.order.customer_id set
+✅ whatsapp/A 5.order.channel correct
+✅ whatsapp/A 5.order_items stored
+✅ whatsapp/A 5.order.total correct
+✅ instagram/A 1.event_ids logged
+✅ instagram/A 2.conversation exists
+✅ instagram/A 2.conversation.restaurant_id
+✅ instagram/A 2.conversation.channel
+✅ instagram/A 2.conversation.customer_id set
+✅ instagram/A 3.customer created
+✅ instagram/A 3.customer.restaurant_id
+✅ instagram/A 3.customer.platform
+✅ instagram/A 4.customer messages stored
+✅ instagram/A 4.bot replies stored
+✅ instagram/A 4.bot replies non-empty
+✅ instagram/A 4.no wrong-restaurant products in replies
+✅ instagram/A 4.outbound_messages logged
+✅ instagram/A 5.order auto-created by bot
+✅ instagram/A 5.order.restaurant_id correct
+✅ instagram/A 5.order.conversation_id set
+✅ instagram/A 5.order.customer_id set
+✅ instagram/A 5.order.channel correct
+✅ instagram/A 5.order_items stored
+✅ instagram/A 5.order.total correct
+✅ facebook/A 1.event_ids logged
+✅ facebook/A 2.conversation exists
+✅ facebook/A 2.conversation.restaurant_id
+✅ facebook/A 2.conversation.channel
+✅ facebook/A 2.conversation.customer_id set
+✅ facebook/A 3.customer created
+✅ facebook/A 3.customer.restaurant_id
+✅ facebook/A 3.customer.platform
+✅ facebook/A 4.customer messages stored
+✅ facebook/A 4.bot replies stored
+✅ facebook/A 4.bot replies non-empty
+✅ facebook/A 4.no wrong-restaurant products in replies
+✅ facebook/A 4.outbound_messages logged
+✅ facebook/A 5.order auto-created by bot
+✅ facebook/A 5.order.restaurant_id correct
+✅ facebook/A 5.order.conversation_id set
+✅ facebook/A 5.order.customer_id set
+✅ facebook/A 5.order.channel correct
+✅ facebook/A 5.order_items stored
+✅ facebook/A 5.order.total correct
+✅ telegram/B B1.dup event_id no new message
+✅ telegram/B B2.dup ثبت event_id no new message
+✅ telegram/B B3.repeated ثبت no duplicate order
+✅ telegram/B B4._auto_create_order same conv returns None
+✅ telegram/B B5.same sender no duplicate customer
+✅ whatsapp/B B1.dup event_id no new message
+✅ whatsapp/B B2.dup ثبت event_id no new message
+✅ whatsapp/B B3.repeated ثبت no duplicate order
+✅ whatsapp/B B4._auto_create_order same conv returns None
+✅ whatsapp/B B5.same sender no duplicate customer
+✅ instagram/B B1.dup event_id no new message
+✅ instagram/B B2.dup ثبت event_id no new message
+✅ instagram/B B3.repeated ثبت no duplicate order
+✅ instagram/B B4._auto_create_order same conv returns None
+✅ instagram/B B5.same sender no duplicate customer
+✅ facebook/B B1.dup event_id no new message
+✅ facebook/B B2.dup ثبت event_id no new message
+✅ facebook/B B3.repeated ثبت no duplicate order
+✅ facebook/B B4._auto_create_order same conv returns None
+✅ facebook/B B5.same sender no duplicate customer
+✅ telegram/C C1.conv created for complaint
+✅ telegram/C C1.conv.channel correct
+✅ telegram/C C2.mode=human after handoff request
+✅ telegram/C C2.bot replied to complaint
+✅ telegram/C C3.bot silent in human mode
+✅ telegram/C C4.unread_count increments in human mode
+✅ telegram/C C5.outbound_messages logged
+✅ whatsapp/C C1.conv created for complaint
+✅ whatsapp/C C1.conv.channel correct
+✅ whatsapp/C C2.mode=human after handoff request
+✅ whatsapp/C C2.bot replied to complaint
+✅ whatsapp/C C3.bot silent in human mode
+✅ whatsapp/C C4.unread_count increments in human mode
+✅ whatsapp/C C5.outbound_messages logged
+✅ instagram/C C1.conv created for complaint
+✅ instagram/C C1.conv.channel correct
+✅ instagram/C C2.mode=human after handoff request
+✅ instagram/C C2.bot replied to complaint
+✅ instagram/C C3.bot silent in human mode
+✅ instagram/C C4.unread_count increments in human mode
+✅ instagram/C C5.outbound_messages logged
+✅ facebook/C C1.conv created for complaint
+✅ facebook/C C1.conv.channel correct
+✅ facebook/C C2.mode=human after handoff request
+✅ facebook/C C2.bot replied to complaint
+✅ facebook/C C3.bot silent in human mode
+✅ facebook/C C4.unread_count increments in human mode
+✅ facebook/C C5.outbound_messages logged
+✅ 6.R1 GET /api/orders 200
+✅ 6.R2 GET /api/orders 200
+✅ 6.telegram order visible in R1 orders API
+✅ 6.telegram order NOT visible in R2 orders API
+✅ 6.whatsapp order visible in R1 orders API
+✅ 6.whatsapp order NOT visible in R2 orders API
+✅ 6.instagram order visible in R2 orders API
+✅ 6.instagram order NOT visible in R1 orders API
+✅ 6.facebook order visible in R2 orders API
+✅ 6.facebook order NOT visible in R1 orders API
+✅ 6.order detail returns correctly
+✅ 6.order detail channel==telegram
+✅ 6.orders?status=pending filter
+✅ 7.advance→confirmed
+✅ 7.advance→preparing
+✅ 7.advance→on_way
+✅ 7.advance→delivered
+✅ 7.DB reflects delivered
+✅ 7.cannot advance past delivered (400)
+✅ 8.R1 new_order notifications created
+✅ 8.R2 new_order notifications created
+✅ 8.mark read sets unread_count=0
+✅ 8.R1 notifications only in R1
+✅ 8.no R1 notifications leaked to R2
+✅ 9.R1 overview 200
+✅ 9.R2 overview 200
+✅ 9.R1 total_orders>=2
+✅ 9.R1 total_customers>=2
+✅ 9.R1 total_conversations>=2
+✅ 9.R1 completed_orders>=1
+✅ 9.R1 human_mode_count>=2
+✅ 9.R2 total_orders>=2
+✅ 9.R1 revenue>0
+✅ 9.R2 revenue>0
+✅ 9.R1 weekly has 7 days
+✅ 9.R1 telegram in channels
+✅ 9.R1 whatsapp in channels
+✅ 9.R1 NO instagram in channels
+✅ 9.R2 instagram in channels
+✅ 9.R2 facebook in channels
+✅ 9.R2 NO telegram in channels
+✅ 9.R1 top-products has R1 items
+✅ 9.R1 top-products NO R2 items
+✅ 9.R2 top-products has R2 items
+✅ 9.R2 top-products NO R1 items
+✅ 9.bot-performance has all fields
+✅ 9.bot-performance no hardcoded values
+✅ 10.R2 instagram conv NOT in R1 list
+✅ 10.R2 facebook conv NOT in R1 list
+✅ 10.R1 telegram conv NOT in R2 list
+✅ 10.R1 whatsapp conv NOT in R2 list
+✅ 10.no R2 customers appear in R1 customers API
+✅ 10.R1 total_orders == 2 (tg+wa scenarios)
+✅ 10.R2 total_orders == 2 (ig+fb scenarios)
+✅ 10.R1 products no R2 items
+✅ 10.R2 products no R1 items
+✅ 11.telegram conversation has exactly 1 order
+✅ 11.telegram processed_events has entries (dedup working)
+✅ 11.whatsapp conversation has exactly 1 order
+✅ 11.whatsapp processed_events has entries (dedup working)
+✅ 11.instagram conversation has exactly 1 order
+✅ 11.instagram processed_events has entries (dedup working)
+✅ 11.facebook conversation has exactly 1 order
+✅ 11.facebook processed_events has entries (dedup working)
+
+================================================================================
+Total checks: 194  Passed: 194  Warnings: 0  Failed: 0
+✅ NUMBER 11 CLOSED

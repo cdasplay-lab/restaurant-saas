@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/test_bot_day1.py)",
+      "Bash(python3 scripts/test_smoke.py)",
+      "Bash(git tag:*)",
+      "Bash(python3 scripts/day31_order_edit_test.py)",
+      "Bash(python3 scripts/day32_repeat_order_test.py)",
+      "Bash(python3 scripts/day33_item_notes_test.py)",
+      "Bash(python3 scripts/day34_delivery_fee_test.py)",
+      "Bash(python3 scripts/day35_working_hours_test.py)",
+      "Bash(python3 scripts/day36_delivery_time_test.py)",
+      "Bash(python3 scripts/day37_payment_validation_test.py)",
+      "Bash(python3 scripts/day38_soldout_guard_test.py)",
+      "Bash(python3 scripts/day39_qty_sanity_test.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('database.py'\\).read\\(\\)\\); print\\('database.py OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('database.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(xxd)",
+      "Bash(python3)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import services.bot; import services.reply_brain; import services.reply_quality; print\\('all imports OK'\\)\")",
+      "Bash(python3 -c \"import services.bot; import services.reply_brain; import services.reply_quality; print\\('imports OK'\\)\")",
+      "Bash(grep -c \"backtick\\\\|onclick.*\\\\`\")"
+    ]
+  }
+}

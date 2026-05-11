@@ -1,0 +1,43 @@
+NUMBER 13 — Real Channel Fixes & Live Send Recovery
+Run: 7130024 — 2026-04-25 18:14
+========================================================================
+✅ SETUP R1 token
+✅ SETUP super_admin token
+✅ 1.x owner→test-send = 403: got 403
+✅ 1.x owner→register-webhook = 403: got 403
+✅ 1.x owner→clear-webhook = 403: got 403
+✅ 2.x no-token→test-send = 401/403: got 401
+✅ 3.1 readiness-summary returns 200
+✅ 3.2 has channels dict
+✅ 3.3 has ai_ok bool
+✅ 3.4 has recommended_fix
+✅ 3.5 no raw token in readiness-summary
+✅ 4.1 test-connection returns 200
+✅ 4.2 ok=False for bad token: ok=False
+✅ 4.3 message is non-empty diagnostic: message=تعذّر الاتصال بـ Telegram: timed out
+✅ 4.4 no raw token in message
+✅ 5.1 super test-send returns 200
+✅ 5.2 ok=False for bad token: ok=False
+✅ 5.3 diagnosis non-empty: diagnosis=لا يمكن الوصول إلى Telegram API: timed out
+✅ 5.4 no raw token in diagnosis
+✅ 5.5 channel.connection_status updated to error: got=error
+✅ 6.1 register-webhook returns 400 for bad token (Telegram rejects): got HTTP 400: {"detail":"انتهت مهلة الاتصال بـ Telegram — تحقق من صحة التوكن واتصال الإنترنت"}
+✅ 6.2 no raw token in error response
+✅ 7.1 clear-webhook handled (200 or 400): got HTTP 400
+✅ 7.2 no raw token in clear-webhook response
+✅ 8.1 R1 Telegram not ok (bad token → error state): got=outbound_failed
+✅ 9.1 R2 WhatsApp = missing_credentials (meta not configured): got=missing_credentials
+✅ 9.2 R2 Instagram = not_enabled: got=not_enabled
+✅ 9.3 R2 Facebook = not_enabled: got=not_enabled
+✅ 9.4 No Meta channel falsely shows ok
+✅ 10.1 WhatsApp fix mentions META: got='أضف META_APP_ID/META_APP_SECRET لـ whatsapp'
+✅ 11.x classify(401,Unauthorized) contains '401': got='توكن غير صالح (401 Unauthorized) — تحقق من Bot Token'
+✅ 11.x classify(403,Forbidden: bot was blocked by ) contains 'حجب': got='المستخدم حجب البوت أو حذف حسابه'
+✅ 11.x classify(400,Bad Request: chat not found) contains 'chat_id': got='chat_id غير صحيح أو البوت لم يبدأ محادثة مع المستخدم بعد: Bad Request: chat not found'
+✅ 11.x classify(429,Too Many Requests: retry after) contains '429': got='تجاوز حد المعدل (429 Too Many Requests) — أبطئ الإرسال'
+✅ 11.x classify(500,Internal Server Error) contains '500': got='خطأ في خوادم Telegram (500) — أعد المحاولة لاحقاً'
+✅ 12.1 no BADTOKEN in any response
+
+========================================================================
+Total: 36/36 (100%)
+✅ NUMBER 13 CLOSED
