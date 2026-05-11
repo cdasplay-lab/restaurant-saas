@@ -1448,6 +1448,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             Populate _ob_session fields from tool args.
             finalize=True sets confirmation_status = 'confirmed'.
             Returns list of unknown item names (empty = all items matched DB).
+            NUMBER 41A — Never overwrite existing items with empty GPT items.
             """
             nonlocal _ob_session
             from services.order_brain import OrderBrain as _OB, OrderItem as _OItem
@@ -1458,7 +1459,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             if fc.get("items"):
                 validated, unknown_names = validate_tool_items(fc["items"], _products_dicts)
                 if validated:
-                    _ob_session.items = [
+                    # NUMBER 41A — Merge instead of replace: keep existing items not in validated
+                    _new_names = {v["name"] for v in validated}
+                    _existing_kept = [it for it in _ob_session.items if it.name not in _new_names]
+                    _ob_session.items = _existing_kept + [
                         _OItem(
                             name=v["name"], qty=v["qty"], price=v["unit_price"],
                             notes=v.get("note", ""),
@@ -1579,11 +1583,42 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         except Exception:
             pass
 
+    # NUMBER 41A — Block bad/generic replies during active order session
+    # If order_brain has an active session and GPT produced a generic/unhelpful reply,
+    # replace it with the deterministic next directive from order_brain.
+    _BAD_REPLY_PATTERNS = [
+        "وين صرت", "وصلت الرسالة شنو تحتاج", "شنو تحتاج بالضبط",
+        "كيف أقدر أساعدك", "شنو أقدر أساعد", "تفضل", "أنا هنا",
+        "مرحباً بك", "أهلاً وسهلاً", "خدمناك", "تكرم عينك",
+    ]
+    if (
+        _ob_session is not None
+        and _ob_session.has_items()
+        and _ob_session.confirmation_status == "collecting"
+        and not _tool_call_data["triggered"]
+    ):
+        _reply_lower = reply_text.strip().lower()
+        _is_bad = any(pat in _reply_lower for pat in _BAD_REPLY_PATTERNS)
+        # Also block if reply has no question and no useful content during slot-filling
+        _is_too_short = len(reply_text.strip()) < 10 and "؟" not in reply_text
+        if _is_bad or _is_too_short:
+            try:
+                _directive = _ob_session.generate_next_directive([dict(p) for p in products])
+                if _directive:
+                    reply_text = _directive
+                    logger.info(f"[bot41a] bad reply blocked — replaced with directive conv={conversation_id}")
+            except Exception:
+                pass
+
     # Extract order if enabled (keyword-based, from customer message)
+    # NUMBER 41A — Skip regex extraction if GPT tool already handled this message
     extracted_order = None
     order_enabled = (bot_cfg["order_extraction_enabled"] if bot_cfg else 1)
     if order_enabled and any(kw in customer_message for kw in ORDER_KEYWORDS):
-        extracted_order = _extract_order_from_message(customer_message, [dict(p) for p in products])
+        if not _tool_call_data["triggered"]:
+            extracted_order = _extract_order_from_message(customer_message, [dict(p) for p in products])
+        else:
+            logger.info(f"[bot41a] regex extraction skipped — GPT tool already handled conv={conversation_id}")
 
     # Auto-detect confirmed order from bot's own reply (✅ summary block)
     confirmed_order = None

@@ -151,6 +151,8 @@ _PRODUCT_ALIASES: Dict[str, str] = {
     "بيرجر":    "برجر",
     "بوركر":    "برجر",
     "بورغر":    "برجر",
+    "برگر":     "برجر",   # NUMBER 41A — Arabic Kaf variant (ك vs ك)
+    "برگز":     "برجر",   # alternative spelling
     "زنجر":     "زينجر",
     "زينگر":    "زينجر",
     "بروستد":   "بروستد",   # exact but common misspelling target
@@ -158,6 +160,7 @@ _PRODUCT_ALIASES: Dict[str, str] = {
     "برستد":    "بروستد",
     "كوكاكولا": "كولا",
     "كوكا":     "كولا",
+    "كولا":     "بيبسي",   # NUMBER 41A — common: customer says كولا, menu says بيبسي
     "ببسي":     "بيبسي",
     "شاورمة":   "شاورما",
     "شورما":    "شاورما",
@@ -196,8 +199,8 @@ _IRAQ_AREAS = [
 _FIELD_QUESTION = {
     "items":          "شنو تحب تطلب؟",
     "order_type":     "توصيل لو استلام؟",
-    "address":        "وين العنوان؟",
-    "customer_name":  "شسمك؟",
+    "address":        "وين عنوان التوصيل؟",
+    "customer_name":  "شنو اسمك؟",
     "phone":          "شنو رقم هاتفك؟",
     "payment_method": "كاش لو كي كارد؟",
 }
@@ -205,8 +208,8 @@ _FIELD_QUESTION = {
 _FIELD_NEXT = {
     "items":          "اسأل عن المنتج المطلوب",
     "order_type":     "اسأل: توصيل لو استلام؟",
-    "address":        "اسأل: وين العنوان؟",
-    "customer_name":  "اسأل: شسمك؟",
+    "address":        "اسأل: وين عنوان التوصيل؟",
+    "customer_name":  "اسأل: شنو اسمك؟",
     "phone":          "اسأل: شنو رقم هاتفك؟",
     "payment_method": "اسأل: كاش لو كي كارد؟",
 }
@@ -423,38 +426,54 @@ class OrderSession:
         )
 
     def order_summary_for_confirmation(self, delivery_fee: int = 0) -> str:
-        """Pre-confirmation summary shown before customer types ثبت."""
-        lines = []
+        """NUMBER 41A — Professional receipt-style pre-confirmation summary."""
+        _CATEGORY_EMOJI_LOCAL = {
+            "برجر": "🍔", "زينجر": "🍔", "بروستد": "🍗", "دجاج": "🍗",
+            "شاورما": "🥙", "ستيك": "🥩", "لحم": "🥩", "سندويش": "🥪",
+            "كولا": "🥤", "بيبسي": "🥤", "مشروب": "🥤", "عصير": "🧃",
+            "جوس": "🧃", "ماء": "💧", "شاي": "🍵", "قهوة": "☕",
+            "بطاطا": "🍟", "فرايز": "🍟", "بطاطس": "🍟", "سلطة": "🥗",
+            "حلا": "🍰", "كيك": "🍰", "ايسكريم": "🍦", "بيتزا": "🍕",
+            "نودلز": "🍜", "كباب": "🍢",
+        }
+        def _emoji(name):
+            for kw, em in _CATEGORY_EMOJI_LOCAL.items():
+                if kw in name:
+                    return em
+            return "•"
+
+        lines = ["🧾 تأكيد الطلب"]
         items_sum = 0
         for item in self.items:
             item_total = int(item.price) * item.qty
             items_sum += item_total
+            emoji = _emoji(item.name)
             note_str = f" ({item.notes})" if item.notes else ""
-            lines.append(f"• {item.name} × {item.qty}{note_str}")
+            lines.append(f"{emoji} {item.qty}× {item.name}{note_str}")
 
-        msg = "تمام 🌷 هذا ملخص طلبك:\n" + "\n".join(lines)
-
+        lines.append("━━━━━━━━━━━━━━━━")
         _fee = delivery_fee if (self.order_type == "delivery" and delivery_fee > 0) else 0
         total = items_sum + _fee
         if total > 0:
             if _fee > 0:
-                msg += f"\n🚚 رسوم التوصيل: {_fee:,} د.ع"
-            msg += f"\n──────────────\n💰 المجموع: {int(total):,} د.ع"
+                lines.append(f"🚚 رسوم التوصيل: {_fee:,} د.ع")
+            lines.append(f"💰 المجموع: {int(total):,} د.ع")
 
         if self.order_type == "delivery":
-            msg += f"\n📍 توصيل — {self.address or '—'}"
+            lines.append(f"🚗 النوع: توصيل")
+            lines.append(f"📍 العنوان: {self.address or '—'}")
         else:
-            msg += "\n🏪 استلام من المطعم"
+            lines.append("🚗 النوع: استلام")
 
         if self.customer_name:
-            msg += f"\n👤 {self.customer_name}"
+            lines.append(f"👤 الاسم: {self.customer_name}")
         if self.phone:
-            msg += f" — {self.phone}"
+            lines.append(f"📞 الهاتف: {self.phone}")
         if self.payment_method:
-            msg += f"\n💳 {self.payment_method}"
+            lines.append(f"💳 الدفع: {self.payment_method}")
 
-        msg += "\n\nنثبت الطلب؟ 🌷"
-        return msg
+        lines.append("هل كل شي صحيح؟ ✅ نثبت الطلب لو تحب تعدل؟")
+        return "\n".join(lines)
 
     def items_total(self) -> int:
         """NUMBER 38 — Sum of all item prices × quantities (excludes delivery fee)."""
@@ -732,6 +751,7 @@ class OrderBrain:
         _names_before_edit = {it.name for it in session.items}
         _apply_swap(session, msg, products, updated)
         _apply_remove(session, msg, products, updated)
+        _apply_increase(session, msg, products, updated)  # NUMBER 41A
         # Items removed/swapped away must not be re-added by _extract_items()
         _edit_removed = _names_before_edit - {it.name for it in session.items}
 
@@ -907,12 +927,23 @@ def _extract_items(
     updated: List[str],
     skip_names: set = None,
 ) -> None:
-    """Match product names in message and update session items (exact + fuzzy)."""
+    """Match product names in message and update session items (exact + fuzzy).
+    NUMBER 41A — specificity-first matching: longer/more-specific names match before shorter ones.
+    If customer says "برجر لحم" and menu has "برجر لحم" and "برجر دجاج",
+    only "برجر لحم" matches — never a random burger.
+    """
     skip_names = skip_names or set()
     matched_ids: set = set()
     all_names = [(p.get("name") or "").strip() for p in products]
 
-    for p in products:
+    # NUMBER 41A — Sort products by name length descending (most specific first)
+    # This ensures "برجر لحم" is checked before "برجر" alone
+    sorted_products = sorted(products, key=lambda p: len((p.get("name") or "").strip()), reverse=True)
+
+    # Track which words in msg were consumed by a specific match
+    _consumed_spans: list = []
+
+    for p in sorted_products:
         name = (p.get("name") or "").strip()
         if not name:
             continue
@@ -956,6 +987,57 @@ def _extract_items(
                 updated.append(f"item_added:{name}×{qty}" + (f"[note:{note[:15]}]" if note else ""))
             matched_ids.add(str(p.get("id") or name))
 
+    # NUMBER 41A — Alias/normalization fallback: match via arabic_normalize
+    # Run even if some items matched — we want to match remaining aliases too
+    if len(matched_ids) < len(products):
+        from services.arabic_normalize import find_product_by_alias, filter_products_by_specificity, normalize_arabic
+        _alias_matches = find_product_by_alias(msg, products)
+        if _alias_matches:
+            # Apply specificity filter (e.g. "برگر لحم" → only beef burgers)
+            _filtered = filter_products_by_specificity(msg, _alias_matches)
+            for fuzzy_p in _filtered:
+                fname = (fuzzy_p.get("name") or "").strip()
+                if fname in skip_names:
+                    continue
+                if fuzzy_p.get("sold_out_date"):
+                    if fname not in session.sold_out_rejected:
+                        session.sold_out_rejected.append(fname)
+                        updated.append(f"soldout_blocked_alias:{fname}")
+                    continue
+                # NUMBER 41A — try qty extraction with both product name and alias
+                qty = _extract_qty(msg, fname)
+                if qty == 1:
+                    # Try extracting qty using alias names that map to this product
+                    from services.arabic_normalize import _PRODUCT_ALIASES_NORMALIZED, resolve_alias
+                    _fname_canon = resolve_alias(fname)
+                    for alias, canon in _PRODUCT_ALIASES_NORMALIZED.items():
+                        if canon == _fname_canon and alias in msg:
+                            qty2 = _extract_qty(msg, alias)
+                            if qty2 > 1:
+                                qty = qty2
+                                break
+                if qty > MAX_QTY:
+                    session.qty_capped.append(fname)
+                    updated.append(f"qty_capped:{fname}:{qty}→{MAX_QTY}")
+                    qty = MAX_QTY
+                existing = next((it for it in session.items if it.name == fname), None)
+                if existing:
+                    if existing.qty != qty:
+                        existing.qty = qty
+                        updated.append(f"qty_update:{name}×{qty}")
+                else:
+                    note = _extract_item_note(msg, fname, all_names)
+                    session.items.append(OrderItem(
+                        name=fname,
+                        qty=qty,
+                        price=float(fuzzy_p.get("price") or 0),
+                        product_id=str(fuzzy_p.get("id") or ""),
+                        notes=note,
+                    ))
+                    updated.append(f"item_added_alias:{fname}×{qty}")
+                    logger.info(f"[order_brain41a] alias match: msg={msg[:30]!r} → product={fname!r}")
+                matched_ids.add(str(fuzzy_p.get("id") or fname))
+
     # NUMBER 32 — fuzzy fallback: try alias/ال-strip if no exact match found yet
     if not matched_ids:
         fuzzy_p = _fuzzy_product_match(msg, products)
@@ -991,7 +1073,27 @@ def _extract_items(
 
 
 def _extract_qty(msg: str, product_name: str) -> int:
-    """Extract quantity for a specific product mention."""
+    """Extract quantity for a specific product mention. NUMBER 41A — also try normalized msg."""
+    # Try original msg first
+    result = _extract_qty_impl(msg, product_name)
+    if result != 1:
+        return result
+    # NUMBER 41A — try with normalized msg (برگ→برجر) and normalized product name
+    try:
+        from services.arabic_normalize import normalize_arabic
+        norm_msg = normalize_arabic(msg)
+        norm_name = normalize_arabic(product_name)
+        if norm_msg != msg or norm_name != product_name:
+            result2 = _extract_qty_impl(norm_msg, norm_name)
+            if result2 != 1:
+                return result2
+    except Exception:
+        pass
+    return 1
+
+
+def _extract_qty_impl(msg: str, product_name: str) -> int:
+    """Internal: Extract quantity for a specific product mention."""
     # digit before product: "2 برجر" / "اثنين برجر"
     m = re.search(
         r'(\d+)\s*(?:حبة|حبات|وجبة|وجبات|قطعة|قطع)?\s*' + re.escape(product_name),
@@ -1018,10 +1120,15 @@ def _extract_qty(msg: str, product_name: str) -> int:
     return 1
 
 
+# NUMBER 41A — Words that should NOT be captured as part of a name
+_NAME_STOP_WORDS = {"ورقمي", "ورقم", "وعنواني", "وعنوان", "وتوصيل", "واستلام", "وكاش", "وكارد",
+                    "وهاتفي", "وهاتف", "ورقمه", "والموبايل", "والموبايلي", "وبايد",
+                    "في", "من", "إلى", "الى", "هو", "هي", "على", "مع", "لو"}
+
 def _extract_name(msg: str) -> Optional[str]:
-    """Extract customer name from message."""
+    """Extract customer name from message. NUMBER 41A — stop at conjunctions."""
     patterns = [
-        r'اسمي\s+([؀-ۿ]+(?:\s+[؀-ۿ]+)?)',
+        r'اسمي\s+([؀-ۿ]+)',
         r'(?:أنا|انا)\s+([؀-ۿ]{2,10})(?:\s|$|،)',
         r'(?:شسمك[؟?]|شنو اسمك[؟?])\s*([؀-ۿ]{2,10})',
         r'(?:باسم|أطلب باسم)\s+([؀-ۿ]{2,10})',
@@ -1030,25 +1137,36 @@ def _extract_name(msg: str) -> Optional[str]:
         m = re.search(pat, msg)
         if m:
             candidate = m.group(1).strip()
-            if len(candidate) >= 2 and candidate not in ("في", "من", "إلى", "الى", "هو", "هي"):
+            # NUMBER 41A — filter out stop words
+            if candidate in _NAME_STOP_WORDS:
+                continue
+            if len(candidate) >= 2:
                 return candidate
     return None
 
 
 def _extract_address(msg: str) -> Optional[str]:
-    """Extract delivery address/area from message."""
+    """Extract delivery address/area from message. NUMBER 41A — handle 'للكرادة' pattern."""
     _PUNCT = re.compile(r'^[\s؟?،.:!]+|[\s؟?،.:!]+$')
 
     # Labeled address patterns — exclude ؟ from captured chars
     patterns = [
         r'(?:العنوان|عنواني|عنوان التوصيل)[:\s،]*([؁-ۿ\s\d،]+?)(?:\.|\n|$)',
         r'(?:أسكن في|أسكن|منطقتي|حيي|منطقة|في حي)\s+([؁-ۿ\s]{3,30})(?:\s|$|،)',
+        # NUMBER 41A — "توصيل للكرادة" / "للكرادة" / "إلى الكرادة"
+        r'(?:توصيل\s*(?:لل?|إلى\s*|الى\s*))((?:ال)?[؀-ۿ]{3,20})(?:\s|$|،|\.)',
+        r'لل((?:ال)?[؀-ۿ]{3,20})(?:\s|$|،|\.)',
     ]
     for pat in patterns:
         m = re.search(pat, msg)
         if m:
             candidate = _PUNCT.sub("", m.group(1))
             if len(candidate) >= 3:
+                # NUMBER 41A — if candidate matches an area without "ال", add it
+                for area in _IRAQ_AREAS:
+                    area_no_al = re.sub(r'^ال', '', area)
+                    if area_no_al == candidate and area.startswith('ال'):
+                        return area
                 return candidate
 
     # Direct Iraqi area name mention
@@ -1084,6 +1202,51 @@ def _extract_phone(msg: str) -> Optional[str]:
 
 # ── NUMBER 35 — Order Edit helpers ────────────────────────────────────────────
 
+def _decrease_item_qty(session: OrderSession, name: str, amount: int, updated: List[str]) -> None:
+    """NUMBER 41A — Decrease item quantity by amount. Remove if qty reaches 0."""
+    existing = next((it for it in session.items if it.name == name), None)
+    if not existing:
+        return
+    old_qty = existing.qty
+    new_qty = max(0, old_qty - amount)
+    if new_qty <= 0:
+        session.items = [it for it in session.items if it.name != name]
+        updated.append(f"item_removed:{name}")
+    else:
+        existing.qty = new_qty
+        updated.append(f"qty_decreased:{name}:{old_qty}→{new_qty}")
+
+
+def _increase_item_qty(session: OrderSession, name: str, amount: int, price: float, product_id: str, updated: List[str]) -> None:
+    """NUMBER 41A — Increase item quantity by amount. Add item if not in session."""
+    existing = next((it for it in session.items if it.name == name), None)
+    if existing:
+        old_qty = existing.qty
+        existing.qty = old_qty + amount
+        updated.append(f"qty_increased:{name}:{old_qty}→{existing.qty}")
+    else:
+        session.items.append(OrderItem(name=name, qty=amount, price=price, product_id=product_id))
+        updated.append(f"item_added:{name}×{amount}")
+
+
+def _session_item_matches_msg(item_name: str, msg: str) -> bool:
+    """NUMBER 41A — Check if a session item name matches any reference in msg, including aliases."""
+    # Direct match
+    if item_name in msg or f"ال{item_name}" in msg:
+        return True
+    # Alias match: e.g. msg says "كولا" but session has "بيبسي"
+    from services.arabic_normalize import find_product_name_in_session, resolve_alias
+    # Check if any word in msg resolves to the same canonical as the item
+    canonical_item = resolve_alias(item_name)
+    if canonical_item:
+        # Check all aliases that map to this canonical
+        from services.arabic_normalize import _PRODUCT_ALIASES_NORMALIZED
+        for alias, canon in _PRODUCT_ALIASES_NORMALIZED.items():
+            if canon == canonical_item and alias in msg:
+                return True
+    return False
+
+
 def _apply_remove(
     session: OrderSession,
     msg: str,
@@ -1091,25 +1254,190 @@ def _apply_remove(
     updated: List[str],
 ) -> None:
     """
-    NUMBER 35 — Remove items explicitly named with a removal prefix.
-    Handles: "شيل الكولا", "احذف البطاطا", "ما أريد الكولا", "بدون الكولا"
-    Only removes items that are already in the session.
+    NUMBER 35/41A — Remove or decrease items explicitly named with a removal prefix.
+    Handles:
+    - "شيل الكولا" = remove all cola (matches بيبسي via alias)
+    - "شيل كولا وحدة" = decrease cola by 1
+    - "احذف البطاطا" = remove all potato
+    - "ما أريد الكولا" = remove all cola
+    - "بدون الكولا" = remove all cola
     """
     for item in list(session.items):
         name = item.name
 
-        # "بدون [name]" pattern
+        # "بدون [name]" pattern — always full remove (exact phrase match only)
         if f"بدون {name}" in msg or f"بدون ال{name}" in msg:
             if session.remove_item(name):
                 updated.append(f"item_removed:{name}")
             continue
+        # Also check alias for بدون pattern (exact phrase)
+        from services.arabic_normalize import resolve_alias, _PRODUCT_ALIASES_NORMALIZED
+        for alias, canon in _PRODUCT_ALIASES_NORMALIZED.items():
+            if f"بدون {alias}" in msg or f"بدون ال{alias}" in msg:
+                item_canon = resolve_alias(name)
+                if item_canon and item_canon == canon:
+                    if session.remove_item(name):
+                        updated.append(f"item_removed:{name} (via alias)")
+                    break
 
-        # REMOVE_PREFIXES + product name both present in message
+        # Check for quantity decrease: "شيل [name] وحدة/اثنين/2" etc.
+        # NUMBER 41A — prefix must be NEAR the item name, not just both present
+        _decrease_match = None
         for prefix in REMOVE_PREFIXES:
-            if prefix in msg and name in msg:
+            if prefix not in msg:
+                continue
+            # Check if prefix appears near the item name (within 4 words)
+            _name_variants = [name, f"ال{name}"]
+            # Also check aliases
+            from services.arabic_normalize import resolve_alias, _PRODUCT_ALIASES_NORMALIZED
+            for alias, canon in _PRODUCT_ALIASES_NORMALIZED.items():
+                if canon == resolve_alias(name):
+                    _name_variants.append(alias)
+                    _name_variants.append(f"ال{alias}")
+            for nv in _name_variants:
+                # NUMBER 41A — prefix must be BEFORE and NEAR the name
+                # "شيل كولا" = prefix at 3, name at 7, dist=4, prefix before name ✅
+                # "شيل كولا وزيد بطاطا" = prefix at 3, بطاطا at 22, dist=19 ✅ BUT
+                #   there is a CLOSER name (كولا) to this prefix, so بطاطا should not match
+                for m_prefix in re.finditer(re.escape(prefix), msg):
+                    # Find the CLOSEST name variant AFTER this prefix
+                    _best_name_match = None
+                    _best_dist = 999
+                    for nv2 in _name_variants:
+                        for m_name in re.finditer(re.escape(nv2), msg):
+                            if m_name.start() >= m_prefix.start():
+                                d = m_name.start() - m_prefix.start()
+                                if d < _best_dist:
+                                    _best_dist = d
+                                    _best_name_match = nv2
+                    # Only match if THIS name variant is the closest one to this prefix
+                    if _best_name_match == nv and _best_dist <= 15:
+                        _decrease_match = prefix
+                        break
+                if _decrease_match:
+                    break
+            if _decrease_match:
+                break
+
+        if _decrease_match:
+            # Try to extract quantity to decrease
+            dec_qty = _extract_decrease_qty(msg, name)
+            # Also try alias-based qty extraction
+            if not dec_qty:
+                from services.arabic_normalize import _PRODUCT_ALIASES_NORMALIZED as _PAN
+                for alias, canon in _PRODUCT_ALIASES_NORMALIZED.items():
+                    if canon == resolve_alias(name) and alias in msg:
+                        dec_qty = _extract_decrease_qty(msg, alias)
+                        if dec_qty:
+                            break
+            if dec_qty and dec_qty < item.qty:
+                # Partial decrease
+                _decrease_item_qty(session, name, dec_qty, updated)
+            else:
+                # Full remove (no qty specified, or qty >= current)
                 if session.remove_item(name):
                     updated.append(f"item_removed:{name}")
-                break
+
+
+# NUMBER 41A — Quantity decrease extraction: "شيل كولا وحدة/2/اثنين"
+_DECREASE_QTY_RE = re.compile(
+    r'(?:شيل|اشيل|شيله|احذف|حذف|ما أريد|ما اريد|ما ابي|امسح|لا أريد|لا اريد)'
+    r'\s+(?:ال)?[\u0600-\u06FF\w]{2,20}?'
+    r'\s+(\d+|واحد|وحدة|وحده|اثنين|ثنتين|ثلاثة|ثلاث|أربعة|أربع|خمسة|خمس)',
+    re.UNICODE,
+)
+
+
+def _extract_decrease_qty(msg: str, product_name: str) -> Optional[int]:
+    """NUMBER 41A — Extract quantity to decrease from phrases like 'شيل كولا وحدة' or 'شيل 2 كولا'."""
+    # Pattern: prefix + product_name + number word/digit
+    for prefix in REMOVE_PREFIXES:
+        # "شيل كولا وحدة" / "شيل كولا 1"
+        m = re.search(
+            re.escape(prefix) + r'\s+(?:ال)?' + re.escape(product_name) +
+            r'\s+(\d+|واحد|وحدة|وحده|اثنين|ثنتين|ثلاثة|ثلاث|أربعة|أربع|خمسة|خمس)',
+            msg, re.UNICODE,
+        )
+        if m:
+            val = m.group(1)
+            if val.isdigit():
+                return int(val)
+            return _AR_NUMBERS.get(val, 1)
+
+        # "شيل وحدة كولا" / "شيل 2 كولا"
+        m = re.search(
+            re.escape(prefix) + r'\s+(\d+|واحد|وحدة|وحده|اثنين|ثنتين|ثلاثة|ثلاث|أربعة|أربع|خمسة|خمس)'
+            r'\s+(?:ال)?' + re.escape(product_name),
+            msg, re.UNICODE,
+        )
+        if m:
+            val = m.group(1)
+            if val.isdigit():
+                return int(val)
+            return _AR_NUMBERS.get(val, 1)
+
+    return None
+
+
+# NUMBER 41A — Increase keywords: "زيد", "ضيف", "حط"
+_INCREASE_PREFIXES = [
+    "زيد", "زود", "ضيف", "أضيف", "اضيف", "حط", "أضف", "اضف",
+    "نضيف", "نزيد", "زودلي", "ضيفلي", "زيدلي",
+]
+
+
+def _apply_increase(
+    session: OrderSession,
+    msg: str,
+    products: List[dict],
+    updated: List[str],
+) -> None:
+    """NUMBER 41A — Handle 'زيد بطاطا' / 'ضيف كولا' — increase or add item. Supports alias matching."""
+    for prefix in _INCREASE_PREFIXES:
+        if prefix not in msg:
+            continue
+        # Try to match a product name after the prefix
+        for p in products:
+            pname = (p.get("name") or "").strip()
+            if not pname:
+                continue
+            if pname in msg:
+                qty = _extract_qty(msg, pname)
+                _increase_item_qty(
+                    session, pname, qty,
+                    float(p.get("price") or 0),
+                    str(p.get("id") or ""),
+                    updated,
+                )
+                return
+        # NUMBER 41A — Alias match: "ضيف كولا" → find بيبسي via alias
+        from services.arabic_normalize import find_product_by_alias, filter_products_by_specificity
+        _alias_matches = find_product_by_alias(msg, products)
+        if _alias_matches:
+            _filtered = filter_products_by_specificity(msg, _alias_matches)
+            if _filtered:
+                p = _filtered[0]
+                pname = (p.get("name") or "").strip()
+                qty = _extract_qty(msg, pname)
+                _increase_item_qty(
+                    session, pname, qty,
+                    float(p.get("price") or 0),
+                    str(p.get("id") or ""),
+                    updated,
+                )
+                return
+        # Fuzzy match
+        fuzzy_p = _fuzzy_product_match(msg, products)
+        if fuzzy_p:
+            fname = (fuzzy_p.get("name") or "").strip()
+            qty = _extract_qty(msg, fname)
+            _increase_item_qty(
+                session, fname, qty,
+                float(fuzzy_p.get("price") or 0),
+                str(fuzzy_p.get("id") or ""),
+                updated,
+            )
+            return
 
 
 def _apply_swap(
