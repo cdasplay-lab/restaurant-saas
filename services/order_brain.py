@@ -252,6 +252,7 @@ class OrderSession:
     customer_name: Optional[str] = None
     phone: Optional[str] = None
     payment_method: Optional[str] = None
+    clarification_needed: Optional[str] = None                  # NUMBER 41A — ambiguous item (e.g. generic burger) needs clarification
     confirmation_status: str = "collecting"   # collecting | awaiting_confirm | confirmed | cancelled
     last_question_asked: Optional[str] = None
     customer_frustrated: bool = False
@@ -733,6 +734,7 @@ class OrderBrain:
         # NUMBER 42/43 — Reset transient lists each message
         session.sold_out_rejected = []
         session.qty_capped = []
+        session.clarification_needed = None  # NUMBER 41A — reset ambiguity flag each new message
 
         # NUMBER 36 — Repeat last order detection (DB lookup handled in bot.py)
         if any(phrase in msg for phrase in REPEAT_ORDER_PHRASES) and not session.has_items():
@@ -995,6 +997,41 @@ def _extract_items(
         if _alias_matches:
             # Apply specificity filter (e.g. "برگر لحم" → only beef burgers)
             _filtered = filter_products_by_specificity(msg, _alias_matches)
+            # NUMBER 41A — Ambiguity: if multiple burger-type items match without specificity, ask clarification
+            _burger_kw = {"برجر", "برغر", "بركر", "برگر"}
+            _msg_norm = normalize_arabic(msg)
+            _msg_has_specificity = any(kw in _msg_norm for kw in
+                ("لحم", "beef", "لحمة", "دجاج", "دجاجة", "فراخ", "chicken", "سمك", "fish", "روبيان", "جمبري"))
+            _ambig_ids = set()  # NUMBER 41A — Track IDs of ambiguous items to skip
+            if not _msg_has_specificity and len(_filtered) > 1:
+                _base_groups = {}
+                for fp in _filtered:
+                    fp_name = normalize_arabic((fp.get("name") or ""))
+                    for bk in _burger_kw:
+                        if bk in fp_name:
+                            _base_groups.setdefault(bk, []).append(fp)
+                            break
+                for bk, group in _base_groups.items():
+                    if len(group) > 1:
+                        _names = [(g.get("name") or "").strip() for g in group]
+                        session.clarification_needed = "أكيد 🌷 تحب " + " لو ".join(_names) + "؟"
+                        updated.append("clarification_needed:" + ",".join(_names))
+                        # NUMBER 41A — Mark all items in ambiguous group for skipping
+                        for g in group:
+                            _ambig_ids.add(str(g.get("id") or g.get("name")))
+            # NUMBER 41A — Remove ambiguous items from session.items and _filtered
+            if _ambig_ids:
+                # Build set of ambiguous product names
+                _ambig_names = set()
+                for p in products:
+                    if str(p.get("id") or p.get("name")) in _ambig_ids:
+                        _ambig_names.add((p.get("name") or "").strip())
+                # Remove from session items
+                session.items = [it for it in session.items if it.name not in _ambig_names]
+                # Remove from _filtered
+                _filtered = [f for f in _filtered if str(f.get("id") or f.get("name")) not in _ambig_ids]
+                # NUMBER 41B — prevent fuzzy fallback from re-adding these ambiguous items
+                matched_ids.update(_ambig_ids)
             for fuzzy_p in _filtered:
                 fname = (fuzzy_p.get("name") or "").strip()
                 if fname in skip_names:
@@ -1126,19 +1163,22 @@ _NAME_STOP_WORDS = {"ورقمي", "ورقم", "وعنواني", "وعنوان", 
                     "في", "من", "إلى", "الى", "هو", "هي", "على", "مع", "لو"}
 
 def _extract_name(msg: str) -> Optional[str]:
-    """Extract customer name from message. NUMBER 41A — stop at conjunctions."""
+    """Extract customer name from message. NUMBER 41B H5 — single word only, stop at space/conjunction."""
+    # Use [^\s،؟?]{2,15} to stop at whitespace/punctuation — never captures multi-word strings
     patterns = [
-        r'اسمي\s+([؀-ۿ]+)',
-        r'(?:أنا|انا)\s+([؀-ۿ]{2,10})(?:\s|$|،)',
-        r'(?:شسمك[؟?]|شنو اسمك[؟?])\s*([؀-ۿ]{2,10})',
-        r'(?:باسم|أطلب باسم)\s+([؀-ۿ]{2,10})',
+        r'اسمي\s+([^\s،؟?]{2,15})',
+        r'(?:أنا|انا)\s+([^\s،؟?]{2,10})(?:\s|$|،)',
+        r'(?:شسمك[؟?]|شنو اسمك[؟?])\s*([^\s،؟?]{2,10})',
+        r'(?:باسم|أطلب باسم)\s+([^\s،؟?]{2,10})',
     ]
     for pat in patterns:
         m = re.search(pat, msg)
         if m:
             candidate = m.group(1).strip()
-            # NUMBER 41A — filter out stop words
+            # Filter out stop words and non-Arabic strings that look like phone numbers
             if candidate in _NAME_STOP_WORDS:
+                continue
+            if re.search(r'\d', candidate):
                 continue
             if len(candidate) >= 2:
                 return candidate

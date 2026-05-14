@@ -189,6 +189,13 @@ def validate_tool_items(items: list, products: list) -> tuple:
 
         match = find_best_product_match(raw_name, products)
         if match:
+            # NUMBER 41B C5 — reject sold-out items (available=0 or sold_out_date set)
+            _avail_raw = match.get("available", match.get("is_available", None))
+            _avail = int(_avail_raw) if _avail_raw is not None else 1
+            if not _avail or match.get("sold_out_date"):
+                unknown.append(f"[نافد] {match['name']}")
+                logger.warning(f"[tool_safety] sold-out item blocked: {match['name']!r}")
+                continue
             db_price = float(match.get("price") or gpt_price)
             validated.append({
                 "name": match["name"],   # canonical name from DB

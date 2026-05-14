@@ -110,14 +110,30 @@ msg_b = "أريد برگر"
 sess_b = make_session()
 updated_b = OrderBrain.update_from_message(sess_b, msg_b, PRODUCTS)
 
-# With "برگر" alone and multiple burgers, we should get ONE match
-# The key test: it should NOT randomly pick chicken burger when beef exists
-# Specificity-first: longest match wins, but "برگر" alone matches multiple
-# This is acceptable — the important thing is it does not pick chicken over beef arbitrarily
-_has_burger = any("برجر" in it.name for it in sess_b.items)
-test("Some burger was matched", _has_burger, "برگر should match at least one burger")
+# NUMBER 41A — Ambiguous "برگر" with multiple burgers should NOT pick randomly
+# It should set clarification_needed instead
+_no_random_burger = not any("برجر" in it.name for it in sess_b.items)
+test("No random burger selected for ambiguous برجر", _no_random_burger,
+     f"should not pick a burger randomly, got {[it.name for it in sess_b.items]}")
 
-# The real test: tool_safety find_best_product_match should prefer specific
+test("Clarification needed is set", sess_b.clarification_needed is not None,
+     f"clarification_needed should be set, got {sess_b.clarification_needed}")
+
+test("Clarification mentions لحم and دجاج",
+     sess_b.clarification_needed is not None and "لحم" in sess_b.clarification_needed and "دجاج" in sess_b.clarification_needed,
+     f"got {sess_b.clarification_needed}")
+
+# Specific matching still works: "برگر لحم" → beef burger only
+sess_b2 = make_session()
+updated_b2 = OrderBrain.update_from_message(sess_b2, "أريد برگر لحم", PRODUCTS)
+_has_laham = any("لحم" in it.name for it in sess_b2.items)
+_no_dajaj = not any("دجاج" in it.name for it in sess_b2.items)
+test("برگر لحم matches beef burger", _has_laham, "should match برجر لحم")
+test("برگر لحم does NOT match chicken", _no_dajaj, "should not match برجر دجاج")
+test("No clarification for specific برگر لحم", sess_b2.clarification_needed is None,
+     f"specific match should not trigger clarification, got {sess_b2.clarification_needed}")
+
+# tool_safety find_best_product_match should prefer specific
 _match_laham = find_best_product_match("برجر لحم", PRODUCTS)
 test("find_best_product_match prefers برجر لحم over other burgers",
      _match_laham is not None and "لحم" in _match_laham.get("name", ""),

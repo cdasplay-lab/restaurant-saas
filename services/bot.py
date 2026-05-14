@@ -314,11 +314,15 @@ class SlotTracker:
         return self
 
     def _parse(self, text: str) -> None:
-        # Payment
-        for p in ["زين كاش", "زين", "كارد", "بطاقة", "كاش"]:
-            if p in text:
-                self.payment = p
-                break
+        # Payment — "زين" must be a standalone word to avoid matching "زينجر"
+        if "زين كاش" in text:
+            self.payment = "زين كاش"
+        elif re.search(r'(?<![؀-ۿ])زين(?![؀-ۿ])', text):
+            self.payment = "زين كاش"
+        elif any(p in text for p in ["كارد", "بطاقة"]):
+            self.payment = "كارد"
+        elif "كاش" in text:
+            self.payment = "كاش"
         # Delivery type
         if any(x in text for x in ["استلام", "آخذه", "يجي ياخذه", "بالاستلام"]):
             self.delivery_type = "pickup"
@@ -583,10 +587,11 @@ _ORDER_TOOLS = [
                     "customer_name":   {"type": "string", "description": "اسم العميل"},
                     "delivery_type":   {"type": "string", "enum": ["delivery", "pickup"], "description": "توصيل أم استلام"},
                     "address":         {"type": "string", "description": "عنوان التوصيل — مطلوب إذا delivery"},
+                    "phone":           {"type": "string", "description": "رقم هاتف العميل — مطلوب دائماً"},
                     "payment_method":  {"type": "string", "description": "طريقة الدفع (كاش، كي كارد، زين كاش...)"},
                     "closing_message": {"type": "string", "description": "جملة إغلاق ودية بالعربي مثل: حاضر 🌷 الشباب يجهزون هسه"},
                 },
-                "required": ["items", "customer_name", "delivery_type", "payment_method", "closing_message"],
+                "required": ["items", "customer_name", "phone", "delivery_type", "payment_method", "closing_message"],
             },
         },
     },
@@ -618,6 +623,7 @@ _ORDER_TOOLS = [
                         },
                     },
                     "customer_name":  {"type": "string", "description": "اسم العميل إذا ذُكر"},
+                    "phone":          {"type": "string", "description": "رقم هاتف العميل إذا ذُكر"},
                     "delivery_type":  {"type": "string", "enum": ["delivery", "pickup"], "description": "نوع التوصيل إذا حُدِّد"},
                     "address":        {"type": "string", "description": "العنوان إذا ذُكر"},
                     "payment_method": {"type": "string", "description": "طريقة الدفع إذا ذُكرت"},
@@ -952,8 +958,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 is_bot_reply=False,
             )
             # NUMBER 36 — Repeat last order: DB lookup after detection flag is set
+            # NUMBER 41B C3 — conn is closed by this point; open a fresh connection
             if _ob_session.repeat_order_detected and not _ob_session.has_items():
-                _last_items = _get_last_order_items(conn, restaurant_id, conv["customer_id"])
+                _rep_conn = database.get_db()
+                try:
+                    _last_items = _get_last_order_items(_rep_conn, restaurant_id, conv["customer_id"])
+                finally:
+                    _rep_conn.close()
                 if _last_items:
                     _ob_session.prefill_from_items(_last_items)
                     logger.info(
@@ -1263,10 +1274,13 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.info(f"[bot] off-hours order blocked — restaurant={restaurant_id}")
         return {"reply": _off_hours_reply, "action": "reply", "extracted_order": None}
 
-    # Slot Tracker — extract known order slots to prevent repeated questions
+    # Slot context — prefer OrderBrain's authoritative state; fall back to SlotTracker heuristic
     _history_dicts = [dict(h) if not isinstance(h, dict) else h for h in history]
     _slot_tracker = SlotTracker().ingest(_history_dicts, customer_message)
-    _slot_section  = _slot_tracker.known_slots_section()
+    if _ob_session is not None:
+        _slot_section = _ob_session.to_prompt_section()
+    else:
+        _slot_section = _slot_tracker.known_slots_section()
 
     # Context Compression — keep last 6 messages, summarize older ones
     _recent_history, _history_summary = _compress_history(_history_dicts, max_recent=6)
@@ -1331,6 +1345,27 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
     # Mutable container to communicate tool call result back to outer scope
     _tool_call_data: dict = {"triggered": False, "tool_name": None, "args": None}
+
+    def _backend_next_reply(ob, prods_list, unknowns, fee=0) -> str:
+        """Deterministic reply — backend controls conversation flow during order collection."""
+        if unknowns:
+            names_str = "، ".join(f"«{n}»" for n in unknowns[:2])
+            extra = " وغيرها" if len(unknowns) > 2 else ""
+            return (
+                f"ما لقيت {names_str}{extra} بالمنيو 🌷 — "
+                f"تكدر تشوف المنيو وتكلني شنو بالضبط تريد؟"
+            )
+        if ob is None:
+            return "وصلت 🌷 — شنو تحب تطلب؟"
+        if ob.is_complete():
+            return ob.order_summary_for_confirmation(delivery_fee=fee)
+        from services.order_brain import _FIELD_QUESTION
+        next_f = ob.next_missing_field()
+        if next_f == "items":
+            return ob.generate_next_directive(prods_list)
+        if next_f and next_f in _FIELD_QUESTION:
+            return "تمام 🌷 — " + _FIELD_QUESTION[next_f]
+        return ob.generate_next_directive(prods_list) or "كمّلنا؟ 🌷"
 
     def _call_openai(msgs: list, max_tok: int) -> str:
         resp = client.chat.completions.create(
@@ -1471,6 +1506,8 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     ]
             if fc.get("customer_name"):
                 _ob_session.customer_name = str(fc["customer_name"]).strip()
+            if fc.get("phone"):
+                _ob_session.phone = str(fc["phone"]).strip()
             if fc.get("delivery_type"):
                 _ob_session.order_type = fc["delivery_type"]
             if fc.get("address"):
@@ -1480,30 +1517,6 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             if finalize:
                 _ob_session.confirmation_status = "confirmed"
             return unknown_names
-
-        def _backend_next_reply(ob, prods_list, unknowns, fee=0) -> str:
-            """
-            Deterministic reply for update_order — backend controls conversation flow.
-            GPT only extracts fields; this function decides what to ask next.
-            """
-            if unknowns:
-                names_str = "، ".join(f"«{n}»" for n in unknowns[:2])
-                extra = " وغيرها" if len(unknowns) > 2 else ""
-                return (
-                    f"ما لقيت {names_str}{extra} بالمنيو 🌷 — "
-                    f"تكدر تشوف المنيو وتكلني شنو بالضبط تريد؟"
-                )
-            if ob is None:
-                return "وصلت 🌷 — شنو تحب تطلب؟"
-            if ob.is_complete():
-                return ob.order_summary_for_confirmation(delivery_fee=fee)
-            from services.order_brain import _FIELD_QUESTION
-            next_f = ob.next_missing_field()
-            if next_f == "items":
-                return ob.generate_next_directive(prods_list)
-            if next_f and next_f in _FIELD_QUESTION:
-                return "تمام 🌷 — " + _FIELD_QUESTION[next_f]
-            return ob.generate_next_directive(prods_list) or "كمّلنا؟ 🌷"
 
         if _tool_name == "place_order":
             try:
@@ -1565,8 +1578,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     # NUMBER 31 — Persona Engine: confirm+ask guarantee during active order
     # Any reply ≤100 chars with no question mark during slot-filling gets the next directive appended.
     # This catches bare acks like "تمام 🌷" or "وصل 🌷 الكرادة." and turns them into proper confirm+ask.
+    # NUMBER 41B M2 — skip when tool already handled the reply (tool reply is complete)
     if (
-        _ob_session is not None
+        not _tool_call_data["triggered"]
+        and _ob_session is not None
         and _ob_session.has_items()
         and _ob_session.confirmation_status == "collecting"
         and "؟" not in reply_text
@@ -1583,32 +1598,23 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         except Exception:
             pass
 
-    # NUMBER 41A — Block bad/generic replies during active order session
-    # If order_brain has an active session and GPT produced a generic/unhelpful reply,
-    # replace it with the deterministic next directive from order_brain.
-    _BAD_REPLY_PATTERNS = [
-        "وين صرت", "وصلت الرسالة شنو تحتاج", "شنو تحتاج بالضبط",
-        "كيف أقدر أساعدك", "شنو أقدر أساعد", "تفضل", "أنا هنا",
-        "مرحباً بك", "أهلاً وسهلاً", "خدمناك", "تكرم عينك",
-    ]
+    # NUMBER 41B C1 — Active order + no tool triggered → always force deterministic next directive.
+    # GPT must call update_order/place_order during an active order; free-text replies are a bug.
     if (
         _ob_session is not None
-        and _ob_session.has_items()
-        and _ob_session.confirmation_status == "collecting"
+        and _ob_session.is_active()
         and not _tool_call_data["triggered"]
+        and not _ob_invalid_pm_reply
+        and not _ob_soldout_reply
     ):
-        _reply_lower = reply_text.strip().lower()
-        _is_bad = any(pat in _reply_lower for pat in _BAD_REPLY_PATTERNS)
-        # Also block if reply has no question and no useful content during slot-filling
-        _is_too_short = len(reply_text.strip()) < 10 and "؟" not in reply_text
-        if _is_bad or _is_too_short:
-            try:
-                _directive = _ob_session.generate_next_directive([dict(p) for p in products])
-                if _directive:
-                    reply_text = _directive
-                    logger.info(f"[bot41a] bad reply blocked — replaced with directive conv={conversation_id}")
-            except Exception:
-                pass
+        try:
+            _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
+            _c1_reply = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
+            if _c1_reply:
+                reply_text = _c1_reply
+                logger.info(f"[bot41b-C1] active order, no tool — forced next directive conv={conversation_id}")
+        except Exception as _c1_err:
+            logger.warning(f"[bot41b-C1] fallback failed: {_c1_err}")
 
     # Extract order if enabled (keyword-based, from customer message)
     # NUMBER 41A — Skip regex extraction if GPT tool already handled this message
@@ -1674,27 +1680,32 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     _fee_for_delivery = _df if _ob_session.order_type == "delivery" else 0
                     _dt_str = str((settings["delivery_time"] if settings else None) or "")
                     # Promo code — validate against DB and set discount on session
+                    # NUMBER 41B C3 — conn is closed; use a fresh connection
                     if _ob_session.promo_code and _ob_session.promo_discount == 0:
                         try:
-                            _pc_row = conn.execute(
-                                "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
-                                (restaurant_id, _ob_session.promo_code)
-                            ).fetchone()
-                            if _pc_row:
-                                _pc = dict(_pc_row)
-                                _total_for_promo = _ob_session.items_total() + _fee_for_delivery
-                                if (not _pc["expires_at"] or _pc["expires_at"] >= str(__import__('datetime').date.today())) \
-                                        and (_pc["max_uses"] == 0 or _pc["uses_count"] < _pc["max_uses"]) \
-                                        and _total_for_promo >= _pc["min_order"]:
-                                    if _pc["discount_type"] == "percent":
-                                        _ob_session.promo_discount = int(_total_for_promo * _pc["discount_value"] / 100)
-                                    else:
-                                        _ob_session.promo_discount = min(int(_pc["discount_value"]), _total_for_promo)
-                                    conn.execute(
-                                        "UPDATE promo_codes SET uses_count=uses_count+1 WHERE id=?",
-                                        (_pc["id"],)
-                                    )
-                                    conn.commit()
+                            _promo_conn = database.get_db()
+                            try:
+                                _pc_row = _promo_conn.execute(
+                                    "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
+                                    (restaurant_id, _ob_session.promo_code)
+                                ).fetchone()
+                                if _pc_row:
+                                    _pc = dict(_pc_row)
+                                    _total_for_promo = _ob_session.items_total() + _fee_for_delivery
+                                    if (not _pc["expires_at"] or _pc["expires_at"] >= str(__import__('datetime').date.today())) \
+                                            and (_pc["max_uses"] == 0 or _pc["uses_count"] < _pc["max_uses"]) \
+                                            and _total_for_promo >= _pc["min_order"]:
+                                        if _pc["discount_type"] == "percent":
+                                            _ob_session.promo_discount = int(_total_for_promo * _pc["discount_value"] / 100)
+                                        else:
+                                            _ob_session.promo_discount = min(int(_pc["discount_value"]), _total_for_promo)
+                                        _promo_conn.execute(
+                                            "UPDATE promo_codes SET uses_count=uses_count+1 WHERE id=?",
+                                            (_pc["id"],)
+                                        )
+                                        _promo_conn.commit()
+                            finally:
+                                _promo_conn.close()
                         except Exception as _pe:
                             logger.warning(f"[promo] validation failed: {_pe}")
                     # Upsell Engine — get suggestion BEFORE clearing session
