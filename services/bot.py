@@ -1687,10 +1687,11 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         else:
             logger.info(f"[bot41a] regex extraction skipped — tool={_tool_call_data['triggered']} c1={_c1_fired} conv={conversation_id}")
 
-    # Auto-detect confirmed order from bot's own reply (✅ summary block)
+    # confirmed_order is parsed AFTER the OrderBrain block below (NUMBER 42 RISK-11).
+    # OrderBrain overwrites reply_text with the ✅ summary at line ~1782;
+    # parsing here (before that block) always returns None for OrderBrain-confirmed orders,
+    # so _auto_create_order in webhooks.py was never called for them.
     confirmed_order = None
-    if order_enabled:
-        confirmed_order = _parse_confirmed_order(reply_text, memory, [dict(p) for p in products])
 
     # Fallback Template — if intent was confirmation but reply has no ✅ and OrderBrain didn't fire
     if (
@@ -1740,8 +1741,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 else:
                     _fee_for_delivery = _df if _ob_session.order_type == "delivery" else 0
                     _dt_str = str((settings["delivery_time"] if settings else None) or "")
-                    # Promo code — validate against DB and set discount on session
-                    # NUMBER 41B C3 — conn is closed; use a fresh connection
+                    # Promo code — validate and compute discount; do NOT increment uses_count here.
+                    # NUMBER 42 RISK-05 — increment deferred to _auto_create_order so it runs in
+                    # the same DB transaction as the order INSERT. If the order fails, promo is safe.
+                    _promo_id_to_increment = None
                     if _ob_session.promo_code and _ob_session.promo_discount == 0:
                         try:
                             _promo_conn = database.get_db()
@@ -1760,11 +1763,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                                             _ob_session.promo_discount = int(_total_for_promo * _pc["discount_value"] / 100)
                                         else:
                                             _ob_session.promo_discount = min(int(_pc["discount_value"]), _total_for_promo)
-                                        _promo_conn.execute(
-                                            "UPDATE promo_codes SET uses_count=uses_count+1 WHERE id=?",
-                                            (_pc["id"],)
-                                        )
-                                        _promo_conn.commit()
+                                        _promo_id_to_increment = _pc["id"]
                             finally:
                                 _promo_conn.close()
                         except Exception as _pe:
@@ -1843,6 +1842,22 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     _ob_save_state(conversation_id, _ob_session)
         except Exception as _ob_exc2:
             logger.warning(f"[order_brain] post-reply update failed: {_ob_exc2}")
+
+    # NUMBER 42 RISK-11 + RISK-13 — parse confirmed_order AFTER OrderBrain has set reply_text.
+    # Gate: only parse when session is NOT actively collecting (is_active=False means confirmed/
+    # cancelled/empty). This prevents GPT-generated ✅-like text mid-collection from creating
+    # a premature order record.
+    _ob_not_active = (
+        _ob_session is None or not _ob_session.is_active()
+    )
+    if order_enabled and _ob_not_active:
+        confirmed_order = _parse_confirmed_order(reply_text, memory, [dict(p) for p in products])
+
+    # NUMBER 42 RISK-05 — pass promo_code_id to confirmed_order so webhooks.py
+    # can increment uses_count inside the same DB transaction as the order INSERT.
+    if confirmed_order and "_promo_id_to_increment" in dir() and _promo_id_to_increment:
+        confirmed_order["promo_code_id"] = _promo_id_to_increment
+        logger.info(f"[promo-risk05] promo_code_id={_promo_id_to_increment} deferred to order insert")
 
     # Closing Flow — if reply is a ✅ confirmation, ensure delivery time is mentioned
     if "✅ طلبك" in reply_text:

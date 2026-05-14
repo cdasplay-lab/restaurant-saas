@@ -2212,6 +2212,19 @@ def _auto_create_order(
     except Exception as e:
         logger.warning(f"[order] last_order_summary save failed: {e}")
 
+    # NUMBER 42 RISK-05 — increment promo uses_count inside same transaction as order INSERT.
+    # This ensures the counter only goes up when an order actually lands in the DB.
+    _promo_id = order_data.get("promo_code_id")
+    if _promo_id:
+        try:
+            conn.execute(
+                "UPDATE promo_codes SET uses_count=uses_count+1 WHERE id=?",
+                (_promo_id,)
+            )
+            logger.info(f"[promo-risk05] uses_count incremented for promo_id={_promo_id} order={order_id}")
+        except Exception as _pe:
+            logger.warning(f"[promo-risk05] increment failed (non-fatal): {_pe}")
+
     conn.commit()
     # Quality tracking — mark conversation as converted
     try:
