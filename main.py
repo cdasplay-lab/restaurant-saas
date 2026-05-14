@@ -29,6 +29,18 @@ from services.integrations import get_adapter, get_all_adapters, PLATFORM_CATALO
 import secrets as _secrets
 import tempfile
 from routers.health import router as _health_router, _env_present
+from routers.products import router as _products_router, ProductCreate, ProductUpdate
+from dependencies import (
+    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_HOURS, bearer,
+    verify_token, current_user, require_role, current_super_admin,
+)
+from helpers import (
+    PLAN_LIMITS, PLAN_FEATURES, BLOCKED_STATUSES,
+    _get_plan_record, _plan_features_from_db, _plan_limits_from_db,
+    get_subscription_state, can_use_feature,
+    _plan_limit, _check_plan_limit,
+    log_activity, create_notification,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("restaurant-saas")
@@ -149,151 +161,9 @@ def _check_rate(ip: str, limit: int = 10, window: int = 60, scope: str = "") -> 
             _rate_store_last_evict = now
     return True
 
-# ── Plan limits & feature flags ───────────────────────────────────────────────
-PLAN_LIMITS: dict = {
-    "free":         {"products": 5,    "staff": 1,   "channels": 0},
-    "trial":        {"products": 10,   "staff": 2,   "channels": 1},
-    "starter":      {"products": 50,   "staff": 5,   "channels": 2},
-    "professional": {"products": 200,  "staff": 15,  "channels": 4},
-    "enterprise":   {"products": 9999, "staff": 9999, "channels": 10},
-}
+# ── Plan limits / features / subscription state — imported from helpers.py ────
+# (NUMBER 43 extraction — see helpers.py)
 
-PLAN_FEATURES: dict = {
-    #                    ai     analytics  media  handoff  max_conv_month
-    "free":         {"ai": False, "analytics": False, "media": False, "handoff": False, "max_conversations": 0},
-    "trial":        {"ai": True,  "analytics": True,  "media": False, "handoff": True,  "max_conversations": 200},
-    "starter":      {"ai": True,  "analytics": False, "media": False, "handoff": True,  "max_conversations": 500},
-    "professional": {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 5000},
-    "enterprise":   {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 999999},
-}
-
-BLOCKED_STATUSES = {"expired", "suspended", "cancelled"}
-
-
-# ── DB-backed plan helpers (fall back to hardcoded when row missing) ──────────
-
-def _get_plan_record(conn, plan_id: str = "", plan_code: str = "") -> Optional[dict]:
-    """Load a subscription_plans row by id or code. Returns dict or None."""
-    row = None
-    if plan_id:
-        row = conn.execute("SELECT * FROM subscription_plans WHERE id=?", (plan_id,)).fetchone()
-    if not row and plan_code:
-        row = conn.execute("SELECT * FROM subscription_plans WHERE code=?", (plan_code,)).fetchone()
-    return dict(row) if row else None
-
-
-def _plan_features_from_db(conn, plan_code: str) -> dict:
-    """Return features dict for plan_code, reading DB first, falling back to PLAN_FEATURES."""
-    row = _get_plan_record(conn, plan_code=plan_code)
-    if row:
-        return {
-            "ai":                           bool(row.get("ai_enabled", 1)),
-            "analytics":                    bool(row.get("analytics_enabled", 0)),
-            "advanced_analytics":           bool(row.get("advanced_analytics_enabled", 0)),
-            "media":                        bool(row.get("media_enabled", 0)),
-            "voice":                        bool(row.get("voice_enabled", 0)),
-            "image":                        bool(row.get("image_enabled", 0)),
-            "video":                        bool(row.get("video_enabled", 0)),
-            "story_reply":                  bool(row.get("story_reply_enabled", 0)),
-            "handoff":                      bool(row.get("human_handoff_enabled", 1)),
-            "multi_channel":                bool(row.get("multi_channel_enabled", 0)),
-            "memory":                       bool(row.get("memory_enabled", 0)),
-            "upsell":                       bool(row.get("upsell_enabled", 0)),
-            "smart_recommendations":        bool(row.get("smart_recommendations_enabled", 0)),
-            "menu_image_understanding":     bool(row.get("menu_image_understanding_enabled", 0)),
-            "live_readiness":               bool(row.get("live_readiness_status_enabled", 0)),
-            "priority_support":             bool(row.get("priority_support_enabled", 0)),
-            "setup_assistance":             bool(row.get("setup_assistance_enabled", 0)),
-            "telegram":                     bool(row.get("telegram_enabled", 1)),
-            "whatsapp":                     bool(row.get("whatsapp_enabled", 1)),
-            "instagram":                    bool(row.get("instagram_enabled", 1)),
-            "facebook":                     bool(row.get("facebook_enabled", 1)),
-            "max_conversations":            int(row.get("max_conversations_per_month", 200)),
-        }
-    return PLAN_FEATURES.get(plan_code, PLAN_FEATURES["trial"])
-
-
-def _plan_limits_from_db(conn, plan_code: str) -> dict:
-    """Return limits dict for plan_code, reading DB first, falling back to PLAN_LIMITS."""
-    row = _get_plan_record(conn, plan_code=plan_code)
-    if row:
-        return {
-            "products":       int(row.get("max_products", 10)),
-            "staff":          int(row.get("max_staff", 2)),
-            "channels":       int(row.get("max_channels", 1)),
-            "team_members":   int(row.get("max_team_members", 2)),
-            "branches":       int(row.get("max_branches", 1)),
-            "customers":      int(row.get("max_customers", 0)),
-            "ai_replies":     int(row.get("max_ai_replies_per_month", 0)),
-        }
-    return PLAN_LIMITS.get(plan_code, PLAN_LIMITS["trial"])
-
-
-def get_subscription_state(conn, restaurant_id: str) -> dict:
-    """Return the effective subscription state for a restaurant."""
-    _sub  = conn.execute("SELECT * FROM subscriptions WHERE restaurant_id=?", (restaurant_id,)).fetchone()
-    sub   = dict(_sub) if _sub else None
-    rest  = conn.execute("SELECT plan, status FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
-    plan       = (sub  and sub["plan"])   or (rest and rest["plan"])   or "trial"
-    sub_status = (sub  and sub["status"]) or "active"
-    rest_status= (rest and rest["status"]) or "active"
-    if rest_status == "suspended" or sub_status == "suspended":
-        effective = "suspended"
-    elif rest_status in ("expired", "cancelled") or sub_status in ("expired", "cancelled"):
-        effective = sub_status if sub_status in ("expired", "cancelled") else rest_status
-    else:
-        effective = sub_status
-    features   = _plan_features_from_db(conn, plan)
-    blocked    = effective in BLOCKED_STATUSES or (not features.get("ai", True) and plan == "free")
-    reason     = ""
-    if effective == "suspended":
-        reason = (sub and sub.get("suspended_reason")) or "الحساب موقوف — تواصل مع الدعم"
-    elif effective == "expired":
-        reason = "الاشتراك منتهي — جدد اشتراكك للاستمرار"
-    elif effective == "cancelled":
-        reason = "الاشتراك ملغى — تواصل مع الدعم لإعادة التفعيل"
-    return {
-        "plan":       plan,
-        "status":     effective,
-        "features":   features,
-        "blocked":    blocked,
-        "reason":     reason,
-        "trial_ends_at":       sub["trial_ends_at"]       if sub else "",
-        "current_period_end":  sub["end_date"]            if sub else "",
-        "suspended_reason":    sub["suspended_reason"]    if sub else "",
-        "cancelled_at":        sub["cancelled_at"]        if sub else "",
-        "billing_email":       sub["billing_email"]       if sub else "",
-        "payment_provider":    sub["payment_provider"]    if sub else "",
-    }
-
-
-def can_use_feature(conn, restaurant_id: str, feature: str):
-    """Return (allowed: bool, reason: str). feature = 'ai'|'analytics'|'media'|'handoff'."""
-    state = get_subscription_state(conn, restaurant_id)
-    if state["blocked"] and feature != "billing":
-        return False, state["reason"]
-    if not state["features"].get(feature, True):
-        return False, f"هذه الميزة غير متاحة في خطة {state['plan']} — رقّ خطتك"
-    return True, ""
-
-
-def _plan_limit(plan: str, resource: str, conn=None) -> int:
-    if conn is not None:
-        return _plan_limits_from_db(conn, plan).get(resource, 0)
-    return PLAN_LIMITS.get(plan, PLAN_LIMITS["trial"]).get(resource, 0)
-
-
-def _check_plan_limit(conn, restaurant_id: str, plan: str, resource: str, table: str) -> None:
-    """Raise 402 if the restaurant has reached its plan limit for the resource."""
-    limit = _plan_limit(plan, resource, conn)
-    count = conn.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE restaurant_id=?", (restaurant_id,)
-    ).fetchone()[0]
-    if count >= limit:
-        raise HTTPException(
-            402,
-            f"وصلت إلى الحد الأقصى للخطة ({limit} {resource}). رقّ خطتك للمزيد."
-        )
 
 
 openai_client = None
@@ -309,8 +179,7 @@ def _verify_password(pw: str, hashed: str) -> bool:
         return _bcrypt.checkpw(pw.encode(), hashed.encode())
     except Exception:
         return False
-bearer = HTTPBearer()
-
+# bearer imported from dependencies (NUMBER 43)
 
 from contextlib import asynccontextmanager
 
@@ -900,6 +769,7 @@ async def subscription_guard(request: Request, call_next):
 
 # ── Routers (NUMBER 43 extraction) ───────────────────────────────────────────
 app.include_router(_health_router)
+app.include_router(_products_router)
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -911,72 +781,8 @@ def create_token(data: dict, hours: int = None) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(creds: HTTPAuthorizationCredentials = Depends(bearer)):
-    try:
-        payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        if not payload.get("sub"):
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return payload
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-
-def current_user(payload: dict = Depends(verify_token)):
-    conn = database.get_db()
-    row = conn.execute("""
-        SELECT u.*, r.name AS restaurant_name, r.plan
-        FROM users u JOIN restaurants r ON u.restaurant_id = r.id
-        WHERE u.id = ?
-    """, (payload["sub"],)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(status_code=401, detail="User not found")
-    return dict(row)
-
-
-def require_role(*roles):
-    def checker(user=Depends(current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(403, "غير مصرح — الدور غير كافٍ")
-        return user
-    return checker
-
-
-def current_super_admin(payload: dict = Depends(verify_token)):
-    """Dependency that ensures the caller is an authenticated super admin."""
-    if not payload.get("is_super"):
-        raise HTTPException(403, "غير مصرح — يلزم صلاحية super_admin")
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM super_admins WHERE id=?", (payload["sub"],)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(401, "حساب super_admin غير موجود")
-    return dict(row)
-
-
-# ── Activity & Notification helpers ──────────────────────────────────────────
-
-def log_activity(conn, restaurant_id, action, entity_type="", entity_id="", description="",
-                 user_id=None, user_name="System"):
-    try:
-        conn.execute(
-            "INSERT INTO activity_log (id, restaurant_id, user_id, user_name, action, entity_type, entity_id, description) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), restaurant_id, user_id, user_name, action, entity_type, entity_id, description)
-        )
-    except Exception as _e:
-        logger.warning(f"[log_activity] failed action={action} restaurant={restaurant_id}: {_e}")
-
-
-def create_notification(conn, restaurant_id, ntype, title, message, entity_type="", entity_id=""):
-    try:
-        conn.execute(
-            "INSERT INTO notifications (id, restaurant_id, type, title, message, entity_type, entity_id) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), restaurant_id, ntype, title, message, entity_type, entity_id)
-        )
-    except Exception as _e:
-        logger.warning(f"[create_notification] failed type={ntype} restaurant={restaurant_id}: {_e}")
+# ── Auth & helpers: verify_token, current_user, require_role, current_super_admin,
+#    log_activity, create_notification — imported from dependencies.py / helpers.py (NUMBER 43)
 
 
 def record_channel_error(conn, channel_id: str, restaurant_id: str, platform: str,
@@ -1007,31 +813,7 @@ class LoginReq(BaseModel):
     password: str
 
 
-class ProductCreate(BaseModel):
-    name: str
-    price: float
-    category: str = "Main"
-    description: str = ""
-    icon: str = "🍽️"
-    variants: list = []
-    available: bool = True
-    image: str = ""
-    image_url: str = ""
-    gallery_images: list = []
-
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[float] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
-    variants: Optional[list] = None
-    available: Optional[bool] = None
-    image: Optional[str] = None
-    image_url: Optional[str] = None
-    gallery_images: Optional[list] = None
-
+# ProductCreate, ProductUpdate — imported from routers.products (NUMBER 43)
 
 class OrderCreate(BaseModel):
     customer_id: str
@@ -3410,141 +3192,7 @@ async def analytics_menu_images(user=Depends(current_user)):
         conn.close()
 
 
-# ── Products ──────────────────────────────────────────────────────────────────
-
-@app.get("/api/products")
-async def list_products(category: Optional[str] = None, user=Depends(current_user)):
-    conn = database.get_db()
-    if category:
-        rows = conn.execute(
-            "SELECT * FROM products WHERE restaurant_id=? AND category=? ORDER BY name",
-            (user["restaurant_id"], category)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM products WHERE restaurant_id=? ORDER BY name",
-            (user["restaurant_id"],)).fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["variants"] = json.loads(d.get("variants") or "[]")
-        d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-        result.append(d)
-    return result
-
-
-@app.get("/api/products/{pid}")
-async def get_product(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT * FROM products WHERE id=? AND restaurant_id=?",
-        (pid, user["restaurant_id"])).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Product not found")
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.post("/api/products", status_code=201)
-async def create_product(data: ProductCreate, user=Depends(current_user)):
-    conn = database.get_db()
-    _check_plan_limit(conn, user["restaurant_id"], user.get("plan", "trial"), "products", "products")
-    pid = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO products (id, restaurant_id, name, price, category, description, icon, variants, available, image, image_url, gallery_images)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pid, user["restaurant_id"], data.name, data.price, data.category,
-          data.description, data.icon, json.dumps(data.variants), int(data.available),
-          data.image, data.image_url, json.dumps(data.gallery_images)))
-    conn.commit()
-    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.patch("/api/products/{pid}")
-async def update_product(pid: str, data: ProductUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM products WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    upd = {}
-    if data.name is not None: upd["name"] = data.name
-    if data.price is not None: upd["price"] = data.price
-    if data.category is not None: upd["category"] = data.category
-    if data.description is not None: upd["description"] = data.description
-    if data.icon is not None: upd["icon"] = data.icon
-    if data.variants is not None: upd["variants"] = json.dumps(data.variants)
-    if data.available is not None: upd["available"] = int(data.available)
-    if data.image is not None: upd["image"] = data.image
-    if data.image_url is not None: upd["image_url"] = data.image_url
-    if data.gallery_images is not None: upd["gallery_images"] = json.dumps(data.gallery_images)
-    if upd:
-        sets = ", ".join(f"{k}=?" for k in upd) + ", updated_at=datetime('now')"
-        conn.execute(f"UPDATE products SET {sets} WHERE id=?", list(upd.values()) + [pid])
-        log_activity(conn, user["restaurant_id"], "product_updated", "product", pid,
-                     f"تعديل المنتج: {', '.join(upd.keys())}", user["id"], user.get("name", ""))
-        conn.commit()
-    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.patch("/api/products/{pid}/availability")
-async def toggle_availability(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("SELECT available FROM products WHERE id=? AND restaurant_id=?",
-                       (pid, user["restaurant_id"])).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    new_val = 1 - row["available"]
-    conn.execute("UPDATE products SET available=? WHERE id=?", (new_val, pid))
-    conn.commit()
-    conn.close()
-    return {"available": bool(new_val)}
-
-
-@app.patch("/api/products/{product_id}/sold-out-today")
-async def toggle_sold_out_today(product_id: str, user=Depends(require_role("owner","manager","staff"))):
-    from datetime import date as _date
-    conn = database.get_db()
-    try:
-        p = conn.execute("SELECT * FROM products WHERE id=? AND restaurant_id=?",
-                         (product_id, user["restaurant_id"])).fetchone()
-        if not p:
-            raise HTTPException(404, "المنتج غير موجود")
-        today = _date.today().isoformat()
-        current = p["sold_out_date"] if "sold_out_date" in p.keys() else ""
-        new_val = today if current != today else ""
-        conn.execute("UPDATE products SET sold_out_date=? WHERE id=?", (new_val, product_id))
-        conn.commit()
-        return {"sold_out_today": new_val == today}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/products/{pid}")
-async def delete_product(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM products WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    conn.execute("DELETE FROM products WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
+# ── Products — moved to routers/products.py (NUMBER 43) ──────────────────────
 
 
 # ── Menu Images ───────────────────────────────────────────────────────────────
