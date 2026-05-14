@@ -28,6 +28,7 @@ from services.ws_manager import ws_manager
 from services.integrations import get_adapter, get_all_adapters, PLATFORM_CATALOG
 import secrets as _secrets
 import tempfile
+from routers.health import router as _health_router, _env_present
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("restaurant-saas")
@@ -897,6 +898,10 @@ async def subscription_guard(request: Request, call_next):
     return await call_next(request)
 
 
+# ── Routers (NUMBER 43 extraction) ───────────────────────────────────────────
+app.include_router(_health_router)
+
+
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def create_token(data: dict, hours: int = None) -> str:
@@ -1125,31 +1130,8 @@ class BotConfigUpdate(BaseModel):
     brand_keywords: Optional[str] = None
 
 
-# ── Health check ──────────────────────────────────────────────────────────────
-
-@app.get("/health")
-async def health_check():
-    try:
-        conn = database.get_db()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        db_ok = True
-    except Exception as e:
-        db_ok = False
-    return {
-        "status": "ok" if db_ok else "degraded",
-        "db": "ok" if db_ok else "error",
-        "db_backend": "postgresql" if database.IS_POSTGRES else "sqlite",
-        "version": "3.0.0",
-        "base_url": BASE_URL,
-    }
-
-
 # ── Live Readiness helpers ─────────────────────────────────────────────────────
-
-def _env_present(name: str) -> bool:
-    """Return True if the env var is set and non-empty."""
-    return bool(os.getenv(name, "").strip())
+# Note: _env_present is imported from routers.health (NUMBER 43)
 
 META_CHANNELS = {"whatsapp", "instagram", "facebook"}
 
@@ -1272,44 +1254,6 @@ def _recommended_fix(channels: dict, ai_ok: bool) -> str:
         elif s == "outbound_failed":
             problems.append(f"تحقق من أخطاء إرسال {platform}")
     return " | ".join(problems) if problems else "لا توجد مشاكل"
-
-
-@app.get("/api/health")
-async def api_health():
-    """Detailed health endpoint: DB + env var presence (no secret values)."""
-    try:
-        conn = database.get_db()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        db_ok = True
-    except Exception:
-        db_ok = False
-
-    jwt_default = (os.getenv("JWT_SECRET", "") == "supersecretkey_change_in_production_123456789"
-                   or not _env_present("JWT_SECRET"))
-    return {
-        "status":        "ok" if db_ok else "degraded",
-        "db":            "ok" if db_ok else "error",
-        "db_backend":    "postgresql" if database.IS_POSTGRES else "sqlite",
-        "version":       "3.0.0",
-        "base_url":      "configured" if (BASE_URL and "localhost" not in BASE_URL) else "localhost_or_missing",
-        "env": {
-            "BASE_URL":                  _env_present("BASE_URL"),
-            "DATABASE_URL":              _env_present("DATABASE_URL"),
-            "JWT_SECRET":                _env_present("JWT_SECRET") and not jwt_default,
-            "OPENAI_API_KEY":            _env_present("OPENAI_API_KEY"),
-            "OPENAI_MODEL":              _env_present("OPENAI_MODEL"),
-            "META_APP_ID":               _env_present("META_APP_ID"),
-            "META_APP_SECRET":           _env_present("META_APP_SECRET"),
-            "META_VERIFY_TOKEN":         _env_present("META_VERIFY_TOKEN"),
-            "WHATSAPP_VERIFY_TOKEN":     _env_present("WHATSAPP_VERIFY_TOKEN"),
-            "WHATSAPP_PHONE_NUMBER_ID":  _env_present("WHATSAPP_PHONE_NUMBER_ID"),
-            "ALLOWED_ORIGINS":           _env_present("ALLOWED_ORIGINS"),
-        },
-        "openai_configured": bool(OPENAI_API_KEY),
-        "meta_configured":   bool(META_APP_ID and META_APP_SECRET),
-        "base_url_value":    BASE_URL,
-    }
 
 
 @app.get("/api/live-readiness")
