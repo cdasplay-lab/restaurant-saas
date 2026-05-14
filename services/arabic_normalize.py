@@ -140,9 +140,18 @@ def find_product_name_in_session(alias_name: str, session_items: list) -> Option
     """
     canonical = resolve_alias(alias_name)
     if not canonical:
-        # Try direct match
+        # Fallback 1 — direct substring match
         for it in session_items:
             if alias_name in it.name or it.name in alias_name:
+                return it.name
+        # Fallback 2 — normalized substring match (handles گ→ج, أ→ا, ال prefix etc.)
+        # e.g. "برگر" → "برجر" which IS a substring of "برجر لحم"
+        # e.g. "البرگر" → strip ال → "برجر" which IS a substring of "برجر لحم"
+        alias_norm = normalize_arabic(alias_name)
+        alias_stripped = alias_norm[2:] if alias_norm.startswith("ال") else alias_norm
+        for it in session_items:
+            it_norm = normalize_arabic(it.name)
+            if alias_norm in it_norm or (alias_stripped and alias_stripped in it_norm):
                 return it.name
         return None
 

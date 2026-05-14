@@ -142,6 +142,37 @@ BANNED_PHRASES = [
     # NUMBER 10 polish — handoff should never use أكيد
     "أكيد 🌷 أحولك",
     "أكيد أحولك",
+    # NUMBER 42 RISK-08 — MSA drift phrases that signal GPT slipping into formal Arabic
+    "يسعدني خدمتك",
+    "نتطلع لخدمتك",
+    "نتمنى لك",
+    "يشرفنا",
+    "يسرنا",
+    "نود إعلامك",
+    "نود الإشارة",
+    "نود التنويه",
+    "نفيدكم بأن",
+    "نحيطكم علماً",
+    "وفقاً لطلبكم",
+    "تفضلوا بقبول",
+    "مع وافر الاحترام",
+    "تحياتنا",
+    "في رعاية الله",
+    "وفقك الله",
+    "جزاك الله",
+    "بارك الله فيك",
+    "استفساراتكم",
+    "ملاحظاتكم",
+    "شكاويكم",
+    "تحت أمركم",
+    "رهن إشارتكم",
+    "أحيطكم علماً",
+    "يمكن التواصل معنا",
+    "لمزيد من الاستفسار",
+    "لأي استفسار",
+    "نرجو المعذرة",
+    "نأسف لهذا الأمر",
+    "نعتذر بشدة",
 ]
 
 POSITIVE_EMOJI_FALLBACKS = ["من ذوقك 🌷", "تسلم 🌷", "يسلم قلبك 🌷"]
@@ -951,6 +982,17 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                             logger.info(f"[order_brain] restored from DB conv={conversation_id}")
                     except Exception as _re:
                         logger.warning(f"[order_brain] DB restore failed: {_re}")
+            # NUMBER 42 RISK-06 — pre-fill name/phone from memory so bot doesn't re-ask known fields
+            if memory and _is_fresh:
+                _mem_prefill_name = (memory.get("name") or "").strip()
+                _mem_prefill_phone = (memory.get("phone") or "").strip()
+                if _mem_prefill_name and not _ob_session.customer_name:
+                    _ob_session.customer_name = _mem_prefill_name
+                    logger.info(f"[ob-risk06] pre-filled name='{_mem_prefill_name}' conv={conversation_id}")
+                if _mem_prefill_phone and not _ob_session.phone:
+                    _ob_session.phone = _mem_prefill_phone
+                    logger.info(f"[ob-risk06] pre-filled phone='{_mem_prefill_phone}' conv={conversation_id}")
+
             OrderBrain.update_from_message(
                 _ob_session,
                 customer_message,
@@ -1024,11 +1066,23 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         if (_ob_session is not None and _ob_session.has_items()
                 and _ob_session.confirmation_status in ("collecting", "awaiting_confirm")):
             _edit_target = None
-            for _it in _ob_session.items:
-                _it_norm = _it.name.replace("ال", "").strip()
-                if _it.name in customer_message or _it_norm in customer_message:
-                    _edit_target = _it.name
-                    break
+            # NUMBER 42 RISK-04 — alias-aware target resolution (e.g. "شيل كولا" → finds "بيبسي" in session)
+            try:
+                from services.arabic_normalize import find_product_name_in_session as _fpnis
+                for _word in customer_message.split():
+                    _matched = _fpnis(_word, _ob_session.items)
+                    if _matched:
+                        _edit_target = _matched
+                        break
+            except Exception:
+                pass
+            # Fallback — direct name / stripped prefix match
+            if not _edit_target:
+                for _it in _ob_session.items:
+                    _it_norm = _it.name.replace("ال", "").strip()
+                    if _it.name in customer_message or _it_norm in customer_message:
+                        _edit_target = _it.name
+                        break
             if _edit_target:
                 _ob_session.remove_item(_edit_target)
                 _ob_session.confirmation_status = "collecting"
@@ -1326,7 +1380,12 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     if _mood == "urgent":
         _max_tokens = max(40, int(_max_tokens * 0.6))
     if customer_message.startswith("[فويس]"):
-        _max_tokens = min(_max_tokens, 60)
+        # NUMBER 42 RISK-10 — don't cap when order is complete; summary needs full token budget
+        _ob_complete_for_cap = (
+            _ob_session is not None and _ob_session.is_complete()
+        ) if "_ob_session" in dir() else False
+        if not _ob_complete_for_cap:
+            _max_tokens = min(_max_tokens, 60)
 
     model     = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     # Temperature 0.3 — consistency over creativity for a cashier bot
@@ -1600,6 +1659,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
     # NUMBER 41B C1 — Active order + no tool triggered → always force deterministic next directive.
     # GPT must call update_order/place_order during an active order; free-text replies are a bug.
+    _c1_fired = False
     if (
         _ob_session is not None
         and _ob_session.is_active()
@@ -1612,19 +1672,20 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             _c1_reply = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
             if _c1_reply:
                 reply_text = _c1_reply
+                _c1_fired = True
                 logger.info(f"[bot41b-C1] active order, no tool — forced next directive conv={conversation_id}")
         except Exception as _c1_err:
             logger.warning(f"[bot41b-C1] fallback failed: {_c1_err}")
 
     # Extract order if enabled (keyword-based, from customer message)
-    # NUMBER 41A — Skip regex extraction if GPT tool already handled this message
+    # NUMBER 41A — Skip if GPT tool handled this. NUMBER 42 RISK-02 — also skip if C1 fired.
     extracted_order = None
     order_enabled = (bot_cfg["order_extraction_enabled"] if bot_cfg else 1)
     if order_enabled and any(kw in customer_message for kw in ORDER_KEYWORDS):
-        if not _tool_call_data["triggered"]:
+        if not _tool_call_data["triggered"] and not _c1_fired:
             extracted_order = _extract_order_from_message(customer_message, [dict(p) for p in products])
         else:
-            logger.info(f"[bot41a] regex extraction skipped — GPT tool already handled conv={conversation_id}")
+            logger.info(f"[bot41a] regex extraction skipped — tool={_tool_call_data['triggered']} c1={_c1_fired} conv={conversation_id}")
 
     # Auto-detect confirmed order from bot's own reply (✅ summary block)
     confirmed_order = None
@@ -1734,9 +1795,23 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
                     # Append upsell — only if customer hasn't already refused in this conversation
                     if _upsell_line:
-                        _refusal_signals = ["لا شكراً", "لا شكرا", "لا ما أريد", "لا بس",
-                                            "بس هذا", "ما أريد إضافة", "يكفي", "بس هيچ",
-                                            "ما أريد ثاني", "لا ثاني", "بس، شكراً"]
+                        # NUMBER 42 RISK-12 — expanded refusal signals (Iraqi + Gulf variants)
+                        _refusal_signals = [
+                            "لا شكراً", "لا شكرا", "لا ما أريد", "لا بس",
+                            "بس هذا", "ما أريد إضافة", "يكفي", "بس هيچ",
+                            "ما أريد ثاني", "لا ثاني", "بس، شكراً",
+                            # Iraqi variants
+                            "بس هذا", "هذا يكفي", "ما أريد غير", "ما أريد شي ثاني",
+                            "لا بس هيچ", "هيچ بس", "يكفي هذا", "بس هيچي",
+                            "ما أريد زيادة", "ما أحتاج شي ثاني", "ما أحتاج غير",
+                            "خلاص بس", "بس خلاص", "ما أريد يزيد", "ما أريد أضيف",
+                            # Gulf variants
+                            "بس كذا", "هذا بس", "ما ابي شي ثاني", "ما ابغى زيادة",
+                            "يكفيني", "وايد", "زهيت",
+                            # Direct price/quantity refusals
+                            "كثير", "غالي", "ميزانيتي خلصت", "بس هذي",
+                            "لا ما أريد إضافات",
+                        ]
                         _prev_customer_text = " ".join(
                             h.get("content", "") for h in _history_dicts
                             if h.get("role") in ("customer", "user")
@@ -2580,7 +2655,19 @@ def _build_system_prompt(
             _shift_block += f"- {_sc}\n"
         _shift_block += "\n"
 
-    prompt = f"""{_shift_block}أنت {bot_name}، موظف استقبال في {rest_name}.
+    # NUMBER 42 RISK-07 — Hard rules injected at top so GPT reads them before menu/memory
+    _hard_rules_top = """## 🔴 قواعد حديدية — لا استثناء ولا تجاوز
+
+1. **سؤال واحد فقط** في كل رسالة — ممنوع تجمع أسئلة.
+2. **ردودك جملة أو جملتين** — لا أكثر في الحالات العادية.
+3. **لا تذكر منتجاً أو سعراً** خارج القائمة أدناه — حتى لو سأل العميل.
+4. **لا تبدأ بـ** "بالتأكيد" / "بالطبع" / "بكل سرور" / "يسعدني" — هذي ردود AI رسمية.
+5. **لا تعيد سؤالاً** ذكره العميل في نفس المحادثة (اسم، عنوان، دفع).
+6. **لا تضيف "شنو تحب تطلب؟"** بعد استلام أي بيانات (عنوان، دفع، اسم).
+
+"""
+
+    prompt = f"""{_shift_block}{_hard_rules_top}أنت {bot_name}، موظف استقبال في {rest_name}.
 مو بوت رسمي — أنت موظف مطعم حقيقي على الواتساب/الإنستغرام.
 أسلوبك: {_tone_desc}{(' ' + _dialect_desc) if _dialect_desc else ''}{_dialect_note}
 {_brand_block}{cust_greeting}{vip_note}

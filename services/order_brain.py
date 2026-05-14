@@ -79,14 +79,12 @@ def parse_allowed_payment_methods(raw: str) -> list:
     return result
 
 CONFIRMATION_KEYWORDS = [
+    # NUMBER 42 RISK-01 — explicit confirm phrases only; bare affirmations removed
+    # to prevent accidental order fire during mid-collection conversation
     "ثبت", "أكمل", "تمام ثبته", "أكمله", "ثبته",
     "خلاص ثبت", "نعم ثبت", "اكمل", "ثبتها", "نثبتها",
     "تمام أكمل", "نعم أكمل", "تمام نكمل",
-    # Iraqi Arabic affirmations when session is complete
     "اي ثبت", "صح ثبت", "اقفل الطلب", "أغلق الطلب", "اختم الطلب",
-    # Bare affirmations — safe because is_complete() guard prevents false fire
-    "نعم", "ايوه", "أيوه", "آه", "اوكي", "اوكى", "okay", "ok",
-    "تمام", "صحيح", "اي",
 ]
 
 CANCELLATION_KEYWORDS = [
@@ -184,6 +182,7 @@ _AR_NUMBERS = {
 
 # Common Iraqi delivery areas for address extraction
 _IRAQ_AREAS = [
+    # Baghdad districts
     "الكرادة", "المنصور", "الكرخ", "الرصافة", "العلوية", "الجادرية",
     "الدورة", "الزعفرانية", "البياع", "الغزالية", "الحارثية",
     "الصدر", "الشعب", "التاجي", "أبو غريب", "الاعظمية",
@@ -193,6 +192,14 @@ _IRAQ_AREAS = [
     "بغداد الجديدة", "النهضة", "الطالبية", "القاهرة",
     "أحمد أغا", "الأمين", "الشماعية", "الدواسة", "الجهاد",
     "الشعلة", "الحسينية", "الطارمية", "السيدية",
+    # NUMBER 42 POLISH-04 — major Iraqi cities
+    "البصرة", "بصرة", "الموصل", "موصل", "النجف", "نجف",
+    "كربلاء", "كربلاء المقدسة", "أربيل", "اربيل", "هولير",
+    "السليمانية", "سليمانية", "دهوك", "كركوك",
+    "الناصرية", "ناصرية", "الحلة", "حلة", "بابل",
+    "الكوت", "كوت", "العمارة", "عمارة", "الديوانية", "ديوانية",
+    "الرمادي", "رمادي", "الفلوجة", "فلوجة", "سامراء",
+    "تكريت", "بعقوبة", "الخالص",
 ]
 
 # Map next missing field → Iraqi Arabic question text
