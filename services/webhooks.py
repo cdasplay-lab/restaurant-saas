@@ -4,9 +4,11 @@ Webhook handlers for Telegram, WhatsApp, Instagram, and Facebook Messenger.
 import uuid
 import json
 import os
+import re as _re
 import base64
 import logging
 import threading
+import time as _time_mod
 from typing import Optional
 
 import httpx
@@ -28,6 +30,23 @@ def _get_conv_lock(conv_id: str) -> threading.Lock:
         if conv_id not in _conv_locks:
             _conv_locks[conv_id] = threading.Lock()
         return _conv_locks[conv_id]
+
+
+# ── NUMBER 44A — Spam guard: max GPT calls per conversation in a sliding window ─
+_SPAM_WINDOW_S = 30      # seconds
+_SPAM_MAX_CALLS = 3      # max GPT calls per conv per window
+_conv_gpt_times: dict = {}
+_conv_gpt_mu = threading.Lock()
+
+
+# ── NUMBER 44A — PII masking for logs ────────────────────────────────────────
+_PHONE_RE = _re.compile(r'0[79]\d{8,9}')
+
+def _mask_pii(text: str) -> str:
+    """Mask Iraqi phone numbers (07x/09x format) in log output."""
+    if not text:
+        return text
+    return _PHONE_RE.sub(lambda m: m.group()[:3] + "****", str(text))
 
 
 _BLOCKED_SUB_STATUSES = {"expired", "suspended", "cancelled"}
@@ -1409,7 +1428,7 @@ def _process_incoming(
         logger.info(
             f"[incoming] req={req_id} restaurant={restaurant_id} "
             f"conv={conv_id} channel={platform} customer={customer_id} "
-            f"msg_len={len(content)} preview={content[:60]!r}"
+            f"msg_len={len(content)} preview={_mask_pii(content[:60])!r}"
         )
 
         # 1. Save customer message with optional media/story metadata
@@ -1587,15 +1606,33 @@ def _process_incoming(
                     bot_input = f"[فويس] {content}"
 
                 logger.info(f"[bot-call] req={req_id} conv={conv_id} restaurant={restaurant_id}")
-                # Run AI bot (sync; timeout=30s is set on the OpenAI client)
-                result = bot.process_message(restaurant_id, conv_id, bot_input)
-                reply_text = result.get("reply", "")
-                action = result.get("action", "reply")
-                extracted_order = result.get("extracted_order")
+
+                # NUMBER 44A — Spam guard: skip GPT if >3 calls in last 30s for this conversation
+                _skip_gpt = False
+                with _conv_gpt_mu:
+                    _now_gpt = _time_mod.monotonic()
+                    _recent_gpt = [t for t in _conv_gpt_times.get(conv_id, []) if _now_gpt - t < _SPAM_WINDOW_S]
+                    if len(_recent_gpt) >= _SPAM_MAX_CALLS:
+                        _skip_gpt = True
+                        logger.info(f"[spam-guard44a] conv={conv_id} — {len(_recent_gpt)} GPT calls in {_SPAM_WINDOW_S}s, skipping")
+                    else:
+                        _recent_gpt.append(_now_gpt)
+                        _conv_gpt_times[conv_id] = _recent_gpt
+
+                if _skip_gpt:
+                    reply_text = "لحظة 🌷"
+                    action = "reply"
+                    extracted_order = None
+                else:
+                    # Run AI bot (sync; timeout=30s is set on the OpenAI client)
+                    result = bot.process_message(restaurant_id, conv_id, bot_input)
+                    reply_text = result.get("reply", "")
+                    action = result.get("action", "reply")
+                    extracted_order = result.get("extracted_order")
 
                 logger.info(
                     f"[bot-reply] req={req_id} conv={conv_id} action={action} "
-                    f"reply_len={len(reply_text)} preview={reply_text[:60]!r}"
+                    f"reply_len={len(reply_text)} preview={_mask_pii(reply_text[:60])!r}"
                 )
 
                 # Save bot reply
@@ -1623,11 +1660,34 @@ def _process_incoming(
                             ("escalation_requested", conv_id)
                         )
                         conn.commit()  # commit before notification so second thread sees 'human'
+
+                        # NUMBER 44A — Build rich handoff context (order + customer info for staff)
+                        _ob_items_ctx = ""
+                        try:
+                            _ob_raw = conn.execute(
+                                "SELECT order_brain_state FROM conversations WHERE id=?", (conv_id,)
+                            ).fetchone()
+                            if _ob_raw and _ob_raw["order_brain_state"]:
+                                _ob_data = json.loads(_ob_raw["order_brain_state"])
+                                _items = _ob_data.get("items", [])
+                                if _items:
+                                    _ob_items_ctx = " | السلة: " + "، ".join(
+                                        f"{i.get('name', '')}×{i.get('qty', 1)}" for i in _items[:4]
+                                    )
+                        except Exception:
+                            pass
+                        _c_phone = customer.get("phone", "")
+                        _handoff_body = (
+                            f"العميل {customer.get('name', '') or 'غير معروف'}"
+                            f"{(' (' + _c_phone + ')') if _c_phone else ''}"
+                            f" يطلب التحدث مع موظف{_ob_items_ctx}"
+                        )
+
                         _create_notification(
                             conn, restaurant_id,
                             "escalation",
                             "طلب تحويل للموظف",
-                            f"العميل {customer.get('name', '')} يطلب التحدث مع موظف",
+                            _handoff_body,
                             "conversation", conv_id
                         )
                         ws_manager.broadcast_sync(restaurant_id, "escalation", {
@@ -1659,7 +1719,7 @@ def _process_incoming(
                 _tag = f"[{platform[:2]}-reply-{'sent' if send_ok else 'error'}]"
                 logger.info(
                     f"{_tag} req={req_id} restaurant={restaurant_id} "
-                    f"conv={conv_id} recipient={recipient_id[:12] if recipient_id else '?'} "
+                    f"conv={conv_id} recipient={_mask_pii(recipient_id)[:10] if recipient_id else '?'} "
                     f"reply_len={len(reply_text)}"
                     + (f" error={send_err}" if not send_ok else "")
                 )

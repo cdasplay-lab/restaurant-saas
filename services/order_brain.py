@@ -23,8 +23,8 @@ from typing import Optional, Dict, List
 
 logger = logging.getLogger("restaurant-saas")
 
-# Session expires after 2 hours of inactivity
-_SESSION_TTL = 7200.0
+# NUMBER 44A — extended to 12h to survive human-handoff pauses and server restarts
+_SESSION_TTL = 43200.0
 
 # NUMBER 43 — Quantity sanity check: cap unreasonable quantities
 MAX_QTY = 20

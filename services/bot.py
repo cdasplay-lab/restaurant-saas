@@ -965,6 +965,7 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
     _ob_session = None
     _ob_invalid_pm_reply = None
     _ob_soldout_reply = None
+    _session_expired_msg = None  # NUMBER 44A — set when saved session existed but expired
     if _ORDER_BRAIN_ENABLED and OrderBrain is not None:
         try:
             _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
@@ -980,6 +981,15 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                         if _restored:
                             _ob_session = _restored
                             logger.info(f"[order_brain] restored from DB conv={conversation_id}")
+                        else:
+                            # NUMBER 44A — state existed but expired; warn customer if they had items
+                            try:
+                                _exp_data = json.loads(_saved_state)
+                                if _exp_data.get("items"):
+                                    _session_expired_msg = "طلبك السابق انتهت مدته 🌷 — تحب تبدأ طلب جديد؟"
+                            except Exception:
+                                pass
+                            logger.info(f"[order_brain44a] DB state expired — fresh session conv={conversation_id}")
                     except Exception as _re:
                         logger.warning(f"[order_brain] DB restore failed: {_re}")
             # NUMBER 42 RISK-06 — pre-fill name/phone from memory so bot doesn't re-ask known fields
@@ -1529,7 +1539,17 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
 
     except Exception as e:
         logger.error(f"[bot] OpenAI call FAILED — restaurant={restaurant_id} model={model} error={e}", exc_info=True)
-        reply_text = "عذراً، حدث خطأ تقني. يرجى المحاولة مجدداً أو التواصل مع فريقنا مباشرة."
+        # NUMBER 44A — GPT fallback: use deterministic next directive if order is active
+        if _ob_session is not None and _ob_session.is_active():
+            try:
+                _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
+                reply_text = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
+                logger.info(f"[bot44a-gpt-fallback] deterministic fallback used conv={conversation_id}")
+            except Exception as _fe:
+                logger.warning(f"[bot44a-gpt-fallback] deterministic also failed: {_fe}")
+                reply_text = "عذراً 🙏 صار خطأ تقني، راجعنا بعد شوية"
+        else:
+            reply_text = "عذراً 🙏 صار خطأ تقني، راجعنا بعد شوية"
         return {"reply": reply_text, "action": "reply", "extracted_order": None}
 
     # Phase 2+4 — Function Calling: handle place_order and update_order tools
@@ -1895,6 +1915,10 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
             _uc_conn.commit(); _uc_conn.close()
         except Exception:
             pass
+
+    # NUMBER 44A — if previous session expired, override reply to inform customer
+    if _session_expired_msg and not extracted_order:
+        reply_text = _session_expired_msg
 
     return {
         "reply": reply_text,
