@@ -3,13 +3,14 @@ helpers.py — NUMBER 43: Shared business-logic helpers.
 
 Extracted from main.py to allow routers to import without circular deps.
 Contents: plan limits/features, subscription state, log_activity,
-          create_notification, _check_plan_limit.
+          create_notification, _check_plan_limit, password hashing.
 """
 from __future__ import annotations
 import uuid
 import logging
 from typing import Optional
 from fastapi import HTTPException
+import bcrypt as _bcrypt
 import database
 
 logger = logging.getLogger("restaurant-saas")
@@ -184,3 +185,16 @@ def create_notification(conn, restaurant_id, ntype, title, message, entity_type=
         )
     except Exception as _e:
         logger.warning(f"[create_notification] failed type={ntype} restaurant={restaurant_id}: {_e}")
+
+
+# ── Password helpers ──────────────────────────────────────────────────────────
+
+def _hash_password(pw: str) -> str:
+    return _bcrypt.hashpw(pw.encode(), _bcrypt.gensalt()).decode()
+
+
+def _verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return _bcrypt.checkpw(pw.encode(), hashed.encode())
+    except Exception:
+        return False

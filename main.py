@@ -30,6 +30,8 @@ import secrets as _secrets
 import tempfile
 from routers.health import router as _health_router, _env_present
 from routers.products import router as _products_router, ProductCreate, ProductUpdate
+from routers.customers import router as _customers_router, CustomerUpdate
+from routers.staff import router as _staff_router, StaffCreate, StaffUpdate
 from dependencies import (
     SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_HOURS, bearer,
     verify_token, current_user, require_role, current_super_admin,
@@ -40,6 +42,7 @@ from helpers import (
     get_subscription_state, can_use_feature,
     _plan_limit, _check_plan_limit,
     log_activity, create_notification,
+    _hash_password, _verify_password,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -171,14 +174,7 @@ if OPENAI_API_KEY:
     import openai as _openai
     openai_client = _openai.OpenAI(api_key=OPENAI_API_KEY)
 
-def _hash_password(pw: str) -> str:
-    return _bcrypt.hashpw(pw.encode(), _bcrypt.gensalt()).decode()
-
-def _verify_password(pw: str, hashed: str) -> bool:
-    try:
-        return _bcrypt.checkpw(pw.encode(), hashed.encode())
-    except Exception:
-        return False
+# _hash_password, _verify_password imported from helpers (NUMBER 43)
 # bearer imported from dependencies (NUMBER 43)
 
 from contextlib import asynccontextmanager
@@ -770,6 +766,8 @@ async def subscription_guard(request: Request, call_next):
 # ── Routers (NUMBER 43 extraction) ───────────────────────────────────────────
 app.include_router(_health_router)
 app.include_router(_products_router)
+app.include_router(_customers_router)
+app.include_router(_staff_router)
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -830,14 +828,6 @@ class OrderUpdate(BaseModel):
     address: Optional[str] = None
 
 
-class CustomerUpdate(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    vip: Optional[bool] = None
-    preferences: Optional[str] = None
-    favorite_item: Optional[str] = None
-
-
 class MsgCreate(BaseModel):
     content: str
 
@@ -881,17 +871,6 @@ class ChannelUpdate(BaseModel):
     page_id: Optional[str] = None
     page_name: Optional[str] = None
     bot_username: Optional[str] = None
-
-
-class StaffCreate(BaseModel):
-    email: str
-    name: str
-    password: str
-    role: str = "staff"
-
-
-class StaffUpdate(BaseModel):
-    role: str
 
 
 class BotConfigUpdate(BaseModel):
@@ -3566,74 +3545,6 @@ async def upload_menu_image(
         public_url = f"{base}/uploads/menu-images/{fname}"
 
     return {"url": public_url}
-
-
-# ── Customers ─────────────────────────────────────────────────────────────────
-
-@app.get("/api/customers")
-async def list_customers(search: Optional[str] = None, user=Depends(current_user)):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    if search:
-        rows = conn.execute(
-            "SELECT * FROM customers WHERE restaurant_id=? AND (name LIKE ? OR phone LIKE ?) ORDER BY total_spent DESC",
-            (rid, f"%{search}%", f"%{search}%")).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC", (rid,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/customers/{cid}")
-async def get_customer(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM customers WHERE id=? AND restaurant_id=?",
-                       (cid, user["restaurant_id"])).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    orders = conn.execute(
-        "SELECT * FROM orders WHERE customer_id=? ORDER BY created_at DESC LIMIT 10", (cid,)).fetchall()
-    conn.close()
-    result = dict(row)
-    result["orders"] = [dict(o) for o in orders]
-    return result
-
-
-@app.patch("/api/customers/{cid}")
-async def update_customer(cid: str, data: CustomerUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM customers WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    upd = {}
-    if data.name is not None: upd["name"] = data.name
-    if data.phone is not None: upd["phone"] = data.phone
-    if data.vip is not None: upd["vip"] = int(data.vip)
-    if data.preferences is not None: upd["preferences"] = data.preferences
-    if data.favorite_item is not None: upd["favorite_item"] = data.favorite_item
-    if upd:
-        conn.execute(f"UPDATE customers SET {','.join(k+'=?' for k in upd)} WHERE id=?",
-                     list(upd.values()) + [cid])
-        conn.commit()
-    row = conn.execute("SELECT * FROM customers WHERE id=?", (cid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/customers/{cid}")
-async def delete_customer(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM customers WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    conn.execute("DELETE FROM customers WHERE id=?", (cid,))
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
 
 
 @app.get("/api/export/orders")
@@ -6333,87 +6244,6 @@ async def super_channel_errors(channel_id: str, admin=Depends(current_super_admi
         return [dict(r) for r in rows]
     finally:
         conn.close()
-
-
-# ── Staff Management ──────────────────────────────────────────────────────────
-
-@app.get("/api/staff")
-async def list_staff(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT id, name, email, role, created_at, last_login FROM users WHERE restaurant_id=? ORDER BY created_at",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/staff", status_code=201)
-async def create_staff(data: StaffCreate, user=Depends(require_role("owner", "manager"))):
-    if data.role == "owner" and user["role"] != "owner":
-        raise HTTPException(403, "فقط المالك يمكنه إضافة مالك آخر")
-    conn = database.get_db()
-    _check_plan_limit(conn, user["restaurant_id"], user.get("plan", "trial"), "staff", "users")
-    existing = conn.execute("SELECT id FROM users WHERE email=?", (data.email,)).fetchone()
-    if existing:
-        conn.close()
-        raise HTTPException(400, "البريد الإلكتروني مستخدم بالفعل")
-    uid = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO users (id, restaurant_id, email, password_hash, name, role)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (uid, user["restaurant_id"], data.email, _hash_password(data.password), data.name, data.role))
-    log_activity(conn, user["restaurant_id"], "staff_added", "user", uid,
-                 f"تمت إضافة {data.name} بدور {data.role}", user["id"], user["name"])
-    conn.commit()
-    row = conn.execute(
-        "SELECT id, name, email, role, created_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/staff/{uid}")
-async def update_staff_role(uid: str, data: StaffUpdate, user=Depends(require_role("owner"))):
-    conn = database.get_db()
-    target = conn.execute(
-        "SELECT * FROM users WHERE id=? AND restaurant_id=?", (uid, user["restaurant_id"])
-    ).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(404, "المستخدم غير موجود")
-    if uid == user["id"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكنك تغيير دورك بنفسك")
-    conn.execute("UPDATE users SET role=? WHERE id=?", (data.role, uid))
-    log_activity(conn, user["restaurant_id"], "staff_role_changed", "user", uid,
-                 f"تغيير دور {target['name']} إلى {data.role}", user["id"], user["name"])
-    conn.commit()
-    row = conn.execute(
-        "SELECT id, name, email, role, created_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/staff/{uid}")
-async def delete_staff(uid: str, user=Depends(require_role("owner"))):
-    conn = database.get_db()
-    target = conn.execute(
-        "SELECT * FROM users WHERE id=? AND restaurant_id=?", (uid, user["restaurant_id"])
-    ).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(404, "المستخدم غير موجود")
-    if uid == user["id"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكنك حذف حسابك الخاص")
-    conn.execute("DELETE FROM users WHERE id=?", (uid,))
-    log_activity(conn, user["restaurant_id"], "staff_removed", "user", uid,
-                 f"تمت إزالة {target['name']}", user["id"], user["name"])
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
 
 
 # ── Bot Config ────────────────────────────────────────────────────────────────
