@@ -34,6 +34,9 @@ from routers.customers import router as _customers_router, CustomerUpdate
 from routers.staff import router as _staff_router, StaffCreate, StaffUpdate
 from routers.settings import router as _settings_router, SettingsUpdate
 from routers.bot_config import router as _bot_config_router, BotConfigUpdate
+from routers.reply_templates import router as _reply_templates_router
+from routers.promo_codes import router as _promo_codes_router
+from routers.branches import router as _branches_router
 from dependencies import (
     SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_HOURS, bearer,
     verify_token, current_user, require_role, current_super_admin,
@@ -772,6 +775,9 @@ app.include_router(_customers_router)
 app.include_router(_staff_router)
 app.include_router(_settings_router)
 app.include_router(_bot_config_router)
+app.include_router(_reply_templates_router)
+app.include_router(_promo_codes_router)
+app.include_router(_branches_router)
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -3677,171 +3683,7 @@ async def broadcast_message(req: Request, background_tasks: BackgroundTasks, use
     return {"queued": len(targets), "message": f"تم إرسال الرسالة لـ {len(targets)} زبون"}
 
 
-# ── Reply Templates ───────────────────────────────────────────────────────────
-
-@app.get("/api/reply-templates")
-async def list_reply_templates(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM reply_templates WHERE restaurant_id=? ORDER BY created_at ASC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/reply-templates", status_code=201)
-async def create_reply_template(req: Request, user=Depends(current_user)):
-    body = await req.json()
-    title = (body.get("title") or "").strip()
-    content = (body.get("content") or "").strip()
-    if not title or not content:
-        raise HTTPException(400, "العنوان والمحتوى مطلوبان")
-    tid = str(uuid.uuid4())
-    conn = database.get_db()
-    conn.execute(
-        "INSERT INTO reply_templates (id, restaurant_id, title, content) VALUES (?,?,?,?)",
-        (tid, user["restaurant_id"], title, content)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM reply_templates WHERE id=?", (tid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/reply-templates/{tid}")
-async def delete_reply_template(tid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM reply_templates WHERE id=? AND restaurant_id=?",
-                        (tid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    conn.execute("DELETE FROM reply_templates WHERE id=?", (tid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
 # ── Promo Codes ───────────────────────────────────────────────────────────────
-
-@app.get("/api/promo-codes")
-async def list_promo_codes(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM promo_codes WHERE restaurant_id=? ORDER BY created_at DESC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return {"promo_codes": [dict(r) for r in rows]}
-
-
-@app.post("/api/promo-codes", status_code=201)
-async def create_promo_code(req: Request, user=Depends(current_user)):
-    data = await req.json()
-    code = (data.get("code") or "").strip().upper()
-    if not code:
-        raise HTTPException(400, "كود الخصم مطلوب")
-    discount_type  = data.get("discount_type", "percent")   # percent | fixed
-    discount_value = float(data.get("discount_value") or 0)
-    min_order      = float(data.get("min_order") or 0)
-    max_uses       = int(data.get("max_uses") or 0)
-    expires_at     = str(data.get("expires_at") or "")
-    if discount_type not in ("percent", "fixed"):
-        raise HTTPException(400, "discount_type يجب أن يكون percent أو fixed")
-    if discount_type == "percent" and not (0 < discount_value <= 100):
-        raise HTTPException(400, "نسبة الخصم يجب أن تكون بين 1 و 100")
-    pid = str(uuid.uuid4())
-    conn = database.get_db()
-    try:
-        conn.execute(
-            "INSERT INTO promo_codes (id, restaurant_id, code, discount_type, discount_value, "
-            "min_order, max_uses, expires_at) VALUES (?,?,?,?,?,?,?,?)",
-            (pid, user["restaurant_id"], code, discount_type, discount_value,
-             min_order, max_uses, expires_at)
-        )
-        conn.commit()
-    except Exception as _e:
-        conn.close()
-        raise HTTPException(409, "الكود موجود مسبقاً") from _e
-    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/promo-codes/{pid}")
-async def update_promo_code(pid: str, req: Request, user=Depends(current_user)):
-    data = await req.json()
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    allowed = {"discount_type", "discount_value", "min_order", "max_uses", "expires_at", "is_active"}
-    upd = {k: v for k, v in data.items() if k in allowed}
-    if upd:
-        upd["updated_at"] = "CURRENT_TIMESTAMP"
-        set_clause = ", ".join(f"{k}=?" for k in upd if k != "updated_at")
-        set_clause += ", updated_at=CURRENT_TIMESTAMP"
-        vals = [v for k, v in upd.items() if k != "updated_at"]
-        conn.execute(f"UPDATE promo_codes SET {set_clause} WHERE id=?", [*vals, pid])
-        conn.commit()
-    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/promo-codes/{pid}")
-async def delete_promo_code(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    conn.execute("DELETE FROM promo_codes WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/api/promo-codes/validate")
-async def validate_promo_code(req: Request, user=Depends(current_user)):
-    """Check if a promo code is valid for a given order total. Returns discount amount."""
-    data = await req.json()
-    code  = (data.get("code") or "").strip().upper()
-    total = float(data.get("order_total") or 0)
-    if not code:
-        raise HTTPException(400, "كود مطلوب")
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
-        (user["restaurant_id"], code)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return {"valid": False, "reason": "الكود غير صحيح أو منتهي"}
-    row = dict(row)
-    # Expiry check
-    if row["expires_at"] and row["expires_at"] < str(datetime.now().date()):
-        return {"valid": False, "reason": "انتهت صلاحية الكود"}
-    # Max uses
-    if row["max_uses"] > 0 and row["uses_count"] >= row["max_uses"]:
-        return {"valid": False, "reason": "استُنفد الحد الأقصى لاستخدامات هذا الكود"}
-    # Min order
-    if total < row["min_order"]:
-        return {"valid": False, "reason": f"الحد الأدنى للطلب لاستخدام هذا الكود {row['min_order']:,.0f} د.ع"}
-    # Calculate discount
-    if row["discount_type"] == "percent":
-        discount = round(total * row["discount_value"] / 100)
-    else:
-        discount = min(row["discount_value"], total)
-    return {
-        "valid": True,
-        "discount_type": row["discount_type"],
-        "discount_value": row["discount_value"],
-        "discount_amount": discount,
-        "final_total": max(0, total - discount),
-    }
-
 
 # ── Outgoing Webhooks ─────────────────────────────────────────────────────────
 
@@ -4941,107 +4783,6 @@ async def ai_reply(cid: str, user=Depends(current_user)):
     msg = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
     conn.close()
     return dict(msg)
-
-
-# ── Branches ──────────────────────────────────────────────────────────────────
-
-@app.get("/api/branches")
-async def list_branches(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM branches WHERE restaurant_id=? ORDER BY is_default DESC, created_at ASC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return {"branches": [dict(r) for r in rows]}
-
-
-@app.post("/api/branches", status_code=201)
-async def create_branch(req: Request, user=Depends(current_user)):
-    body = await req.json()
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(400, "اسم الفرع مطلوب")
-    conn = database.get_db()
-    sub = conn.execute(
-        "SELECT plan FROM subscriptions WHERE restaurant_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
-        (user["restaurant_id"],)
-    ).fetchone()
-    plan = sub["plan"] if sub else "trial"
-    _check_plan_limit(conn, user["restaurant_id"], plan, "branches", "branches")
-    bid = str(__import__("uuid").uuid4())
-    is_default = 1 if not conn.execute(
-        "SELECT id FROM branches WHERE restaurant_id=?", (user["restaurant_id"],)
-    ).fetchone() else 0
-    conn.execute(
-        "INSERT INTO branches (id, restaurant_id, name, address, phone, working_hours, is_default) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (bid, user["restaurant_id"], name,
-         body.get("address", ""), body.get("phone", ""),
-         __import__("json").dumps(body.get("working_hours", {})), is_default)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/branches/{bid}")
-async def update_branch(bid: str, req: Request, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
-                        (bid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    body = await req.json()
-    allowed = {"name", "address", "phone", "working_hours", "is_active"}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if "working_hours" in updates:
-        import json as _j
-        updates["working_hours"] = _j.dumps(updates["working_hours"]) if isinstance(updates["working_hours"], dict) else updates["working_hours"]
-    if not updates:
-        conn.close()
-        return {"ok": True}
-    vals = list(updates.values())
-    set_clause = ", ".join(f"{k}=?" for k in updates)
-    conn.execute(f"UPDATE branches SET {set_clause} WHERE id=?", [*vals, bid])
-    conn.commit()
-    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/branches/{bid}")
-async def delete_branch(bid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    branch = conn.execute(
-        "SELECT * FROM branches WHERE id=? AND restaurant_id=?",
-        (bid, user["restaurant_id"])
-    ).fetchone()
-    if not branch:
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    if branch["is_default"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكن حذف الفرع الرئيسي")
-    conn.execute("DELETE FROM branches WHERE id=?", (bid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/api/branches/{bid}/set-default")
-async def set_default_branch(bid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
-                        (bid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    conn.execute("UPDATE branches SET is_default=0 WHERE restaurant_id=?", (user["restaurant_id"],))
-    conn.execute("UPDATE branches SET is_default=1 WHERE id=?", (bid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
