@@ -1,14 +1,19 @@
 """
 routers/customers.py — NUMBER 43: Customers CRUD extracted from main.py.
 
-Routes: GET/PATCH/DELETE /api/customers, GET /api/customers/{cid}
+Routes: GET/PATCH/DELETE /api/customers, GET /api/customers/{cid},
+        GET /api/export/customers
 
 Unchanged behavior — same URLs, same response shapes, same auth guards.
 """
 from __future__ import annotations
 from typing import Optional
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import database
@@ -89,3 +94,29 @@ async def delete_customer(cid: str, user=Depends(current_user)):
     conn.commit()
     conn.close()
     return {"message": "تم الحذف"}
+
+
+@router.get("/api/export/customers")
+async def export_customers(user=Depends(current_user)):
+    rid = user["restaurant_id"]
+    conn = database.get_db()
+    try:
+        rows = conn.execute(
+            "SELECT name, phone, platform, vip, orders_count, total_spent, last_seen, preferences FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC",
+            (rid,)
+        ).fetchall()
+    finally:
+        conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["الاسم", "الجوال", "المنصة", "VIP", "عدد الطلبات", "إجمالي الإنفاق", "آخر ظهور", "التفضيلات"])
+    for r in rows:
+        writer.writerow([r["name"] or "", r["phone"] or "", r["platform"] or "",
+                         "نعم" if r["vip"] else "لا", r["orders_count"] or 0,
+                         r["total_spent"] or 0, r["last_seen"] or "", r["preferences"] or ""])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=customers.csv"}
+    )
