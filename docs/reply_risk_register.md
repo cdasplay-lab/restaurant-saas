@@ -1,6 +1,6 @@
 # Reply Risk Register — Restaurant SaaS Platform
 
-> Last updated: 2026-05-14 | Based on NUMBER 41B audit
+> Last updated: 2026-05-15 | Reconciled through NUMBER 44B (41C / 42 / 44A fixes applied)
 > Status key: Open / Fixed / Needs-Test / Postponed
 
 ---
@@ -159,7 +159,7 @@
 - **Fix**: Add more phrases; also gate on `_tool_call_data["triggered"]` (if not triggered, no confirmation possible)
 - **Files**: `services/tool_safety.py`
 - **Phase**: 42
-- **Status**: Open
+- **Status**: Open — mitigated by C1 guard (active order always gets deterministic reply instead of GPT free text)
 
 ---
 
@@ -173,7 +173,7 @@
 - **Fix**: When C1 guard fires, set a flag to skip regex extraction
 - **Files**: `services/bot.py`
 - **Phase**: 42
-- **Status**: Open
+- **Status**: Fixed (NUMBER 42 reply quality — `_c1_fired=True` blocks regex extraction, verified in day42_reply_quality_phase1_test.py RISK-02)
 
 ---
 
@@ -181,15 +181,15 @@
 
 ### RISK-M1 — Session TTL Expires Mid-Conversation
 - **Area**: State persistence
-- **File/Function**: `order_brain.OrderSession` TTL = 7200s (2h), `_ob_save_state()` to DB
+- **File/Function**: `order_brain.OrderSession` TTL = 7200s → 43200s (12h), `_ob_save_state()` to DB
 - **Example**: Customer starts order, leaves for 2+ hours, comes back. Session cleared. Bot says "هلا شنو تطلب؟" while customer expects to continue.
 - **Bad Behavior**: Customer must restart order
 - **Root Cause**: In-memory TTL + DB state not always restored correctly if conv record stale
 - **Severity**: Medium
 - **Fix**: Extend TTL to 12h, add user-facing message "طلبك انتهت مدته — ابدأ طلب جديد؟"
 - **Files**: `services/order_brain.py`
-- **Phase**: 42
-- **Status**: Open
+- **Phase**: 44A
+- **Status**: Fixed (NUMBER 44A — TTL extended 7200→43200, expiry message injected when saved state had items)
 
 ---
 
@@ -259,7 +259,7 @@
 - **Fix**: In `_ob_save_state` or session restore, pre-fill `customer_name` / `phone` / `address` from memory if not set
 - **Files**: `services/bot.py`, `services/order_brain.py`
 - **Phase**: 42
-- **Status**: Open
+- **Status**: Fixed (NUMBER 42 reply quality RISK-06 — memory pre-fill for fresh session, verified in day42_reply_quality_phase1_test.py)
 
 ---
 
@@ -273,7 +273,7 @@
 - **Fix**: Wrap promo increment + order insert in single transaction
 - **Files**: `services/bot.py`
 - **Phase**: 42
-- **Status**: Open
+- **Status**: Fixed (NUMBER 42 data integrity RISK-05 — promo increment moved inside _auto_create_order transaction, verified in day42_data_integrity_phase3_test.py)
 
 ---
 
@@ -343,20 +343,31 @@
 
 ---
 
-## Risk Summary by Status
+## Risk Summary by Status (reconciled 2026-05-15)
 
 | Status | Count |
 |--------|-------|
-| Fixed | 8 |
-| Open | 9 |
+| Fixed | 14 |
+| Open | 4 |
 | Needs-Test | 1 |
 | Postponed | 4 |
 
+> New fixes since last audit: RISK-H7 (42), RISK-M1 (44A), RISK-M6 (42), RISK-M7 (42)
+
 ## Risk Summary by Severity
 
-| Severity | Total | Fixed | Open |
-|----------|-------|-------|------|
-| Critical | 5 | 5 | 0 |
-| High | 7 | 4 | 3 |
-| Medium | 7 | 0 | 7 |
-| Low | 5 | 0 | 5 |
+| Severity | Total | Fixed | Open | Needs-Test | Postponed |
+|----------|-------|-------|------|------------|-----------|
+| Critical | 5 | 5 | 0 | 0 | 0 |
+| High | 7 | 5 | 1 (H6) | 0 | 1 (H4→fixed) |
+| Medium | 7 | 4 | 2 (M2,M4) | 1 (M3) | 0 |
+| Low | 5 | 0 | 1 (M5) | 0 | 4 (L1-L4) |
+
+## Open Risks Requiring Attention Before Live Launch
+
+| Risk | Severity | Description | Workaround |
+|------|----------|-------------|------------|
+| RISK-H6 | High | Premature confirmation phrase list incomplete | C1 guard prevents GPT free text during active orders |
+| RISK-M2 | Medium | NUMBER 31 dead code when C1 active | Cosmetic — no wrong behavior, just confusing code |
+| RISK-M4 | Medium | Duplicate order on webhook retry | Low probability; no idempotency key yet |
+| RISK-M5 | Medium | Token budget too low truncates urgent replies | Set min floor of 80 tokens needed |
