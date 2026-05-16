@@ -82,15 +82,29 @@ def strip_prices_from_reply(text: str) -> str:
 def find_best_product_match(name: str, products: list) -> Optional[dict]:
     """
     Return the best-matching product dict for a given item name.
+    NUMBER 41A — uses arabic_normalize for alias matching + specificity filter.
 
-    Tiers (first hit wins, then word-level best-score):
+    Tiers:
+    0. Alias match via arabic_normalize (e.g. "كولا" → "بيبسي")
     1. Exact match
-    2. Product name contained in item name  ("برجر دجاج" contains "برجر")
-    3. Item name contained in product name  ("كولا" in "بيبسي كولا")
-    4. Word-level overlap ≥ 1 word of len≥3 ("برجر كلاسيك" shares "برجر" with "برجر لحم")
+    2. Product name ⊆ item name — longest product name wins (specificity)
+    3. Item name ⊆ product name — shortest product name wins (closest)
+    4. Word-level overlap ≥ 1 word of len≥3 — highest overlap wins
     """
     if not name or not products:
         return None
+
+    # NUMBER 41A — Tier 0: Alias match via arabic_normalize
+    try:
+        from services.arabic_normalize import find_product_by_alias, filter_products_by_specificity
+        _alias_matches = find_product_by_alias(name, products)
+        if _alias_matches:
+            _filtered = filter_products_by_specificity(name, _alias_matches)
+            if _filtered:
+                return _filtered[0]
+    except Exception:
+        pass  # fallback to original logic
+
     name_l = name.strip().lower()
 
     # 1. Exact
@@ -98,22 +112,30 @@ def find_best_product_match(name: str, products: list) -> Optional[dict]:
         if p.get("name", "").strip().lower() == name_l:
             return p
 
-    # 2. Product name ⊆ item name
+    # 2. Product name ⊆ item name — NUMBER 41A: longest product name wins
+    candidates_t2 = []
     for p in products:
         p_l = p.get("name", "").strip().lower()
         if p_l and p_l in name_l:
-            return p
+            candidates_t2.append((len(p_l), p))
+    if candidates_t2:
+        candidates_t2.sort(key=lambda x: x[0], reverse=True)  # longest first
+        return candidates_t2[0][1]
 
-    # 3. Item name ⊆ product name
+    # 3. Item name ⊆ product name — shortest product name wins (closest match)
+    candidates_t3 = []
     for p in products:
         p_l = p.get("name", "").strip().lower()
         if p_l and name_l in p_l:
-            return p
+            candidates_t3.append((len(p_l), p))
+    if candidates_t3:
+        candidates_t3.sort(key=lambda x: x[0])  # shortest first
+        return candidates_t3[0][1]
 
-    # 4. Word-level: longest shared meaningful word
+    # 4. Word-level: highest overlap wins (with tiebreaker on product name length)
     name_words = set(w for w in name_l.split() if len(w) >= 3)
     if name_words:
-        best, best_score = None, 0
+        best, best_score, best_len = None, 0, 0
         for p in products:
             p_l = p.get("name", "").strip().lower()
             p_words = set(p_l.split())
@@ -125,8 +147,10 @@ def find_best_product_match(name: str, products: list) -> Optional[dict]:
                     1 for nw in name_words
                     if any(nw in pw or pw in nw for pw in p_words if len(pw) >= 3)
                 )
-            if score > best_score:
+            # Tiebreaker: prefer longer product name (more specific)
+            if score > best_score or (score == best_score and score > 0 and len(p_l) > best_len):
                 best_score = score
+                best_len = len(p_l)
                 best = p
         if best_score > 0:
             return best
@@ -165,6 +189,13 @@ def validate_tool_items(items: list, products: list) -> tuple:
 
         match = find_best_product_match(raw_name, products)
         if match:
+            # NUMBER 41B C5 — reject sold-out items (available=0 or sold_out_date set)
+            _avail_raw = match.get("available", match.get("is_available", None))
+            _avail = int(_avail_raw) if _avail_raw is not None else 1
+            if not _avail or match.get("sold_out_date"):
+                unknown.append(f"[نافد] {match['name']}")
+                logger.warning(f"[tool_safety] sold-out item blocked: {match['name']!r}")
+                continue
             db_price = float(match.get("price") or gpt_price)
             validated.append({
                 "name": match["name"],   # canonical name from DB

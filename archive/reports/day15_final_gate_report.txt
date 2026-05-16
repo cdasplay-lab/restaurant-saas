@@ -1,0 +1,92 @@
+NUMBER 15 FINAL GATE — Manual Billing Production Hardening
+Run: 7212312 — 2026-04-26 17:05
+Storage mode: supabase
+========================================================================
+✅ SETUP tokens
+✅ SETUP super_admin token
+✅ A.1 storage-mode endpoint returns 200
+✅ A.2 storage_mode is 'supabase' or 'local': got=supabase
+✅ A.3 supabase mode: no warning
+✅ B.1 create payment method
+✅ B.2 audit: payment_method_created logged
+✅ B.3 audit: actor_role=super_admin
+✅ B.4 edit payment method
+✅ B.5 audit: payment_method_updated logged
+✅ B.6 restaurant sees updated account_number
+✅ B.7 disable payment method
+✅ B.8 audit: payment_method_disabled logged
+✅ B.9 disabled method hidden from restaurant
+✅ C.1 proof upload returns 200: {"ok":true,"request_id":"807f76f1-abdc-42c4-ae74-63ef78e46078","status":"pending","storage_mode":"local","message":"تم استلام طلب الدفع — سيراجعه المشرف قريباً","proof_url":"/uploads/payment_proofs/80
+✅ C.2 request_id returned
+✅ C.3 proof_url non-empty
+✅ C.4 storage_mode correct: got=local
+✅ C.5 storage_mode is valid (supabase or local): upload=local
+✅ C.6 DB row has proof_url
+✅ C.7 DB row has storage_mode
+✅ C.8 audit: payment_request_submitted logged
+✅ C.9 audit: actor_role=owner
+✅ C.10 audit: plan=starter
+✅ C.11 local: file written to disk
+✅ D.1 R1: own proof redirect returns 302: got 302
+✅ D.2 R2: cannot access R1 proof (403): got 403
+✅ D.3 unauthenticated: proof returns 401 or 403: got 401
+✅ D.4 R1: proof_url in my-payment-requests
+✅ D.5 R1: proof_path NOT in my-payment-requests
+✅ D.6 R2 cannot see R1 requests in my-payment-requests
+✅ E.1 approve returns 200
+✅ E.2 status=approved
+✅ E.3 plan=starter
+✅ E.4 period_end non-empty
+✅ E.5 subscription.status=active: got=active
+✅ E.6 subscription.plan=starter
+✅ E.7 period_end ~30 days: period_end=2026-05-26
+✅ E.8 payment_record created
+✅ E.9 payment_record.status=completed
+✅ E.10 payment_record.amount=25000
+✅ E.11 reviewed_by non-empty
+✅ E.12 reviewed_at non-empty
+✅ E.13 audit: payment_request_approved logged
+✅ E.14 audit: old_status=pending
+✅ E.15 audit: new_status=approved
+✅ E.16 audit: subscription_activated_from_payment logged
+✅ E.17 cannot approve already-approved request (400): err=None
+✅ F.0 R2 proof submitted: {"ok":true,"request_id":"cc53b70a-a4c4-434b-aa52-8302f90bc619","status":"pending","storage_mode":"no
+✅ F.1 reject returns 200
+✅ F.2 status=rejected
+✅ F.3 reason returned
+✅ F.4 DB: reject_reason stored
+✅ F.5 R2 subscription NOT activated: got=trial
+✅ F.6 audit: payment_request_rejected logged
+✅ F.7 audit: note=reason stored
+✅ F.8 cannot reject already-rejected (400): err=None
+✅ G.1 restaurant cannot approve (403)
+✅ G.2 restaurant cannot reject (403)
+✅ G.3 restaurant cannot create payment method (403)
+✅ G.4 restaurant cannot edit payment method (403)
+✅ G.5 restaurant cannot list all payment requests (403)
+✅ H: no 'cvv' in restaurant responses
+✅ H: no 'cvc' in restaurant responses
+✅ H: no 'password' in restaurant responses
+✅ H: no 'otp' in restaurant responses
+✅ H: no 'pin' in restaurant responses
+✅ H: no 'secret' in restaurant responses
+✅ H: no 'private_key' in restaurant responses
+✅ H: no 'service_role' in restaurant responses
+✅ H: no 'SUPABASE_SERVICE_ROLE_KEY' in restaurant responses
+✅ H: no 'payment_subscription_id' in restaurant responses
+✅ H: no 'payment_customer_id' in restaurant responses
+✅ I: audit action 'payment_method_created' present: count=7
+✅ I: audit action 'payment_method_updated' present: count=14
+✅ I: audit action 'payment_method_disabled' present: count=7
+✅ I: audit action 'payment_request_submitted' present: count=42
+✅ I: audit action 'payment_request_approved' present: count=26
+✅ I: audit action 'payment_request_rejected' present: count=7
+✅ I: audit action 'subscription_activated_from_payment' present: count=26
+✅ I.all: audit row has actor_id
+✅ I.all: audit row has actor_role
+✅ I.all: audit row has restaurant_id
+✅ I.all: audit row has created_at
+
+========================================================================
+Total: 84/84 (100%)
+✅ NUMBER 15 FINAL CLOSED

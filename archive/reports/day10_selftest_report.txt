@@ -1,0 +1,73 @@
+Day 10 Final Patch Report — 2026-04-25
+NUMBER 10 — FINAL POLISH PATCH (Pickup Fix)
+======================================================================
+
+S15 BEFORE / AFTER
+----------------------------------------------------------------------
+BEFORE: "وصل 🌷 ؟"         ← broken: dangling question mark
+AFTER:  "وصلت 🌷 شسمك؟"   ← correct: clean Iraqi pickup flow
+
+ROOT CAUSE
+----------------------------------------------------------------------
+_validate_reply() check #6 removed "وين العنوان" via str.replace(),
+leaving the trailing "؟" behind as a lone character.
+Two fixes applied:
+
+FIX 1 — check #6: regex removal strips phrase + trailing ؟
+  Old: fixed = fixed.replace(q, "").strip()
+  New: fixed = re.sub(re.escape(q) + r'\s*[؟?]?\s*', '', fixed).strip()
+  Also: if only a confirmation word remains after removal → append "🌷 شسمك؟"
+  so pickup flow continues naturally.
+
+FIX 2 — general post-sanitization (runs after all checks, before return)
+  Removes any lone ؟/? preceded only by whitespace or at string start.
+  Collapses double spaces.
+  If reply collapses to nothing meaningful → "تمام 🌷" fallback.
+  Catches dangling punctuation from ALL phrase removals (banned phrases,
+  address questions, etc.), not just pickup.
+
+======================================================================
+20 SCENARIO RESULTS (with global dangling-؟ check on every scenario)
+----------------------------------------------------------------------
+1.  ✅ [S01_greeting]            هلا وغلا 🌷 شتريد أرتبلك؟
+2.  ✅ [S02_price]               البرجر الكلاسيك بـ6,000 د.ع 🌷 تريد تطلبه؟
+3.  ✅ [S03_order_start]         تمام 🌷 واحد لو أكثر؟
+4.  ✅ [S04_confirm_name]        وصلت 🌷 برجر، علي. توصيل لو استلام؟
+5.  ✅ [S05_confirm_address]     وصلت 🌷 الكرادة. الدفع كاش لو كي كارد؟
+6.  ✅ [S06_confirm_payment]     تمام 🌷 برجر، علي، الكرادة، كاش. تثبت؟
+7.  ✅ [S07_casual_thanks]       العفو 🌷
+8.  ✅ [S08_casual_done]         حاضر 🌷 الطلب مثبت.
+9.  ✅ [S09_complaint]           آسفين على التأخير 🌷 كلّي اسمك أو رقم الطلب حتى أتابع لك.
+10. ✅ [S10_complaint_escalate]  كلّي اسمك أو رقم الطلب — أحولك لموظف يرتبلك.
+11. ✅ [S11_confused]            عندنا كيك شوكولاتة 11,200 د.ع 🌷 تريده؟
+12. ✅ [S12_cheapest]            عندنا الشاورما بـ10,000 د.ع وهي خيار زين. تريده؟
+13. ✅ [S13_best]                الزينگر ينطلب هواي 🌷 تريده؟
+14. ✅ [S14_full_order_close]    [order summary] + حاضر 🌷
+15. ✅ [S15_pickup_no_address]   وصلت 🌷 شسمك؟           ← FIXED
+16. ✅ [S16_no_dup_confirm]      تم 🌷 الطلب مثبت. الشباب يجهزون هسه.
+17. ✅ [S17_handoff]             حاضر 🌷 أحولك لموظف هسه.
+18. ✅ [S18_handoff_silent]      حاضر 🌷 أحولك لموظف هسه.
+19. ✅ [S19_no_msa]              الزينگر هو الأكثر طلباً 🌷 تريده؟
+20. ✅ [S20_emoji_mid_flow]      تم 🌷 شاورما دجاج، خالد. توصيل لو استلام؟
+
+======================================================================
+إجمالي: 20/20 (100%)
+— No reply ends with lone ؟ ✓
+— No dangling punctuation after sanitization ✓
+— S15 returns valid Iraqi reply ✓
+
+FILES CHANGED
+----------------------------------------------------------------------
+services/bot.py
+  1. _validate_reply() check #6:
+     - Use regex to remove address phrase + trailing ؟ together
+     - After removal: if only confirmation word remains → append "🌷 شسمك؟"
+  2. _validate_reply() post-sanitization (new, runs before every return):
+     - Strips lone ؟/? (preceded by whitespace or start of string)
+     - Collapses multiple spaces
+     - Fallback to "تمام 🌷" if reply collapses to nothing meaningful
+scripts/day10_selftest.py
+  - Added global check_no_dangling() applied to all 20 scenarios
+  - S15: added no_dangling_q check
+
+✅ NUMBER 10 FINAL FROZEN

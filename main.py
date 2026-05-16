@@ -28,6 +28,30 @@ from services.ws_manager import ws_manager
 from services.integrations import get_adapter, get_all_adapters, PLATFORM_CATALOG
 import secrets as _secrets
 import tempfile
+from routers.health import router as _health_router, _env_present
+from routers.products import router as _products_router, ProductCreate, ProductUpdate
+from routers.customers import router as _customers_router, CustomerUpdate
+from routers.staff import router as _staff_router, StaffCreate, StaffUpdate
+from routers.settings import router as _settings_router, SettingsUpdate
+from routers.bot_config import router as _bot_config_router, BotConfigUpdate
+from routers.reply_templates import router as _reply_templates_router
+from routers.promo_codes import router as _promo_codes_router
+from routers.branches import router as _branches_router
+from routers.outgoing_webhooks import router as _outgoing_webhooks_router
+from routers.orders import router as _orders_router, OrderCreate, OrderUpdate
+from routers.conversations import router as _conversations_router, MsgCreate
+from dependencies import (
+    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_HOURS, bearer,
+    verify_token, current_user, require_role, current_super_admin,
+)
+from helpers import (
+    PLAN_LIMITS, PLAN_FEATURES, BLOCKED_STATUSES,
+    _get_plan_record, _plan_features_from_db, _plan_limits_from_db,
+    get_subscription_state, can_use_feature,
+    _plan_limit, _check_plan_limit,
+    log_activity, create_notification,
+    _hash_password, _verify_password,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("restaurant-saas")
@@ -49,8 +73,36 @@ if _SENTRY_DSN:
     except Exception as _se:
         logger.warning(f"[sentry] init failed: {_se}")
 
-SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey_change_in_production_123456789")
-ALGORITHM = "HS256"
+# ── JWT Secret — no unsafe fallback in production ─────────────────────────────
+_JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY", "")
+_UNSAFE_DEFAULTS = {
+    "supersecretkey_change_in_production_123456789",
+    "change_this_secret_in_production_minimum_32_chars",
+    "change_this_secret_123",
+    "your_jwt_secret_here",
+}
+_is_dev = os.getenv("ENVIRONMENT", "development") in ("development", "dev", "test", "testing")
+
+if not _JWT_SECRET:
+    if _is_dev:
+        _JWT_SECRET = "dev_only_insecure_jwt_secret_do_not_use_in_production"
+        logger.warning("⚠️  JWT_SECRET not set — using insecure dev-only secret. NEVER use in production!")
+    else:
+        raise RuntimeError(
+            "FATAL: JWT_SECRET (or SECRET_KEY) must be set in production. "
+            "Generate one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+        )
+elif _JWT_SECRET in _UNSAFE_DEFAULTS:
+    if _is_dev:
+        logger.warning("⚠️  JWT_SECRET uses a known default placeholder — replace before deploying!")
+    else:
+        raise RuntimeError(
+            "FATAL: JWT_SECRET uses a known unsafe default. "
+            "Generate a real one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+        )
+
+SECRET_KEY = _JWT_SECRET
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL        = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
@@ -120,151 +172,9 @@ def _check_rate(ip: str, limit: int = 10, window: int = 60, scope: str = "") -> 
             _rate_store_last_evict = now
     return True
 
-# ── Plan limits & feature flags ───────────────────────────────────────────────
-PLAN_LIMITS: dict = {
-    "free":         {"products": 5,    "staff": 1,   "channels": 0},
-    "trial":        {"products": 10,   "staff": 2,   "channels": 1},
-    "starter":      {"products": 50,   "staff": 5,   "channels": 2},
-    "professional": {"products": 200,  "staff": 15,  "channels": 4},
-    "enterprise":   {"products": 9999, "staff": 9999, "channels": 10},
-}
+# ── Plan limits / features / subscription state — imported from helpers.py ────
+# (NUMBER 43 extraction — see helpers.py)
 
-PLAN_FEATURES: dict = {
-    #                    ai     analytics  media  handoff  max_conv_month
-    "free":         {"ai": False, "analytics": False, "media": False, "handoff": False, "max_conversations": 0},
-    "trial":        {"ai": True,  "analytics": True,  "media": False, "handoff": True,  "max_conversations": 200},
-    "starter":      {"ai": True,  "analytics": False, "media": False, "handoff": True,  "max_conversations": 500},
-    "professional": {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 5000},
-    "enterprise":   {"ai": True,  "analytics": True,  "media": True,  "handoff": True,  "max_conversations": 999999},
-}
-
-BLOCKED_STATUSES = {"expired", "suspended", "cancelled"}
-
-
-# ── DB-backed plan helpers (fall back to hardcoded when row missing) ──────────
-
-def _get_plan_record(conn, plan_id: str = "", plan_code: str = "") -> Optional[dict]:
-    """Load a subscription_plans row by id or code. Returns dict or None."""
-    row = None
-    if plan_id:
-        row = conn.execute("SELECT * FROM subscription_plans WHERE id=?", (plan_id,)).fetchone()
-    if not row and plan_code:
-        row = conn.execute("SELECT * FROM subscription_plans WHERE code=?", (plan_code,)).fetchone()
-    return dict(row) if row else None
-
-
-def _plan_features_from_db(conn, plan_code: str) -> dict:
-    """Return features dict for plan_code, reading DB first, falling back to PLAN_FEATURES."""
-    row = _get_plan_record(conn, plan_code=plan_code)
-    if row:
-        return {
-            "ai":                           bool(row.get("ai_enabled", 1)),
-            "analytics":                    bool(row.get("analytics_enabled", 0)),
-            "advanced_analytics":           bool(row.get("advanced_analytics_enabled", 0)),
-            "media":                        bool(row.get("media_enabled", 0)),
-            "voice":                        bool(row.get("voice_enabled", 0)),
-            "image":                        bool(row.get("image_enabled", 0)),
-            "video":                        bool(row.get("video_enabled", 0)),
-            "story_reply":                  bool(row.get("story_reply_enabled", 0)),
-            "handoff":                      bool(row.get("human_handoff_enabled", 1)),
-            "multi_channel":                bool(row.get("multi_channel_enabled", 0)),
-            "memory":                       bool(row.get("memory_enabled", 0)),
-            "upsell":                       bool(row.get("upsell_enabled", 0)),
-            "smart_recommendations":        bool(row.get("smart_recommendations_enabled", 0)),
-            "menu_image_understanding":     bool(row.get("menu_image_understanding_enabled", 0)),
-            "live_readiness":               bool(row.get("live_readiness_status_enabled", 0)),
-            "priority_support":             bool(row.get("priority_support_enabled", 0)),
-            "setup_assistance":             bool(row.get("setup_assistance_enabled", 0)),
-            "telegram":                     bool(row.get("telegram_enabled", 1)),
-            "whatsapp":                     bool(row.get("whatsapp_enabled", 1)),
-            "instagram":                    bool(row.get("instagram_enabled", 1)),
-            "facebook":                     bool(row.get("facebook_enabled", 1)),
-            "max_conversations":            int(row.get("max_conversations_per_month", 200)),
-        }
-    return PLAN_FEATURES.get(plan_code, PLAN_FEATURES["trial"])
-
-
-def _plan_limits_from_db(conn, plan_code: str) -> dict:
-    """Return limits dict for plan_code, reading DB first, falling back to PLAN_LIMITS."""
-    row = _get_plan_record(conn, plan_code=plan_code)
-    if row:
-        return {
-            "products":       int(row.get("max_products", 10)),
-            "staff":          int(row.get("max_staff", 2)),
-            "channels":       int(row.get("max_channels", 1)),
-            "team_members":   int(row.get("max_team_members", 2)),
-            "branches":       int(row.get("max_branches", 1)),
-            "customers":      int(row.get("max_customers", 0)),
-            "ai_replies":     int(row.get("max_ai_replies_per_month", 0)),
-        }
-    return PLAN_LIMITS.get(plan_code, PLAN_LIMITS["trial"])
-
-
-def get_subscription_state(conn, restaurant_id: str) -> dict:
-    """Return the effective subscription state for a restaurant."""
-    _sub  = conn.execute("SELECT * FROM subscriptions WHERE restaurant_id=?", (restaurant_id,)).fetchone()
-    sub   = dict(_sub) if _sub else None
-    rest  = conn.execute("SELECT plan, status FROM restaurants WHERE id=?", (restaurant_id,)).fetchone()
-    plan       = (sub  and sub["plan"])   or (rest and rest["plan"])   or "trial"
-    sub_status = (sub  and sub["status"]) or "active"
-    rest_status= (rest and rest["status"]) or "active"
-    if rest_status == "suspended" or sub_status == "suspended":
-        effective = "suspended"
-    elif rest_status in ("expired", "cancelled") or sub_status in ("expired", "cancelled"):
-        effective = sub_status if sub_status in ("expired", "cancelled") else rest_status
-    else:
-        effective = sub_status
-    features   = _plan_features_from_db(conn, plan)
-    blocked    = effective in BLOCKED_STATUSES or (not features.get("ai", True) and plan == "free")
-    reason     = ""
-    if effective == "suspended":
-        reason = (sub and sub.get("suspended_reason")) or "الحساب موقوف — تواصل مع الدعم"
-    elif effective == "expired":
-        reason = "الاشتراك منتهي — جدد اشتراكك للاستمرار"
-    elif effective == "cancelled":
-        reason = "الاشتراك ملغى — تواصل مع الدعم لإعادة التفعيل"
-    return {
-        "plan":       plan,
-        "status":     effective,
-        "features":   features,
-        "blocked":    blocked,
-        "reason":     reason,
-        "trial_ends_at":       sub["trial_ends_at"]       if sub else "",
-        "current_period_end":  sub["end_date"]            if sub else "",
-        "suspended_reason":    sub["suspended_reason"]    if sub else "",
-        "cancelled_at":        sub["cancelled_at"]        if sub else "",
-        "billing_email":       sub["billing_email"]       if sub else "",
-        "payment_provider":    sub["payment_provider"]    if sub else "",
-    }
-
-
-def can_use_feature(conn, restaurant_id: str, feature: str):
-    """Return (allowed: bool, reason: str). feature = 'ai'|'analytics'|'media'|'handoff'."""
-    state = get_subscription_state(conn, restaurant_id)
-    if state["blocked"] and feature != "billing":
-        return False, state["reason"]
-    if not state["features"].get(feature, True):
-        return False, f"هذه الميزة غير متاحة في خطة {state['plan']} — رقّ خطتك"
-    return True, ""
-
-
-def _plan_limit(plan: str, resource: str, conn=None) -> int:
-    if conn is not None:
-        return _plan_limits_from_db(conn, plan).get(resource, 0)
-    return PLAN_LIMITS.get(plan, PLAN_LIMITS["trial"]).get(resource, 0)
-
-
-def _check_plan_limit(conn, restaurant_id: str, plan: str, resource: str, table: str) -> None:
-    """Raise 402 if the restaurant has reached its plan limit for the resource."""
-    limit = _plan_limit(plan, resource, conn)
-    count = conn.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE restaurant_id=?", (restaurant_id,)
-    ).fetchone()[0]
-    if count >= limit:
-        raise HTTPException(
-            402,
-            f"وصلت إلى الحد الأقصى للخطة ({limit} {resource}). رقّ خطتك للمزيد."
-        )
 
 
 openai_client = None
@@ -272,16 +182,8 @@ if OPENAI_API_KEY:
     import openai as _openai
     openai_client = _openai.OpenAI(api_key=OPENAI_API_KEY)
 
-def _hash_password(pw: str) -> str:
-    return _bcrypt.hashpw(pw.encode(), _bcrypt.gensalt()).decode()
-
-def _verify_password(pw: str, hashed: str) -> bool:
-    try:
-        return _bcrypt.checkpw(pw.encode(), hashed.encode())
-    except Exception:
-        return False
-bearer = HTTPBearer()
-
+# _hash_password, _verify_password imported from helpers (NUMBER 43)
+# bearer imported from dependencies (NUMBER 43)
 
 from contextlib import asynccontextmanager
 
@@ -672,8 +574,56 @@ def _run_super_admin_password_reset():
         logger.error(f"Super admin password reset failed: {_e}")
 
 
+# ── Production Startup Validation ────────────────────────────────────────────
+def _validate_production_env() -> None:
+    """Validate critical env vars in production. Raises RuntimeError on blockers."""
+    _env = os.getenv("ENVIRONMENT", "development").lower()
+    _is_production = _env in ("production", "prod") or bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+    if not _is_production:
+        logger.info(f"[startup] ENVIRONMENT={_env} — skipping production validation")
+        return
+
+    blockers: list = []
+
+    # 1. JWT_SECRET must be set and not a known default
+    _jwt = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY", "")
+    _unsafe_defaults = {
+        "supersecretkey_change_in_production_123456789",
+        "change_this_secret_in_production_minimum_32_chars",
+        "change_this_secret_123",
+        "your_jwt_secret_here",
+    }
+    if not _jwt:
+        blockers.append("JWT_SECRET (or SECRET_KEY) must be set in production")
+    elif _jwt in _unsafe_defaults:
+        blockers.append("JWT_SECRET uses a known unsafe default — generate a real one")
+
+    # 2. BASE_URL must not be localhost
+    _base = os.getenv("BASE_URL", "")
+    if not _base or "localhost" in _base or _base.startswith("http://127."):
+        blockers.append("BASE_URL must not be localhost in production — webhooks will not work")
+
+    # 3. Warn if using SQLite in production
+    if not os.getenv("DATABASE_URL"):
+        logger.warning("⚠️  DATABASE_URL not set — using SQLite in production is not recommended")
+
+    # 4. ALLOWED_ORIGINS must not be "*" in production
+    _origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if not _origins or _origins == "*":
+        logger.warning("⚠️  ALLOWED_ORIGINS not set or '*' — CORS is open to all origins in production")
+
+    if blockers:
+        for b in blockers:
+            logger.error(f"🚫 PRODUCTION BLOCKER: {b}")
+        raise RuntimeError(f"Production startup blocked: {'; '.join(blockers)}")
+
+    logger.info("[startup] Production env validation passed ✅")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validate_production_env()
     database.init_db()
     _run_super_admin_password_reset()
     asyncio.create_task(_subscription_cleanup_job())
@@ -690,13 +640,23 @@ _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 if _raw_origins.strip() in ("", "*"):
     # dev / unset — wildcard origins cannot be combined with allow_credentials=True
     # in Starlette 0.37+ (raises ValueError). Use wildcard + credentials=False instead.
-    ALLOWED_ORIGINS = ["*"]
-    _CORS_CREDENTIALS = False
-    if os.getenv("NODE_ENV") == "production" or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RENDER"):
+    _is_prod_env = (
+        os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+        or os.getenv("NODE_ENV") == "production"
+        or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+        or bool(os.getenv("RENDER"))
+    )
+    if _is_prod_env:
         logger.warning(
             "⚠️  ALLOWED_ORIGINS=* في بيئة إنتاج — اضبط المتغير في Railway/Render:\n"
             "    ALLOWED_ORIGINS=https://yourapp.netlify.app,https://yourdomain.com"
         )
+        # In production: refuse wildcard — require explicit origins
+        ALLOWED_ORIGINS = []
+        _CORS_CREDENTIALS = False
+    else:
+        ALLOWED_ORIGINS = ["*"]
+        _CORS_CREDENTIALS = False
 else:
     ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
     _CORS_CREDENTIALS = True   # safe: specific origins + credentials
@@ -811,6 +771,21 @@ async def subscription_guard(request: Request, call_next):
     return await call_next(request)
 
 
+# ── Routers (NUMBER 43 extraction) ───────────────────────────────────────────
+app.include_router(_health_router)
+app.include_router(_products_router)
+app.include_router(_customers_router)
+app.include_router(_staff_router)
+app.include_router(_settings_router)
+app.include_router(_bot_config_router)
+app.include_router(_reply_templates_router)
+app.include_router(_promo_codes_router)
+app.include_router(_branches_router)
+app.include_router(_outgoing_webhooks_router)
+app.include_router(_orders_router)
+app.include_router(_conversations_router)
+
+
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def create_token(data: dict, hours: int = None) -> str:
@@ -820,72 +795,8 @@ def create_token(data: dict, hours: int = None) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(creds: HTTPAuthorizationCredentials = Depends(bearer)):
-    try:
-        payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        if not payload.get("sub"):
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return payload
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-
-def current_user(payload: dict = Depends(verify_token)):
-    conn = database.get_db()
-    row = conn.execute("""
-        SELECT u.*, r.name AS restaurant_name, r.plan
-        FROM users u JOIN restaurants r ON u.restaurant_id = r.id
-        WHERE u.id = ?
-    """, (payload["sub"],)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(status_code=401, detail="User not found")
-    return dict(row)
-
-
-def require_role(*roles):
-    def checker(user=Depends(current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(403, "غير مصرح — الدور غير كافٍ")
-        return user
-    return checker
-
-
-def current_super_admin(payload: dict = Depends(verify_token)):
-    """Dependency that ensures the caller is an authenticated super admin."""
-    if not payload.get("is_super"):
-        raise HTTPException(403, "غير مصرح — يلزم صلاحية super_admin")
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM super_admins WHERE id=?", (payload["sub"],)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(401, "حساب super_admin غير موجود")
-    return dict(row)
-
-
-# ── Activity & Notification helpers ──────────────────────────────────────────
-
-def log_activity(conn, restaurant_id, action, entity_type="", entity_id="", description="",
-                 user_id=None, user_name="System"):
-    try:
-        conn.execute(
-            "INSERT INTO activity_log (id, restaurant_id, user_id, user_name, action, entity_type, entity_id, description) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), restaurant_id, user_id, user_name, action, entity_type, entity_id, description)
-        )
-    except Exception as _e:
-        logger.warning(f"[log_activity] failed action={action} restaurant={restaurant_id}: {_e}")
-
-
-def create_notification(conn, restaurant_id, ntype, title, message, entity_type="", entity_id=""):
-    try:
-        conn.execute(
-            "INSERT INTO notifications (id, restaurant_id, type, title, message, entity_type, entity_id) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), restaurant_id, ntype, title, message, entity_type, entity_id)
-        )
-    except Exception as _e:
-        logger.warning(f"[create_notification] failed type={ntype} restaurant={restaurant_id}: {_e}")
+# ── Auth & helpers: verify_token, current_user, require_role, current_super_admin,
+#    log_activity, create_notification — imported from dependencies.py / helpers.py (NUMBER 43)
 
 
 def record_channel_error(conn, channel_id: str, restaurant_id: str, platform: str,
@@ -916,81 +827,9 @@ class LoginReq(BaseModel):
     password: str
 
 
-class ProductCreate(BaseModel):
-    name: str
-    price: float
-    category: str = "Main"
-    description: str = ""
-    icon: str = "🍽️"
-    variants: list = []
-    available: bool = True
-    image: str = ""
-    image_url: str = ""
-    gallery_images: list = []
-
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[float] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
-    variants: Optional[list] = None
-    available: Optional[bool] = None
-    image: Optional[str] = None
-    image_url: Optional[str] = None
-    gallery_images: Optional[list] = None
-
-
-class OrderCreate(BaseModel):
-    customer_id: str
-    channel: str = "telegram"
-    type: str = "delivery"
-    address: str = ""
-    notes: str = ""
-    items: list = []
-    branch_id: str = ""
-
-
-class OrderUpdate(BaseModel):
-    notes: Optional[str] = None
-    address: Optional[str] = None
-
-
-class CustomerUpdate(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    vip: Optional[bool] = None
-    preferences: Optional[str] = None
-    favorite_item: Optional[str] = None
-
-
-class MsgCreate(BaseModel):
-    content: str
-
-
-class SettingsUpdate(BaseModel):
-    restaurant_name: Optional[str] = None
-    restaurant_description: Optional[str] = None
-    restaurant_phone: Optional[str] = None
-    restaurant_address: Optional[str] = None
-    working_hours: Optional[dict] = None
-    bot_name: Optional[str] = None
-    bot_personality: Optional[str] = None
-    bot_language: Optional[str] = None
-    bot_welcome: Optional[str] = None
-    bot_enabled: Optional[bool] = None
-    security_2fa: Optional[bool] = None
-    security_session_timeout: Optional[int] = None
-    payment_methods: Optional[str] = None
-    business_type: Optional[str] = None
-    delivery_time: Optional[str] = None
-    notify_chat_id: Optional[str] = None
-    delivery_fee: Optional[int] = None
-    min_order: Optional[int] = None
-    report_frequency: Optional[str] = None  # none / daily / weekly
-    menu_url: Optional[str] = None
-
+# ProductCreate, ProductUpdate — imported from routers.products (NUMBER 43)
+# OrderCreate, OrderUpdate — imported from routers.orders (NUMBER 43)
+# MsgCreate — imported from routers.conversations (NUMBER 43)
 
 class ChannelUpdate(BaseModel):
     name: Optional[str] = None
@@ -1010,60 +849,8 @@ class ChannelUpdate(BaseModel):
     bot_username: Optional[str] = None
 
 
-class StaffCreate(BaseModel):
-    email: str
-    name: str
-    password: str
-    role: str = "staff"
-
-
-class StaffUpdate(BaseModel):
-    role: str
-
-
-class BotConfigUpdate(BaseModel):
-    system_prompt: Optional[str] = None
-    sales_prompt: Optional[str] = None
-    escalation_keywords: Optional[List[str]] = None
-    fallback_message: Optional[str] = None
-    max_bot_turns: Optional[int] = None
-    auto_handoff_enabled: Optional[bool] = None
-    order_extraction_enabled: Optional[bool] = None
-    memory_enabled: Optional[bool] = None
-    escalation_threshold: Optional[int] = None
-    # Brand Voice
-    voice_tone: Optional[str] = None
-    dialect_override: Optional[str] = None
-    custom_greeting: Optional[str] = None
-    custom_farewell: Optional[str] = None
-    brand_keywords: Optional[str] = None
-
-
-# ── Health check ──────────────────────────────────────────────────────────────
-
-@app.get("/health")
-async def health_check():
-    try:
-        conn = database.get_db()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        db_ok = True
-    except Exception as e:
-        db_ok = False
-    return {
-        "status": "ok" if db_ok else "degraded",
-        "db": "ok" if db_ok else "error",
-        "db_backend": "postgresql" if database.IS_POSTGRES else "sqlite",
-        "version": "3.0.0",
-        "base_url": BASE_URL,
-    }
-
-
 # ── Live Readiness helpers ─────────────────────────────────────────────────────
-
-def _env_present(name: str) -> bool:
-    """Return True if the env var is set and non-empty."""
-    return bool(os.getenv(name, "").strip())
+# Note: _env_present is imported from routers.health (NUMBER 43)
 
 META_CHANNELS = {"whatsapp", "instagram", "facebook"}
 
@@ -1186,44 +973,6 @@ def _recommended_fix(channels: dict, ai_ok: bool) -> str:
         elif s == "outbound_failed":
             problems.append(f"تحقق من أخطاء إرسال {platform}")
     return " | ".join(problems) if problems else "لا توجد مشاكل"
-
-
-@app.get("/api/health")
-async def api_health():
-    """Detailed health endpoint: DB + env var presence (no secret values)."""
-    try:
-        conn = database.get_db()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        db_ok = True
-    except Exception:
-        db_ok = False
-
-    jwt_default = (os.getenv("JWT_SECRET", "") == "supersecretkey_change_in_production_123456789"
-                   or not _env_present("JWT_SECRET"))
-    return {
-        "status":        "ok" if db_ok else "degraded",
-        "db":            "ok" if db_ok else "error",
-        "db_backend":    "postgresql" if database.IS_POSTGRES else "sqlite",
-        "version":       "3.0.0",
-        "base_url":      "configured" if (BASE_URL and "localhost" not in BASE_URL) else "localhost_or_missing",
-        "env": {
-            "BASE_URL":                  _env_present("BASE_URL"),
-            "DATABASE_URL":              _env_present("DATABASE_URL"),
-            "JWT_SECRET":                _env_present("JWT_SECRET") and not jwt_default,
-            "OPENAI_API_KEY":            _env_present("OPENAI_API_KEY"),
-            "OPENAI_MODEL":              _env_present("OPENAI_MODEL"),
-            "META_APP_ID":               _env_present("META_APP_ID"),
-            "META_APP_SECRET":           _env_present("META_APP_SECRET"),
-            "META_VERIFY_TOKEN":         _env_present("META_VERIFY_TOKEN"),
-            "WHATSAPP_VERIFY_TOKEN":     _env_present("WHATSAPP_VERIFY_TOKEN"),
-            "WHATSAPP_PHONE_NUMBER_ID":  _env_present("WHATSAPP_PHONE_NUMBER_ID"),
-            "ALLOWED_ORIGINS":           _env_present("ALLOWED_ORIGINS"),
-        },
-        "openai_configured": bool(OPENAI_API_KEY),
-        "meta_configured":   bool(META_APP_ID and META_APP_SECRET),
-        "base_url_value":    BASE_URL,
-    }
 
 
 @app.get("/api/live-readiness")
@@ -3380,645 +3129,11 @@ async def analytics_menu_images(user=Depends(current_user)):
         conn.close()
 
 
-# ── Products ──────────────────────────────────────────────────────────────────
+# ── Products + Menu Images + Categories + Upload — moved to routers/products.py ─
 
-@app.get("/api/products")
-async def list_products(category: Optional[str] = None, user=Depends(current_user)):
-    conn = database.get_db()
-    if category:
-        rows = conn.execute(
-            "SELECT * FROM products WHERE restaurant_id=? AND category=? ORDER BY name",
-            (user["restaurant_id"], category)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM products WHERE restaurant_id=? ORDER BY name",
-            (user["restaurant_id"],)).fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["variants"] = json.loads(d.get("variants") or "[]")
-        d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-        result.append(d)
-    return result
 
-
-@app.get("/api/products/{pid}")
-async def get_product(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT * FROM products WHERE id=? AND restaurant_id=?",
-        (pid, user["restaurant_id"])).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Product not found")
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.post("/api/products", status_code=201)
-async def create_product(data: ProductCreate, user=Depends(current_user)):
-    conn = database.get_db()
-    _check_plan_limit(conn, user["restaurant_id"], user.get("plan", "trial"), "products", "products")
-    pid = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO products (id, restaurant_id, name, price, category, description, icon, variants, available, image, image_url, gallery_images)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (pid, user["restaurant_id"], data.name, data.price, data.category,
-          data.description, data.icon, json.dumps(data.variants), int(data.available),
-          data.image, data.image_url, json.dumps(data.gallery_images)))
-    conn.commit()
-    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.patch("/api/products/{pid}")
-async def update_product(pid: str, data: ProductUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM products WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    upd = {}
-    if data.name is not None: upd["name"] = data.name
-    if data.price is not None: upd["price"] = data.price
-    if data.category is not None: upd["category"] = data.category
-    if data.description is not None: upd["description"] = data.description
-    if data.icon is not None: upd["icon"] = data.icon
-    if data.variants is not None: upd["variants"] = json.dumps(data.variants)
-    if data.available is not None: upd["available"] = int(data.available)
-    if data.image is not None: upd["image"] = data.image
-    if data.image_url is not None: upd["image_url"] = data.image_url
-    if data.gallery_images is not None: upd["gallery_images"] = json.dumps(data.gallery_images)
-    if upd:
-        sets = ", ".join(f"{k}=?" for k in upd) + ", updated_at=datetime('now')"
-        conn.execute(f"UPDATE products SET {sets} WHERE id=?", list(upd.values()) + [pid])
-        log_activity(conn, user["restaurant_id"], "product_updated", "product", pid,
-                     f"تعديل المنتج: {', '.join(upd.keys())}", user["id"], user.get("name", ""))
-        conn.commit()
-    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    d = dict(row)
-    d["variants"] = json.loads(d.get("variants") or "[]")
-    d["gallery_images"] = json.loads(d.get("gallery_images") or "[]")
-    return d
-
-
-@app.patch("/api/products/{pid}/availability")
-async def toggle_availability(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("SELECT available FROM products WHERE id=? AND restaurant_id=?",
-                       (pid, user["restaurant_id"])).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    new_val = 1 - row["available"]
-    conn.execute("UPDATE products SET available=? WHERE id=?", (new_val, pid))
-    conn.commit()
-    conn.close()
-    return {"available": bool(new_val)}
-
-
-@app.patch("/api/products/{product_id}/sold-out-today")
-async def toggle_sold_out_today(product_id: str, user=Depends(require_role("owner","manager","staff"))):
-    from datetime import date as _date
-    conn = database.get_db()
-    try:
-        p = conn.execute("SELECT * FROM products WHERE id=? AND restaurant_id=?",
-                         (product_id, user["restaurant_id"])).fetchone()
-        if not p:
-            raise HTTPException(404, "المنتج غير موجود")
-        today = _date.today().isoformat()
-        current = p["sold_out_date"] if "sold_out_date" in p.keys() else ""
-        new_val = today if current != today else ""
-        conn.execute("UPDATE products SET sold_out_date=? WHERE id=?", (new_val, product_id))
-        conn.commit()
-        return {"sold_out_today": new_val == today}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/products/{pid}")
-async def delete_product(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM products WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Product not found")
-    conn.execute("DELETE FROM products WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
-
-
-# ── Menu Images ───────────────────────────────────────────────────────────────
-
-@app.get("/api/menu-images")
-async def list_menu_images(user=Depends(current_user)):
-    conn = database.get_db()
-    try:
-        rows = conn.execute(
-            "SELECT * FROM menu_images WHERE restaurant_id=? ORDER BY sort_order ASC, created_at ASC",
-            (user["restaurant_id"],)
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-@app.post("/api/menu-images", status_code=201)
-async def create_menu_image(data: dict, user=Depends(current_user)):
-    image_url = (data.get("image_url") or "").strip()
-    if not image_url:
-        raise HTTPException(400, "image_url مطلوب")
-    mid = str(uuid.uuid4())
-    conn = database.get_db()
-    try:
-        conn.execute(
-            """INSERT INTO menu_images (id, restaurant_id, title, image_url, category, sort_order, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                mid,
-                user["restaurant_id"],
-                (data.get("title") or "").strip(),
-                image_url,
-                (data.get("category") or "").strip(),
-                int(data.get("sort_order") or 0),
-                1 if data.get("is_active", True) else 0,
-            )
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM menu_images WHERE id=?", (mid,)).fetchone()
-        return dict(row)
-    finally:
-        conn.close()
-
-
-@app.put("/api/menu-images/{mid}")
-async def update_menu_image(mid: str, data: dict, user=Depends(current_user)):
-    conn = database.get_db()
-    try:
-        row = conn.execute(
-            "SELECT id FROM menu_images WHERE id=? AND restaurant_id=?",
-            (mid, user["restaurant_id"])
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "صورة المنيو غير موجودة")
-        fields, vals = [], []
-        for col in ("title", "image_url", "category"):
-            if col in data:
-                fields.append(f"{col}=?")
-                vals.append((data[col] or "").strip())
-        if "sort_order" in data:
-            fields.append("sort_order=?")
-            vals.append(int(data["sort_order"] or 0))
-        if "is_active" in data:
-            fields.append("is_active=?")
-            vals.append(1 if data["is_active"] else 0)
-        if not fields:
-            raise HTTPException(400, "لا توجد بيانات للتحديث")
-        fields.append("updated_at=CURRENT_TIMESTAMP")
-        vals.append(mid)
-        conn.execute(f"UPDATE menu_images SET {', '.join(fields)} WHERE id=?", vals)
-        conn.commit()
-        row = conn.execute("SELECT * FROM menu_images WHERE id=?", (mid,)).fetchone()
-        return dict(row)
-    finally:
-        conn.close()
-
-
-@app.delete("/api/menu-images/{mid}")
-async def delete_menu_image(mid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    try:
-        if not conn.execute(
-            "SELECT id FROM menu_images WHERE id=? AND restaurant_id=?",
-            (mid, user["restaurant_id"])
-        ).fetchone():
-            raise HTTPException(404, "صورة المنيو غير موجودة")
-        conn.execute("DELETE FROM menu_images WHERE id=?", (mid,))
-        conn.commit()
-        return {"message": "تم الحذف"}
-    finally:
-        conn.close()
-
-
-@app.post("/api/menu-images/reorder")
-async def reorder_menu_images(req: Request, user=Depends(current_user)):
-    """Accept [{id, sort_order}, ...] and bulk-update sort_order."""
-    body = await req.json()
-    items = body.get("items", [])
-    if not items:
-        return {"ok": True}
-    conn = database.get_db()
-    try:
-        for item in items:
-            conn.execute(
-                "UPDATE menu_images SET sort_order=? WHERE id=? AND restaurant_id=?",
-                (item["sort_order"], item["id"], user["restaurant_id"])
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True}
-
-
-@app.patch("/api/categories/rename")
-async def rename_category(data: dict, user=Depends(current_user)):
-    old_name = (data.get("old_name") or "").strip()
-    new_name = (data.get("new_name") or "").strip()
-    if not old_name or not new_name:
-        raise HTTPException(400, "اسم الفئة مطلوب")
-    conn = database.get_db()
-    try:
-        conn.execute(
-            "UPDATE products SET category=? WHERE category=? AND restaurant_id=?",
-            (new_name, old_name, user["restaurant_id"]))
-        conn.commit()
-        return {"message": "تم التعديل"}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/categories/{name}")
-async def delete_category(name: str, user=Depends(current_user)):
-    conn = database.get_db()
-    try:
-        conn.execute(
-            "UPDATE products SET category='Main' WHERE category=? AND restaurant_id=?",
-            (name, user["restaurant_id"]))
-        conn.commit()
-        return {"message": "تم حذف الفئة ونقل المنتجات إلى Main"}
-    finally:
-        conn.close()
-
-
-@app.post("/api/upload/product-image", status_code=201)
-async def upload_product_image(
-    file: UploadFile = File(...),
-    product_id: str = "",
-    user=Depends(require_role("owner", "manager")),
-):
-    """Upload a product image to Supabase Storage and return the URL."""
-    from services import storage as _storage
-
-    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED:
-        raise HTTPException(400, f"نوع الملف غير مدعوم: {ext}")
-
-    content = await file.read()
-    size_mb = len(content) / (1024 * 1024)
-    if size_mb > 10:
-        raise HTTPException(400, "حجم الصورة يجب أن يكون أقل من 10 MB")
-
-    pid = product_id or str(uuid.uuid4())
-    fname = f"{uuid.uuid4()}{ext}"
-    storage_path = _storage.product_storage_path(user["restaurant_id"], pid, fname)
-
-    public_url = _storage.upload_bytes(
-        content,
-        _storage.BUCKET_PRODUCTS,
-        storage_path,
-        content_type=file.content_type or "image/jpeg",
-    )
-
-    if not public_url:
-        # Supabase not configured — return placeholder
-        return {"url": "", "message": "Supabase not configured — configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"}
-
-    # Save URL to products table if product_id refers to an existing product
-    if product_id:
-        conn = database.get_db()
-        row = conn.execute("SELECT id FROM products WHERE id=? AND restaurant_id=?",
-                           (product_id, user["restaurant_id"])).fetchone()
-        if row:
-            conn.execute("UPDATE products SET image_url=? WHERE id=?", (public_url, product_id))
-            conn.commit()
-        conn.close()
-
-    return {"url": public_url, "product_id": pid}
-
-
-@app.post("/api/upload/bulk-product-images", status_code=200)
-async def bulk_upload_product_images(
-    files: List[UploadFile] = File(...),
-    user=Depends(require_role("owner", "manager")),
-):
-    """Upload multiple product images at once.
-
-    Each file's stem (filename without extension) is matched against product names
-    (case-insensitive, trimmed). On match the image is uploaded via the same
-    Supabase Storage path used by the single-upload route, and the product's
-    image_url is updated automatically.
-
-    Returns a report:
-      matched   — list of {file, product_id, product_name, image_url}
-      unmatched — list of {file, reason}
-      matched_count, unmatched_count, total
-    """
-    from services import storage as _storage
-
-    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-
-    # Load all products for this restaurant once (avoids N+1 queries)
-    conn = database.get_db()
-    try:
-        rows = conn.execute(
-            "SELECT id, name FROM products WHERE restaurant_id=?",
-            (user["restaurant_id"],),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    # Build case-insensitive name → product lookup
-    product_map: dict = {dict(r)["name"].strip().lower(): dict(r) for r in rows}
-
-    matched: list = []
-    unmatched: list = []
-
-    for f in files:
-        filename = f.filename or ""
-        ext = Path(filename).suffix.lower()
-        stem = Path(filename).stem.strip()
-
-        if ext not in ALLOWED:
-            unmatched.append({"file": filename, "reason": f"نوع الملف غير مدعوم: {ext}"})
-            continue
-
-        content = await f.read()
-        if len(content) > 10 * 1024 * 1024:
-            unmatched.append({"file": filename, "reason": "الملف أكبر من 10 MB"})
-            continue
-        if not content:
-            unmatched.append({"file": filename, "reason": "الملف فارغ"})
-            continue
-
-        product = product_map.get(stem.lower())
-        if not product:
-            unmatched.append({"file": filename, "reason": "لم يُعثر على منتج بهذا الاسم"})
-            continue
-
-        fname = f"{uuid.uuid4()}{ext}"
-        storage_path = _storage.product_storage_path(
-            user["restaurant_id"], product["id"], fname
-        )
-        public_url = _storage.upload_bytes(
-            content,
-            _storage.BUCKET_PRODUCTS,
-            storage_path,
-            content_type=f.content_type or "image/jpeg",
-        )
-
-        if not public_url:
-            unmatched.append({"file": filename, "reason": "Supabase غير مُهيأ — تحقق من SUPABASE_URL"})
-            continue
-
-        conn = database.get_db()
-        conn.execute("UPDATE products SET image_url=? WHERE id=?", (public_url, product["id"]))
-        conn.commit()
-        conn.close()
-
-        matched.append({
-            "file":         filename,
-            "product_id":   product["id"],
-            "product_name": product["name"],
-            "image_url":    public_url,
-        })
-
-    return {
-        "matched":         matched,
-        "unmatched":       unmatched,
-        "total":           len(files),
-        "matched_count":   len(matched),
-        "unmatched_count": len(unmatched),
-    }
-
-
-@app.post("/api/upload/gallery-image", status_code=201)
-async def upload_gallery_image(
-    file: UploadFile = File(...),
-    product_id: str = "",
-    user=Depends(require_role("owner", "manager")),
-):
-    """Upload a gallery image to Supabase Storage and append the URL to products.gallery_images."""
-    from services import storage as _storage
-
-    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED:
-        raise HTTPException(400, f"نوع الملف غير مدعوم: {ext}")
-
-    content = await file.read()
-    if len(content) / (1024 * 1024) > 10:
-        raise HTTPException(400, "حجم الصورة يجب أن يكون أقل من 10 MB")
-
-    pid = product_id or str(uuid.uuid4())
-    fname = f"{uuid.uuid4()}{ext}"
-    storage_path = _storage.gallery_image_path(user["restaurant_id"], pid, fname)
-
-    public_url = _storage.upload_bytes(
-        content,
-        _storage.BUCKET_PRODUCTS,
-        storage_path,
-        content_type=file.content_type or "image/jpeg",
-    )
-
-    if not public_url:
-        return {"url": "", "message": "Supabase not configured"}
-
-    # Append URL to gallery_images JSON array for the product
-    if product_id:
-        conn = database.get_db()
-        row = conn.execute("SELECT gallery_images FROM products WHERE id=? AND restaurant_id=?",
-                           (product_id, user["restaurant_id"])).fetchone()
-        if row:
-            gallery = json.loads(row["gallery_images"] or "[]")
-            gallery.append(public_url)
-            conn.execute("UPDATE products SET gallery_images=? WHERE id=?",
-                         (json.dumps(gallery), product_id))
-            conn.commit()
-        conn.close()
-
-    return {"url": public_url, "product_id": pid}
-
-
-@app.post("/api/upload/menu-image", status_code=201)
-async def upload_menu_image(
-    file: UploadFile = File(...),
-    user=Depends(require_role("owner", "manager")),
-):
-    from services import storage as _storage
-
-    ALLOWED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED:
-        raise HTTPException(400, f"نوع الملف غير مدعوم: {ext}")
-
-    content = await file.read()
-    if len(content) / (1024 * 1024) > 15:
-        raise HTTPException(400, "حجم الصورة يجب أن يكون أقل من 15 MB")
-
-    fname = f"{uuid.uuid4()}{ext}"
-
-    # Try Supabase first
-    public_url = None
-    try:
-        storage_path = _storage.menu_image_path(user["restaurant_id"], fname)
-        public_url = _storage.upload_bytes(
-            content, _storage.BUCKET_MENUS, storage_path,
-            content_type=file.content_type or "image/jpeg",
-        )
-    except Exception as e:
-        logging.warning(f"Supabase upload failed, falling back to local: {e}")
-
-    # Fallback: save locally under uploads/menu-images/
-    if not public_url:
-        local_dir = Path("uploads/menu-images")
-        local_dir.mkdir(parents=True, exist_ok=True)
-        local_path = local_dir / fname
-        local_path.write_bytes(content)
-        base = os.getenv("BASE_URL", "").rstrip("/")
-        public_url = f"{base}/uploads/menu-images/{fname}"
-
-    return {"url": public_url}
-
-
-# ── Customers ─────────────────────────────────────────────────────────────────
-
-@app.get("/api/customers")
-async def list_customers(search: Optional[str] = None, user=Depends(current_user)):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    if search:
-        rows = conn.execute(
-            "SELECT * FROM customers WHERE restaurant_id=? AND (name LIKE ? OR phone LIKE ?) ORDER BY total_spent DESC",
-            (rid, f"%{search}%", f"%{search}%")).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC", (rid,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/customers/{cid}")
-async def get_customer(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM customers WHERE id=? AND restaurant_id=?",
-                       (cid, user["restaurant_id"])).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    orders = conn.execute(
-        "SELECT * FROM orders WHERE customer_id=? ORDER BY created_at DESC LIMIT 10", (cid,)).fetchall()
-    conn.close()
-    result = dict(row)
-    result["orders"] = [dict(o) for o in orders]
-    return result
-
-
-@app.patch("/api/customers/{cid}")
-async def update_customer(cid: str, data: CustomerUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM customers WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    upd = {}
-    if data.name is not None: upd["name"] = data.name
-    if data.phone is not None: upd["phone"] = data.phone
-    if data.vip is not None: upd["vip"] = int(data.vip)
-    if data.preferences is not None: upd["preferences"] = data.preferences
-    if data.favorite_item is not None: upd["favorite_item"] = data.favorite_item
-    if upd:
-        conn.execute(f"UPDATE customers SET {','.join(k+'=?' for k in upd)} WHERE id=?",
-                     list(upd.values()) + [cid])
-        conn.commit()
-    row = conn.execute("SELECT * FROM customers WHERE id=?", (cid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/customers/{cid}")
-async def delete_customer(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM customers WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Customer not found")
-    conn.execute("DELETE FROM customers WHERE id=?", (cid,))
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
-
-
-@app.get("/api/export/orders")
-async def export_orders(user=Depends(current_user)):
-    """Export all orders as CSV."""
-    import csv, io
-    rid = user["restaurant_id"]
-    conn = database.get_db()
-    try:
-        rows = conn.execute(
-            """SELECT o.id, o.status, o.total, o.address, o.notes, o.created_at,
-                      c.name as customer_name, c.phone as customer_phone
-               FROM orders o
-               LEFT JOIN customers c ON o.customer_id = c.id
-               WHERE o.restaurant_id=?
-               ORDER BY o.created_at DESC""",
-            (rid,)
-        ).fetchall()
-    finally:
-        conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["رقم الطلب", "الحالة", "الإجمالي", "العنوان", "الملاحظات", "التاريخ", "اسم العميل", "جوال العميل"])
-    for r in rows:
-        writer.writerow([r["id"], r["status"], r["total"], r["address"] or "", r["notes"] or "",
-                         r["created_at"], r["customer_name"] or "", r["customer_phone"] or ""])
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue().encode("utf-8-sig")]),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=orders.csv"}
-    )
-
-
-@app.get("/api/export/customers")
-async def export_customers(user=Depends(current_user)):
-    """Export all customers as CSV."""
-    import csv, io
-    rid = user["restaurant_id"]
-    conn = database.get_db()
-    try:
-        rows = conn.execute(
-            "SELECT name, phone, platform, vip, orders_count, total_spent, last_seen, preferences FROM customers WHERE restaurant_id=? ORDER BY total_spent DESC",
-            (rid,)
-        ).fetchall()
-    finally:
-        conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["الاسم", "الجوال", "المنصة", "VIP", "عدد الطلبات", "إجمالي الإنفاق", "آخر ظهور", "التفضيلات"])
-    for r in rows:
-        writer.writerow([r["name"] or "", r["phone"] or "", r["platform"] or "",
-                         "نعم" if r["vip"] else "لا", r["orders_count"] or 0,
-                         r["total_spent"] or 0, r["last_seen"] or "", r["preferences"] or ""])
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue().encode("utf-8-sig")]),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=customers.csv"}
-    )
-
+# export_orders — moved to routers/orders.py (NUMBER 43)
+# export_customers — moved to routers/customers.py (NUMBER 43)
 
 @app.post("/api/broadcast")
 async def broadcast_message(req: Request, background_tasks: BackgroundTasks, user=Depends(current_user)):
@@ -4125,270 +3240,9 @@ async def broadcast_message(req: Request, background_tasks: BackgroundTasks, use
     return {"queued": len(targets), "message": f"تم إرسال الرسالة لـ {len(targets)} زبون"}
 
 
-# ── Reply Templates ───────────────────────────────────────────────────────────
-
-@app.get("/api/reply-templates")
-async def list_reply_templates(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM reply_templates WHERE restaurant_id=? ORDER BY created_at ASC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/reply-templates", status_code=201)
-async def create_reply_template(req: Request, user=Depends(current_user)):
-    body = await req.json()
-    title = (body.get("title") or "").strip()
-    content = (body.get("content") or "").strip()
-    if not title or not content:
-        raise HTTPException(400, "العنوان والمحتوى مطلوبان")
-    tid = str(uuid.uuid4())
-    conn = database.get_db()
-    conn.execute(
-        "INSERT INTO reply_templates (id, restaurant_id, title, content) VALUES (?,?,?,?)",
-        (tid, user["restaurant_id"], title, content)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM reply_templates WHERE id=?", (tid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/reply-templates/{tid}")
-async def delete_reply_template(tid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM reply_templates WHERE id=? AND restaurant_id=?",
-                        (tid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    conn.execute("DELETE FROM reply_templates WHERE id=?", (tid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
 # ── Promo Codes ───────────────────────────────────────────────────────────────
 
-@app.get("/api/promo-codes")
-async def list_promo_codes(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM promo_codes WHERE restaurant_id=? ORDER BY created_at DESC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return {"promo_codes": [dict(r) for r in rows]}
-
-
-@app.post("/api/promo-codes", status_code=201)
-async def create_promo_code(req: Request, user=Depends(current_user)):
-    data = await req.json()
-    code = (data.get("code") or "").strip().upper()
-    if not code:
-        raise HTTPException(400, "كود الخصم مطلوب")
-    discount_type  = data.get("discount_type", "percent")   # percent | fixed
-    discount_value = float(data.get("discount_value") or 0)
-    min_order      = float(data.get("min_order") or 0)
-    max_uses       = int(data.get("max_uses") or 0)
-    expires_at     = str(data.get("expires_at") or "")
-    if discount_type not in ("percent", "fixed"):
-        raise HTTPException(400, "discount_type يجب أن يكون percent أو fixed")
-    if discount_type == "percent" and not (0 < discount_value <= 100):
-        raise HTTPException(400, "نسبة الخصم يجب أن تكون بين 1 و 100")
-    pid = str(uuid.uuid4())
-    conn = database.get_db()
-    try:
-        conn.execute(
-            "INSERT INTO promo_codes (id, restaurant_id, code, discount_type, discount_value, "
-            "min_order, max_uses, expires_at) VALUES (?,?,?,?,?,?,?,?)",
-            (pid, user["restaurant_id"], code, discount_type, discount_value,
-             min_order, max_uses, expires_at)
-        )
-        conn.commit()
-    except Exception as _e:
-        conn.close()
-        raise HTTPException(409, "الكود موجود مسبقاً") from _e
-    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/promo-codes/{pid}")
-async def update_promo_code(pid: str, req: Request, user=Depends(current_user)):
-    data = await req.json()
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    allowed = {"discount_type", "discount_value", "min_order", "max_uses", "expires_at", "is_active"}
-    upd = {k: v for k, v in data.items() if k in allowed}
-    if upd:
-        upd["updated_at"] = "CURRENT_TIMESTAMP"
-        set_clause = ", ".join(f"{k}=?" for k in upd if k != "updated_at")
-        set_clause += ", updated_at=CURRENT_TIMESTAMP"
-        vals = [v for k, v in upd.items() if k != "updated_at"]
-        conn.execute(f"UPDATE promo_codes SET {set_clause} WHERE id=?", [*vals, pid])
-        conn.commit()
-    row = conn.execute("SELECT * FROM promo_codes WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/promo-codes/{pid}")
-async def delete_promo_code(pid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM promo_codes WHERE id=? AND restaurant_id=?",
-                        (pid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404)
-    conn.execute("DELETE FROM promo_codes WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/api/promo-codes/validate")
-async def validate_promo_code(req: Request, user=Depends(current_user)):
-    """Check if a promo code is valid for a given order total. Returns discount amount."""
-    data = await req.json()
-    code  = (data.get("code") or "").strip().upper()
-    total = float(data.get("order_total") or 0)
-    if not code:
-        raise HTTPException(400, "كود مطلوب")
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT * FROM promo_codes WHERE restaurant_id=? AND code=? AND is_active=1",
-        (user["restaurant_id"], code)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return {"valid": False, "reason": "الكود غير صحيح أو منتهي"}
-    row = dict(row)
-    # Expiry check
-    if row["expires_at"] and row["expires_at"] < str(datetime.now().date()):
-        return {"valid": False, "reason": "انتهت صلاحية الكود"}
-    # Max uses
-    if row["max_uses"] > 0 and row["uses_count"] >= row["max_uses"]:
-        return {"valid": False, "reason": "استُنفد الحد الأقصى لاستخدامات هذا الكود"}
-    # Min order
-    if total < row["min_order"]:
-        return {"valid": False, "reason": f"الحد الأدنى للطلب لاستخدام هذا الكود {row['min_order']:,.0f} د.ع"}
-    # Calculate discount
-    if row["discount_type"] == "percent":
-        discount = round(total * row["discount_value"] / 100)
-    else:
-        discount = min(row["discount_value"], total)
-    return {
-        "valid": True,
-        "discount_type": row["discount_type"],
-        "discount_value": row["discount_value"],
-        "discount_amount": discount,
-        "final_total": max(0, total - discount),
-    }
-
-
-# ── Outgoing Webhooks ─────────────────────────────────────────────────────────
-
-@app.get("/api/outgoing-webhooks")
-async def list_outgoing_webhooks(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM outgoing_webhooks WHERE restaurant_id=? ORDER BY created_at DESC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return {"webhooks": [dict(r) for r in rows]}
-
-
-@app.post("/api/outgoing-webhooks", status_code=201)
-async def create_outgoing_webhook(req: Request, user=Depends(current_user)):
-    import json as _json
-    body = await req.json()
-    url = (body.get("url") or "").strip()
-    if not url or not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "URL يجب أن يبدأ بـ http:// أو https://")
-    name = (body.get("name") or "Webhook").strip()[:100]
-    secret = (body.get("secret") or "").strip()[:200]
-    events_raw = body.get("events") or ["order.created"]
-    valid_events = {"order.created", "order.confirmed", "order.preparing",
-                    "order.on_way", "order.delivered", "order.cancelled"}
-    events = [e for e in events_raw if e in valid_events] or ["order.created"]
-    wid = str(__import__("uuid").uuid4())
-    conn = database.get_db()
-    conn.execute(
-        "INSERT INTO outgoing_webhooks (id, restaurant_id, name, url, secret, events) VALUES (?,?,?,?,?,?)",
-        (wid, user["restaurant_id"], name, url, secret, _json.dumps(events))
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=?", (wid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/outgoing-webhooks/{wid}")
-async def update_outgoing_webhook(wid: str, req: Request, user=Depends(current_user)):
-    import json as _json
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
-                        (wid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Webhook not found")
-    body = await req.json()
-    allowed = {"name", "url", "secret", "events", "is_active"}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if "events" in updates:
-        valid_events = {"order.created", "order.confirmed", "order.preparing",
-                        "order.on_way", "order.delivered", "order.cancelled"}
-        updates["events"] = _json.dumps([e for e in updates["events"] if e in valid_events])
-    if not updates:
-        conn.close()
-        return {"ok": True}
-    vals = list(updates.values())
-    set_clause = ", ".join(f"{k}=?" for k in updates)
-    conn.execute(f"UPDATE outgoing_webhooks SET {set_clause} WHERE id=?", [*vals, wid])
-    conn.commit()
-    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=?", (wid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/outgoing-webhooks/{wid}")
-async def delete_outgoing_webhook(wid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
-                        (wid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Webhook not found")
-    conn.execute("DELETE FROM outgoing_webhooks WHERE id=?", (wid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/api/outgoing-webhooks/{wid}/test")
-async def test_outgoing_webhook(wid: str, user=Depends(current_user)):
-    """Send a test ping to verify the endpoint is reachable."""
-    import httpx as _httpx, json as _json
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM outgoing_webhooks WHERE id=? AND restaurant_id=?",
-                       (wid, user["restaurant_id"])).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Webhook not found")
-    payload = _json.dumps({"event": "ping", "data": {"message": "test ping"}}).encode()
-    try:
-        async with _httpx.AsyncClient(timeout=10) as cl:
-            r = await cl.post(row["url"], content=payload,
-                              headers={"Content-Type": "application/json",
-                                       "X-Restaurant-Event": "ping"})
-        return {"ok": r.status_code < 400, "status_code": r.status_code}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
+# ── Outgoing Webhooks — moved to routers/outgoing_webhooks.py (NUMBER 43) ─────
 
 # ── Stripe Payment Gateway ────────────────────────────────────────────────────
 
@@ -4407,73 +3261,7 @@ def _get_stripe_key(restaurant_id: str) -> str:
     return os.getenv("STRIPE_SECRET_KEY", "")
 
 
-@app.post("/api/orders/{oid}/payment-link")
-async def create_payment_link(oid: str, user=Depends(current_user)):
-    """Create a Stripe Checkout session for an existing order and return the URL."""
-    key = _get_stripe_key(user["restaurant_id"])
-    if not key:
-        raise HTTPException(402, "بوابة الدفع غير مُفعّلة — أضف STRIPE_SECRET_KEY في الإعدادات")
-    try:
-        import stripe as _stripe
-    except ImportError:
-        raise HTTPException(500, "stripe package not installed")
-
-    conn = database.get_db()
-    order = conn.execute(
-        "SELECT o.*, r.name AS rest_name FROM orders o "
-        "JOIN restaurants r ON o.restaurant_id=r.id "
-        "WHERE o.id=? AND o.restaurant_id=?",
-        (oid, user["restaurant_id"])
-    ).fetchone()
-    items = conn.execute(
-        "SELECT name, price, quantity FROM order_items WHERE order_id=?", (oid,)
-    ).fetchall()
-    conn.close()
-
-    if not order:
-        raise HTTPException(404, "Order not found")
-    if order["payment_status"] == "paid":
-        raise HTTPException(409, "الطلب مدفوع بالفعل")
-
-    _stripe.api_key = key
-    frontend_base = os.getenv("BASE_URL", "").rstrip("/")
-    line_items = [
-        {
-            "price_data": {
-                "currency": "usd",
-                "product_data": {"name": item["name"]},
-                "unit_amount": max(1, int(item["price"] * 100)),
-            },
-            "quantity": item["quantity"],
-        }
-        for item in items
-    ] or [{
-        "price_data": {
-            "currency": "usd",
-            "product_data": {"name": f"طلب #{oid[:8]}"},
-            "unit_amount": max(1, int(order["total"] * 100)),
-        },
-        "quantity": 1,
-    }]
-
-    session = _stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        line_items=line_items,
-        mode="payment",
-        success_url=f"{frontend_base}/app?payment=success&order={oid}",
-        cancel_url=f"{frontend_base}/app?payment=cancelled&order={oid}",
-        metadata={"order_id": oid, "restaurant_id": user["restaurant_id"]},
-    )
-
-    conn2 = database.get_db()
-    conn2.execute(
-        "UPDATE orders SET stripe_session_id=?, stripe_payment_url=? WHERE id=?",
-        (session.id, session.url, oid)
-    )
-    conn2.commit()
-    conn2.close()
-    return {"url": session.url, "session_id": session.id}
-
+# create_payment_link — moved to routers/orders.py (NUMBER 43)
 
 @app.post("/api/stripe/webhook", include_in_schema=False)
 async def stripe_webhook(request: Request):
@@ -4602,18 +3390,7 @@ async def stripe_webhook(request: Request):
     return {"received": True}
 
 
-@app.get("/api/orders/{oid}/payment-status")
-async def get_payment_status(oid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT payment_status, stripe_payment_url FROM orders WHERE id=? AND restaurant_id=?",
-        (oid, user["restaurant_id"])
-    ).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Order not found")
-    return dict(row)
-
+# get_payment_status — moved to routers/orders.py (NUMBER 43)
 
 # ── Stripe Subscriptions (auto-billing) ──────────────────────────────────────
 
@@ -4717,832 +3494,9 @@ async def stripe_billing_portal(user=Depends(current_user)):
     return {"url": portal.url}
 
 
-# ── Orders ────────────────────────────────────────────────────────────────────
+# ── Orders — moved to routers/orders.py (NUMBER 43) ────────────────────────────
 
-STATUS_FLOW = {
-    "pending": "confirmed",
-    "confirmed": "preparing",
-    "preparing": "on_way",
-    "on_way": "delivered",
-}
-
-# Explicit allowed transitions for direct-set (action != advance/cancel)
-ALLOWED_TRANSITIONS: dict = {
-    "pending":    {"confirmed", "cancelled"},
-    "confirmed":  {"preparing", "cancelled"},
-    "preparing":  {"on_way", "cancelled"},
-    "on_way":     {"delivered", "cancelled"},
-    "delivered":  set(),
-    "cancelled":  set(),
-}
-
-
-@app.get("/api/orders")
-async def list_orders(
-    status: Optional[str] = None,
-    channel: Optional[str] = None,
-    branch_id: Optional[str] = None,
-    search: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    user=Depends(current_user),
-):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    q = """
-        SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
-               b.name AS branch_name
-        FROM orders o JOIN customers c ON o.customer_id = c.id
-        LEFT JOIN branches b ON o.branch_id = b.id
-        WHERE o.restaurant_id = ?
-    """
-    params = [rid]
-    if status:
-        q += " AND o.status=?"; params.append(status)
-    if channel:
-        q += " AND o.channel=?"; params.append(channel)
-    if branch_id:
-        q += " AND o.branch_id=?"; params.append(branch_id)
-    if search:
-        q += " AND (c.name LIKE ? OR o.id LIKE ?)"; params += [f"%{search}%", f"%{search}%"]
-    if date_from:
-        q += " AND DATE(o.created_at) >= ?"; params.append(date_from)
-    if date_to:
-        q += " AND DATE(o.created_at) <= ?"; params.append(date_to)
-    q += " ORDER BY o.created_at DESC"
-    rows = conn.execute(q, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/orders/{oid}")
-async def get_order(oid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("""
-        SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.platform
-        FROM orders o JOIN customers c ON o.customer_id = c.id
-        WHERE o.id=? AND o.restaurant_id=?
-    """, (oid, user["restaurant_id"])).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Order not found")
-    items = conn.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)).fetchall()
-    conn.close()
-    result = dict(row)
-    result["items"] = [dict(i) for i in items]
-    return result
-
-
-@app.post("/api/orders", status_code=201)
-async def create_order(data: OrderCreate, user=Depends(current_user)):
-    conn = database.get_db()
-    oid = str(uuid.uuid4())
-    total = sum(i.get("price", 0) * i.get("quantity", 1) for i in data.items)
-    conn.execute("""
-        INSERT INTO orders (id, restaurant_id, customer_id, channel, type, total, address, notes, status, branch_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    """, (oid, user["restaurant_id"], data.customer_id, data.channel,
-          data.type, total, data.address, data.notes, data.branch_id))
-    for item in data.items:
-        conn.execute("""
-            INSERT INTO order_items (id, order_id, product_id, name, price, quantity)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (str(uuid.uuid4()), oid, item.get("product_id"),
-              item.get("name"), item.get("price", 0), item.get("quantity", 1)))
-        if item.get("product_id"):
-            conn.execute(
-                "UPDATE products SET order_count=COALESCE(order_count,0)+? WHERE id=? AND restaurant_id=?",
-                (item.get("quantity", 1), item["product_id"], user["restaurant_id"])
-            )
-
-    # Update customer lifetime stats
-    conn.execute("""
-        UPDATE customers SET
-            total_orders = COALESCE(total_orders, 0) + 1,
-            total_spent  = COALESCE(total_spent, 0) + ?
-        WHERE id = ? AND restaurant_id = ?
-    """, (total, data.customer_id, user["restaurant_id"]))
-
-    log_activity(conn, user["restaurant_id"], "order_created", "order", oid,
-                 f"طلب جديد بقيمة {total} د.ع", user["id"], user["name"])
-    create_notification(conn, user["restaurant_id"], "new_order", "طلب جديد",
-                        f"طلب جديد بقيمة {total} د.ع من {data.channel}", "order", oid)
-    conn.commit()
-
-    row = conn.execute("""
-        SELECT o.*, c.name AS customer_name FROM orders o
-        JOIN customers c ON o.customer_id = c.id WHERE o.id=?
-    """, (oid,)).fetchone()
-    conn.close()
-    order_dict = dict(row)
-    asyncio.create_task(_fire_outgoing_webhooks(user["restaurant_id"], "order.created", order_dict))
-    return order_dict
-
-
-_STATUS_MESSAGES = {
-    "confirmed":  "✅ طلبك وصلنا وصار بالتجهيز! نشوفك قريب 😊",
-    "preparing":  "👨‍🍳 طلبك عم يتجهز الحين — ما يطول!",
-    "on_way":     "🛵 طلبك طلع من المطعم وعلى الطريق إليك!",
-    "delivered":  "✅ وصل طلبك! بالعافية وشكراً لاختيارك 🌷",
-    "cancelled":  "❌ تم إلغاء طلبك. إذا عندك استفسار تواصل معنا.",
-}
-
-
-async def _notify_customer_status_change(order: dict, restaurant_id: str, new_status: str) -> None:
-    """Send an order-status update to the customer on their platform (non-fatal)."""
-    message_text = _STATUS_MESSAGES.get(new_status)
-    if not message_text:
-        return
-    try:
-        import httpx as _httpx
-        conn = database.get_db()
-        try:
-            customer_id = order.get("customer_id", "")
-            cust_row = conn.execute(
-                "SELECT platform, phone FROM customers WHERE id=?", (customer_id,)
-            ).fetchone()
-            if not cust_row:
-                return
-            platform = cust_row["platform"] or ""
-            mem_row = conn.execute(
-                "SELECT memory_value FROM conversation_memory "
-                "WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
-                (restaurant_id, customer_id)
-            ).fetchone()
-            external_id = mem_row["memory_value"] if mem_row else cust_row["phone"] or ""
-            if not external_id:
-                return
-
-            if platform == "telegram":
-                ch = conn.execute(
-                    "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'",
-                    (restaurant_id,)
-                ).fetchone()
-                if not ch or not ch["token"]:
-                    return
-                async with _httpx.AsyncClient(timeout=10) as _cl:
-                    await _cl.post(
-                        f"https://api.telegram.org/bot{ch['token']}/sendMessage",
-                        json={"chat_id": external_id, "text": message_text}
-                    )
-
-            elif platform == "whatsapp":
-                ch = conn.execute(
-                    "SELECT token, phone_number_id FROM channels WHERE restaurant_id=? AND type='whatsapp'",
-                    (restaurant_id,)
-                ).fetchone()
-                if not ch or not ch["token"]:
-                    return
-                pn_id = ch["phone_number_id"] if "phone_number_id" in ch.keys() else ""
-                if not pn_id:
-                    return
-                async with _httpx.AsyncClient(timeout=10) as _cl:
-                    await _cl.post(
-                        f"https://graph.facebook.com/v19.0/{pn_id}/messages",
-                        headers={"Authorization": f"Bearer {ch['token']}", "Content-Type": "application/json"},
-                        json={"messaging_product": "whatsapp", "to": external_id,
-                              "type": "text", "text": {"body": message_text}}
-                    )
-
-            elif platform in ("instagram", "facebook"):
-                ch = conn.execute(
-                    "SELECT token FROM channels WHERE restaurant_id=? AND type=?",
-                    (restaurant_id, platform)
-                ).fetchone()
-                if not ch or not ch["token"]:
-                    return
-                async with _httpx.AsyncClient(timeout=10) as _cl:
-                    await _cl.post(
-                        "https://graph.facebook.com/v19.0/me/messages",
-                        params={"access_token": ch["token"]},
-                        json={"recipient": {"id": external_id}, "message": {"text": message_text}}
-                    )
-        finally:
-            conn.close()
-    except Exception as _e:
-        logger.warning(f"[notify_status] {new_status} notify failed order={order.get('id','?')}: {_e}")
-
-
-async def _fire_outgoing_webhooks(restaurant_id: str, event: str, payload: dict) -> None:
-    """POST event payload to all active outgoing webhooks subscribed to this event."""
-    import hmac as _hmac, hashlib as _hl, json as _json
-    try:
-        import httpx as _httpx
-        conn = database.get_db()
-        try:
-            rows = conn.execute(
-                "SELECT id, url, secret FROM outgoing_webhooks "
-                "WHERE restaurant_id=? AND is_active=1",
-                (restaurant_id,)
-            ).fetchall()
-        finally:
-            conn.close()
-
-        if not rows:
-            return
-
-        body = _json.dumps({"event": event, "data": payload}, ensure_ascii=False).encode()
-        async with _httpx.AsyncClient(timeout=10) as _cl:
-            for row in rows:
-                events_raw = row["secret"] or ""
-                # Load events from the outgoing_webhooks row (re-query to get events field)
-                _conn2 = database.get_db()
-                try:
-                    full = _conn2.execute(
-                        "SELECT events, secret FROM outgoing_webhooks WHERE id=?", (row["id"],)
-                    ).fetchone()
-                finally:
-                    _conn2.close()
-                if not full:
-                    continue
-                subscribed = _json.loads(full["events"] or '["order.confirmed"]')
-                if event not in subscribed:
-                    continue
-                secret = full["secret"] or ""
-                headers = {"Content-Type": "application/json", "X-Restaurant-Event": event}
-                if secret:
-                    sig = _hmac.new(secret.encode(), body, _hl.sha256).hexdigest()
-                    headers["X-Webhook-Signature"] = f"sha256={sig}"
-                try:
-                    r = await _cl.post(row["url"], content=body, headers=headers)
-                    _conn3 = database.get_db()
-                    try:
-                        _conn3.execute(
-                            "UPDATE outgoing_webhooks SET last_triggered_at=CURRENT_TIMESTAMP, "
-                            "last_status_code=?, fail_count=CASE WHEN ? < 400 THEN 0 ELSE fail_count+1 END "
-                            "WHERE id=?",
-                            (r.status_code, r.status_code, row["id"])
-                        )
-                        _conn3.commit()
-                    finally:
-                        _conn3.close()
-                except Exception as _req_e:
-                    logger.warning(f"[outgoing_webhook] delivery failed id={row['id']}: {_req_e}")
-                    _conn4 = database.get_db()
-                    try:
-                        _conn4.execute(
-                            "UPDATE outgoing_webhooks SET fail_count=fail_count+1 WHERE id=?",
-                            (row["id"],)
-                        )
-                        _conn4.commit()
-                    finally:
-                        _conn4.close()
-    except Exception as _e:
-        logger.warning(f"[outgoing_webhooks] event={event} restaurant={restaurant_id}: {_e}")
-
-
-async def _notify_customer_confirmed(order: dict, restaurant_id: str) -> None:
-    """Send a confirmation message to the customer on their platform (non-fatal)."""
-    try:
-        import httpx as _httpx
-        conn = database.get_db()
-        try:
-            customer_id = order.get("customer_id", "")
-            # Get the platform/channel from customers table
-            cust_row = conn.execute(
-                "SELECT platform, phone FROM customers WHERE id=?", (customer_id,)
-            ).fetchone()
-            if not cust_row:
-                return
-            platform = cust_row["platform"] or ""
-
-            # Get the customer's external_id from conversation_memory
-            mem_row = conn.execute(
-                "SELECT memory_value FROM conversation_memory WHERE restaurant_id=? AND customer_id=? AND memory_key='external_id'",
-                (restaurant_id, customer_id)
-            ).fetchone()
-            external_id = mem_row["memory_value"] if mem_row else cust_row["phone"] or ""
-            if not external_id:
-                return
-
-            # Get delivery_time from settings
-            settings_row = conn.execute(
-                "SELECT delivery_time FROM settings WHERE restaurant_id=?", (restaurant_id,)
-            ).fetchone()
-            delivery_time = settings_row["delivery_time"] if settings_row and "delivery_time" in settings_row.keys() else ""
-
-            # Build message
-            msg_lines = ["✅ طلبك وصلنا وصار بالتجهيز!"]
-            if delivery_time:
-                msg_lines.append(f"⏱️ الوقت التقريبي للتوصيل: {delivery_time}")
-            msg_lines.append("شكراً لك، نشوفك قريب 😊")
-            message_text = "\n".join(msg_lines)
-
-            if platform == "telegram":
-                ch = conn.execute(
-                    "SELECT token FROM channels WHERE restaurant_id=? AND type='telegram'",
-                    (restaurant_id,)
-                ).fetchone()
-                bot_token = ch["token"] if ch else ""
-                if not bot_token or not external_id:
-                    return
-                async with _httpx.AsyncClient(timeout=10) as client:
-                    await client.post(
-                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                        json={"chat_id": external_id, "text": message_text}
-                    )
-
-            elif platform == "whatsapp":
-                ch = conn.execute(
-                    "SELECT token, phone_number_id FROM channels WHERE restaurant_id=? AND type='whatsapp'",
-                    (restaurant_id,)
-                ).fetchone()
-                if not ch:
-                    return
-                access_token = ch["token"] if ch else ""
-                phone_number_id = ch["phone_number_id"] if "phone_number_id" in ch.keys() else ""
-                if not access_token or not phone_number_id or not external_id:
-                    return
-                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": external_id,
-                    "type": "text",
-                    "text": {"body": message_text}
-                }
-                async with _httpx.AsyncClient(timeout=10) as client:
-                    await client.post(
-                        f"https://graph.facebook.com/v19.0/{phone_number_id}/messages",
-                        headers=headers, json=payload
-                    )
-
-            elif platform in ("instagram", "facebook"):
-                ch_type = platform
-                ch = conn.execute(
-                    "SELECT token FROM channels WHERE restaurant_id=? AND type=?",
-                    (restaurant_id, ch_type)
-                ).fetchone()
-                page_token = ch["token"] if ch else ""
-                if not page_token or not external_id:
-                    return
-                payload = {"recipient": {"id": external_id}, "message": {"text": message_text}}
-                async with _httpx.AsyncClient(timeout=10) as client:
-                    await client.post(
-                        "https://graph.facebook.com/v19.0/me/messages",
-                        params={"access_token": page_token},
-                        json=payload
-                    )
-        finally:
-            conn.close()
-    except Exception as _e:
-        logger.warning(f"[order] customer confirmed notify failed (non-fatal): {_e}")
-
-
-@app.patch("/api/orders/{oid}/status")
-async def update_order_status(oid: str, req: Request, background_tasks: BackgroundTasks, user=Depends(current_user)):
-    body = await req.json()
-    action = body.get("action", "advance")
-    conn = database.get_db()
-    order = conn.execute("SELECT * FROM orders WHERE id=? AND restaurant_id=?",
-                         (oid, user["restaurant_id"])).fetchone()
-    if not order:
-        conn.close()
-        raise HTTPException(404, "Order not found")
-    BLOCKED_FROM = {"delivered", "cancelled"}
-    VALID_STATUSES = {"pending", "confirmed", "preparing", "on_way", "delivered", "cancelled"}
-
-    if action == "cancel":
-        if order["status"] in BLOCKED_FROM:
-            conn.close()
-            raise HTTPException(400, "لا يمكن إلغاء طلب مكتمل أو ملغى مسبقاً")
-        new_status = "cancelled"
-        log_activity(conn, user["restaurant_id"], "order_cancelled", "order", oid,
-                     f"تم إلغاء الطلب #{oid[:8]}", user["id"], user["name"])
-    elif action == "advance":
-        if order["status"] in BLOCKED_FROM:
-            conn.close()
-            raise HTTPException(400, "لا يمكن تقديم هذا الطلب")
-        new_status = STATUS_FLOW.get(order["status"])
-        if not new_status:
-            conn.close()
-            raise HTTPException(400, "لا يمكن تقديم هذا الطلب")
-        log_activity(conn, user["restaurant_id"], "order_status_changed", "order", oid,
-                     f"تغيير حالة الطلب إلى {new_status}", user["id"], user["name"])
-    else:
-        if action not in VALID_STATUSES:
-            conn.close()
-            raise HTTPException(400, "حالة غير صحيحة")
-        allowed = ALLOWED_TRANSITIONS.get(order["status"], set())
-        if action not in allowed:
-            conn.close()
-            raise HTTPException(400, f"لا يمكن الانتقال من {order['status']} إلى {action}")
-        new_status = action
-        log_activity(conn, user["restaurant_id"], "order_status_changed", "order", oid,
-                     f"تغيير حالة الطلب إلى {new_status}", user["id"], user["name"])
-
-    conn.execute("UPDATE orders SET status=? WHERE id=?", (new_status, oid))
-
-    # Notify on new pending order
-    if new_status == "pending":
-        create_notification(conn, user["restaurant_id"], "new_order",
-                            "طلب جديد في الانتظار",
-                            f"الطلب #{oid[:8]} في انتظار التأكيد", "order", oid)
-
-    # Notify customer on status changes that matter to them
-    _NOTIFY_STATUSES = {"confirmed", "preparing", "on_way", "delivered", "cancelled"}
-    if new_status in _NOTIFY_STATUSES:
-        order_dict = dict(order)
-        background_tasks.add_task(
-            _notify_customer_status_change, order_dict, user["restaurant_id"], new_status
-        )
-        background_tasks.add_task(
-            _fire_outgoing_webhooks, user["restaurant_id"],
-            f"order.{new_status}", order_dict
-        )
-
-    conn.commit()
-    conn.close()
-    return {"status": new_status}
-
-
-@app.patch("/api/orders/{oid}")
-async def update_order(oid: str, data: OrderUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM orders WHERE id=? AND restaurant_id=?",
-                        (oid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Order not found")
-    upd = {}
-    if data.notes is not None: upd["notes"] = data.notes
-    if data.address is not None: upd["address"] = data.address
-    if upd:
-        conn.execute(f"UPDATE orders SET {','.join(k+'=?' for k in upd)} WHERE id=?",
-                     list(upd.values()) + [oid])
-        conn.commit()
-    row = conn.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/orders/{oid}")
-async def delete_order(oid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM orders WHERE id=? AND restaurant_id=?",
-                        (oid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Order not found")
-    conn.execute("DELETE FROM order_items WHERE order_id=?", (oid,))
-    conn.execute("DELETE FROM orders WHERE id=?", (oid,))
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
-
-
-# ── Conversations ─────────────────────────────────────────────────────────────
-
-@app.get("/api/conversations")
-async def list_conversations(
-    mode: Optional[str] = None,
-    status: Optional[str] = None,
-    search: Optional[str] = None,
-    customer_id: Optional[str] = None,
-    user=Depends(current_user),
-):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    q = """
-        SELECT cv.*,
-               c.name AS customer_name,
-               c.platform,
-               c.phone,
-               COALESCE(
-                 (SELECT memory_value FROM conversation_memory
-                  WHERE customer_id=c.id AND restaurant_id=? AND memory_key='name'
-                  ORDER BY updated_at DESC LIMIT 1),
-                 c.name
-               ) AS display_name,
-               (SELECT content FROM messages
-                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message,
-               (SELECT role FROM messages
-                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message_role,
-               (SELECT created_at FROM messages
-                WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
-        FROM conversations cv JOIN customers c ON cv.customer_id = c.id
-        WHERE cv.restaurant_id=?
-    """
-    params = [rid, rid]
-    if mode:
-        q += " AND cv.mode=?"; params.append(mode)
-    if status:
-        q += " AND cv.status=?"; params.append(status)
-    if search:
-        q += """ AND (c.name LIKE ? OR c.phone LIKE ?
-                   OR EXISTS(SELECT 1 FROM conversation_memory cm2
-                              WHERE cm2.customer_id=c.id AND cm2.memory_key='name'
-                                AND cm2.memory_value LIKE ?))"""
-        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
-    if customer_id:
-        q += " AND cv.customer_id=?"; params.append(customer_id)
-    q += " ORDER BY COALESCE((SELECT created_at FROM messages WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1), cv.updated_at) DESC"
-    rows = conn.execute(q, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/conversations/{cid}/messages")
-async def get_messages(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM conversations WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Conversation not found")
-    msgs = conn.execute(
-        "SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at", (cid,)).fetchall()
-    conn.close()
-    return [dict(m) for m in msgs]
-
-
-@app.post("/api/conversations/{cid}/messages")
-async def send_message(cid: str, data: MsgCreate, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM conversations WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Conversation not found")
-    mid = str(uuid.uuid4())
-    conn.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'staff', ?)",
-                 (mid, cid, data.content))
-    conn.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP, unread_count=0, mode='human' WHERE id=?", (cid,))
-    conn.commit()
-    msg = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
-    conn.close()
-    return dict(msg)
-
-
-@app.get("/api/outbound/failed")
-async def list_failed_messages(user=Depends(current_user)):
-    """Return last 50 failed outbound messages for this restaurant."""
-    conn = database.get_db()
-    rows = conn.execute(
-        """SELECT id, conversation_id, platform, recipient_id, content, error, created_at
-           FROM outbound_messages
-           WHERE restaurant_id=? AND status='failed'
-           ORDER BY created_at DESC LIMIT 50""",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.patch("/api/conversations/{cid}/messages/{mid}")
-async def edit_message(cid: str, mid: str, req: Request, user=Depends(current_user)):
-    body = await req.json()
-    content = body.get("content", "").strip()
-    if not content:
-        raise HTTPException(400, "المحتوى مطلوب")
-    conn = database.get_db()
-    msg = conn.execute(
-        "SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id "
-        "WHERE m.id=? AND m.conversation_id=? AND c.restaurant_id=?",
-        (mid, cid, user["restaurant_id"])
-    ).fetchone()
-    if not msg:
-        conn.close()
-        raise HTTPException(404, "الرسالة غير موجودة")
-    conn.execute("UPDATE messages SET content=? WHERE id=?", (content, mid))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.patch("/api/conversations/{cid}/mode")
-async def toggle_mode(cid: str, req: Request, user=Depends(current_user)):
-    body = await req.json()
-    mode = body.get("mode", "bot")
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM conversations WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Conversation not found")
-    conn.execute("UPDATE conversations SET mode=? WHERE id=?", (mode, cid))
-    log_activity(conn, user["restaurant_id"], "conversation_mode_changed", "conversation", cid,
-                 f"تغيير وضع المحادثة إلى {mode}", user["id"], user["name"])
-    conn.commit()
-    conn.close()
-    return {"mode": mode}
-
-
-@app.patch("/api/conversations/{cid}/urgent")
-async def set_urgent(cid: str, req: Request, user=Depends(current_user)):
-    body = await req.json()
-    urgent = bool(body.get("urgent", True))
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM conversations WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Conversation not found")
-    conn.execute("UPDATE conversations SET urgent=? WHERE id=?", (int(urgent), cid))
-    conn.commit()
-    conn.close()
-    return {"urgent": urgent}
-
-
-@app.patch("/api/conversations/{cid}/read")
-async def mark_read(cid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    conn.execute("UPDATE conversations SET unread_count=0 WHERE id=? AND restaurant_id=?",
-                 (cid, user["restaurant_id"]))
-    conn.commit()
-    conn.close()
-    return {"unread_count": 0}
-
-
-@app.post("/api/conversations/{cid}/ai-reply")
-async def ai_reply(cid: str, user=Depends(current_user)):
-    if not openai_client:
-        raise HTTPException(503, "OpenAI غير مهيأ — أضف OPENAI_API_KEY في ملف .env")
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM conversations WHERE id=? AND restaurant_id=?",
-                        (cid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "Conversation not found")
-    s = conn.execute("SELECT * FROM settings WHERE restaurant_id=?", (user["restaurant_id"],)).fetchone()
-    r = conn.execute("SELECT * FROM restaurants WHERE id=?", (user["restaurant_id"],)).fetchone()
-    msgs = list(reversed(conn.execute(
-        "SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT 10", (cid,)).fetchall()))
-    conn.close()
-
-    bot_name = (s["bot_name"] if s else None) or "AI Assistant"
-    rest_name = (r["name"] if r else None) or "المطعم"
-    system_prompt = (
-        f"أنت {bot_name}، مساعد ذكاء اصطناعي لمطعم {rest_name}.\n"
-        "مهمتك مساعدة العملاء بشكل ودي ومحترف.\nأجب باختصار وبفائدة."
-    )
-    chat_msgs = [{"role": "system", "content": system_prompt}]
-    for m in msgs:
-        role = "user" if m["role"] == "customer" else "assistant"
-        chat_msgs.append({"role": role, "content": m["content"]})
-
-    resp = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=chat_msgs,
-        max_tokens=300,
-    )
-    ai_content = resp.choices[0].message.content
-
-    conn = database.get_db()
-    mid = str(uuid.uuid4())
-    conn.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'bot', ?)",
-                 (mid, cid, ai_content))
-    conn.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (cid,))
-    conn.commit()
-    msg = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
-    conn.close()
-    return dict(msg)
-
-
-# ── Branches ──────────────────────────────────────────────────────────────────
-
-@app.get("/api/branches")
-async def list_branches(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM branches WHERE restaurant_id=? ORDER BY is_default DESC, created_at ASC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return {"branches": [dict(r) for r in rows]}
-
-
-@app.post("/api/branches", status_code=201)
-async def create_branch(req: Request, user=Depends(current_user)):
-    body = await req.json()
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(400, "اسم الفرع مطلوب")
-    conn = database.get_db()
-    sub = conn.execute(
-        "SELECT plan FROM subscriptions WHERE restaurant_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
-        (user["restaurant_id"],)
-    ).fetchone()
-    plan = sub["plan"] if sub else "trial"
-    _check_plan_limit(conn, user["restaurant_id"], plan, "branches", "branches")
-    bid = str(__import__("uuid").uuid4())
-    is_default = 1 if not conn.execute(
-        "SELECT id FROM branches WHERE restaurant_id=?", (user["restaurant_id"],)
-    ).fetchone() else 0
-    conn.execute(
-        "INSERT INTO branches (id, restaurant_id, name, address, phone, working_hours, is_default) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (bid, user["restaurant_id"], name,
-         body.get("address", ""), body.get("phone", ""),
-         __import__("json").dumps(body.get("working_hours", {})), is_default)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/branches/{bid}")
-async def update_branch(bid: str, req: Request, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
-                        (bid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    body = await req.json()
-    allowed = {"name", "address", "phone", "working_hours", "is_active"}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if "working_hours" in updates:
-        import json as _j
-        updates["working_hours"] = _j.dumps(updates["working_hours"]) if isinstance(updates["working_hours"], dict) else updates["working_hours"]
-    if not updates:
-        conn.close()
-        return {"ok": True}
-    vals = list(updates.values())
-    set_clause = ", ".join(f"{k}=?" for k in updates)
-    conn.execute(f"UPDATE branches SET {set_clause} WHERE id=?", [*vals, bid])
-    conn.commit()
-    row = conn.execute("SELECT * FROM branches WHERE id=?", (bid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/branches/{bid}")
-async def delete_branch(bid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    branch = conn.execute(
-        "SELECT * FROM branches WHERE id=? AND restaurant_id=?",
-        (bid, user["restaurant_id"])
-    ).fetchone()
-    if not branch:
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    if branch["is_default"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكن حذف الفرع الرئيسي")
-    conn.execute("DELETE FROM branches WHERE id=?", (bid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/api/branches/{bid}/set-default")
-async def set_default_branch(bid: str, user=Depends(current_user)):
-    conn = database.get_db()
-    if not conn.execute("SELECT id FROM branches WHERE id=? AND restaurant_id=?",
-                        (bid, user["restaurant_id"])).fetchone():
-        conn.close()
-        raise HTTPException(404, "الفرع غير موجود")
-    conn.execute("UPDATE branches SET is_default=0 WHERE restaurant_id=?", (user["restaurant_id"],))
-    conn.execute("UPDATE branches SET is_default=1 WHERE id=?", (bid,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-# ── Settings ──────────────────────────────────────────────────────────────────
-
-@app.get("/api/settings")
-async def get_settings(user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute("SELECT * FROM settings WHERE restaurant_id=?",
-                       (user["restaurant_id"],)).fetchone()
-    conn.close()
-    return dict(row) if row else {}
-
-
-@app.put("/api/settings")
-async def update_settings(data: SettingsUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    if not conn.execute("SELECT id FROM settings WHERE restaurant_id=?", (rid,)).fetchone():
-        conn.execute("INSERT INTO settings (id, restaurant_id) VALUES (?, ?)", (str(uuid.uuid4()), rid))
-        conn.commit()
-    upd = {}
-    if data.restaurant_name is not None: upd["restaurant_name"] = data.restaurant_name
-    if data.restaurant_description is not None: upd["restaurant_description"] = data.restaurant_description
-    if data.restaurant_phone is not None: upd["restaurant_phone"] = data.restaurant_phone
-    if data.restaurant_address is not None: upd["restaurant_address"] = data.restaurant_address
-    if data.working_hours is not None: upd["working_hours"] = json.dumps(data.working_hours)
-    if data.bot_name is not None: upd["bot_name"] = data.bot_name
-    if data.bot_personality is not None: upd["bot_personality"] = data.bot_personality
-    if data.bot_language is not None: upd["bot_language"] = data.bot_language
-    if data.bot_welcome is not None: upd["bot_welcome"] = data.bot_welcome
-    if data.bot_enabled is not None: upd["bot_enabled"] = int(data.bot_enabled)
-    if data.security_2fa is not None: upd["security_2fa"] = int(data.security_2fa)
-    if data.security_session_timeout is not None: upd["security_session_timeout"] = data.security_session_timeout
-    if data.payment_methods is not None: upd["payment_methods"] = data.payment_methods
-    if data.business_type is not None: upd["business_type"] = data.business_type
-    if data.delivery_time is not None: upd["delivery_time"] = data.delivery_time
-    if data.notify_chat_id is not None: upd["notify_chat_id"] = data.notify_chat_id
-    if data.delivery_fee is not None: upd["delivery_fee"] = data.delivery_fee
-    if data.min_order is not None: upd["min_order"] = data.min_order
-    if data.report_frequency is not None and data.report_frequency in ("none", "daily", "weekly"):
-        upd["report_frequency"] = data.report_frequency
-    if data.menu_url is not None: upd["menu_url"] = data.menu_url
-    if upd:
-        conn.execute(f"UPDATE settings SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
-                     list(upd.values()) + [rid])
-        # Keep restaurants.name in sync so JWT always has the current name
-        if "restaurant_name" in upd and upd["restaurant_name"]:
-            conn.execute("UPDATE restaurants SET name=? WHERE id=?", (upd["restaurant_name"], rid))
-        conn.commit()
-    row = conn.execute("SELECT * FROM settings WHERE restaurant_id=?", (rid,)).fetchone()
-    conn.close()
-    return dict(row)
-
+# ── Conversations — moved to routers/conversations.py (NUMBER 43) ───────────────
 
 # ── Channels ──────────────────────────────────────────────────────────────────
 
@@ -6655,265 +4609,6 @@ async def super_channel_errors(channel_id: str, admin=Depends(current_super_admi
         return [dict(r) for r in rows]
     finally:
         conn.close()
-
-
-# ── Staff Management ──────────────────────────────────────────────────────────
-
-@app.get("/api/staff")
-async def list_staff(user=Depends(current_user)):
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT id, name, email, role, created_at, last_login FROM users WHERE restaurant_id=? ORDER BY created_at",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/staff", status_code=201)
-async def create_staff(data: StaffCreate, user=Depends(require_role("owner", "manager"))):
-    if data.role == "owner" and user["role"] != "owner":
-        raise HTTPException(403, "فقط المالك يمكنه إضافة مالك آخر")
-    conn = database.get_db()
-    _check_plan_limit(conn, user["restaurant_id"], user.get("plan", "trial"), "staff", "users")
-    existing = conn.execute("SELECT id FROM users WHERE email=?", (data.email,)).fetchone()
-    if existing:
-        conn.close()
-        raise HTTPException(400, "البريد الإلكتروني مستخدم بالفعل")
-    uid = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO users (id, restaurant_id, email, password_hash, name, role)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (uid, user["restaurant_id"], data.email, _hash_password(data.password), data.name, data.role))
-    log_activity(conn, user["restaurant_id"], "staff_added", "user", uid,
-                 f"تمت إضافة {data.name} بدور {data.role}", user["id"], user["name"])
-    conn.commit()
-    row = conn.execute(
-        "SELECT id, name, email, role, created_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.patch("/api/staff/{uid}")
-async def update_staff_role(uid: str, data: StaffUpdate, user=Depends(require_role("owner"))):
-    conn = database.get_db()
-    target = conn.execute(
-        "SELECT * FROM users WHERE id=? AND restaurant_id=?", (uid, user["restaurant_id"])
-    ).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(404, "المستخدم غير موجود")
-    if uid == user["id"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكنك تغيير دورك بنفسك")
-    conn.execute("UPDATE users SET role=? WHERE id=?", (data.role, uid))
-    log_activity(conn, user["restaurant_id"], "staff_role_changed", "user", uid,
-                 f"تغيير دور {target['name']} إلى {data.role}", user["id"], user["name"])
-    conn.commit()
-    row = conn.execute(
-        "SELECT id, name, email, role, created_at FROM users WHERE id=?", (uid,)
-    ).fetchone()
-    conn.close()
-    return dict(row)
-
-
-@app.delete("/api/staff/{uid}")
-async def delete_staff(uid: str, user=Depends(require_role("owner"))):
-    conn = database.get_db()
-    target = conn.execute(
-        "SELECT * FROM users WHERE id=? AND restaurant_id=?", (uid, user["restaurant_id"])
-    ).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(404, "المستخدم غير موجود")
-    if uid == user["id"]:
-        conn.close()
-        raise HTTPException(400, "لا يمكنك حذف حسابك الخاص")
-    conn.execute("DELETE FROM users WHERE id=?", (uid,))
-    log_activity(conn, user["restaurant_id"], "staff_removed", "user", uid,
-                 f"تمت إزالة {target['name']}", user["id"], user["name"])
-    conn.commit()
-    conn.close()
-    return {"message": "تم الحذف"}
-
-
-# ── Bot Config ────────────────────────────────────────────────────────────────
-
-@app.get("/api/bot-config")
-async def get_bot_config(user=Depends(current_user)):
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT * FROM bot_config WHERE restaurant_id=?", (user["restaurant_id"],)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return {
-            "restaurant_id": user["restaurant_id"],
-            "system_prompt": "",
-            "sales_prompt": "",
-            "escalation_keywords": [],
-            "fallback_message": "سأحيلك لأحد موظفينا الآن، انتظر قليلاً. 🙏",
-            "max_bot_turns": 15,
-            "auto_handoff_enabled": True,
-            "order_extraction_enabled": True,
-            "memory_enabled": True,
-            "escalation_threshold": 3,
-        }
-    d = dict(row)
-    try:
-        d["escalation_keywords"] = json.loads(d.get("escalation_keywords") or "[]")
-    except Exception:
-        d["escalation_keywords"] = []
-    d["auto_handoff_enabled"] = bool(d.get("auto_handoff_enabled", 1))
-    d["order_extraction_enabled"] = bool(d.get("order_extraction_enabled", 1))
-    d["memory_enabled"] = bool(d.get("memory_enabled", 1))
-    return d
-
-
-@app.put("/api/bot-config")
-async def update_bot_config(data: BotConfigUpdate, user=Depends(current_user)):
-    conn = database.get_db()
-    rid = user["restaurant_id"]
-    existing = conn.execute("SELECT id FROM bot_config WHERE restaurant_id=?", (rid,)).fetchone()
-    if not existing:
-        conn.execute(
-            "INSERT INTO bot_config (id, restaurant_id) VALUES (?, ?)",
-            (str(uuid.uuid4()), rid)
-        )
-        conn.commit()
-
-    upd = {}
-    if data.system_prompt is not None: upd["system_prompt"] = data.system_prompt
-    if data.sales_prompt is not None: upd["sales_prompt"] = data.sales_prompt
-    if data.escalation_keywords is not None: upd["escalation_keywords"] = json.dumps(data.escalation_keywords)
-    if data.fallback_message is not None: upd["fallback_message"] = data.fallback_message
-    if data.max_bot_turns is not None: upd["max_bot_turns"] = data.max_bot_turns
-    if data.auto_handoff_enabled is not None: upd["auto_handoff_enabled"] = int(data.auto_handoff_enabled)
-    if data.order_extraction_enabled is not None: upd["order_extraction_enabled"] = int(data.order_extraction_enabled)
-    if data.memory_enabled is not None: upd["memory_enabled"] = int(data.memory_enabled)
-    if data.escalation_threshold is not None: upd["escalation_threshold"] = data.escalation_threshold
-    if data.voice_tone is not None: upd["voice_tone"] = data.voice_tone
-    if data.dialect_override is not None: upd["dialect_override"] = data.dialect_override
-    if data.custom_greeting is not None: upd["custom_greeting"] = data.custom_greeting
-    if data.custom_farewell is not None: upd["custom_farewell"] = data.custom_farewell
-    if data.brand_keywords is not None: upd["brand_keywords"] = data.brand_keywords
-
-    if upd:
-        conn.execute(f"UPDATE bot_config SET {','.join(k+'=?' for k in upd)} WHERE restaurant_id=?",
-                     list(upd.values()) + [rid])
-        changed_fields = ", ".join(upd.keys())
-        log_activity(conn, rid, "bot_config_updated", "bot_config", rid,
-                     f"تعديل إعدادات البوت: {changed_fields}", user["id"], user.get("name", ""))
-        conn.commit()
-
-    row = conn.execute("SELECT * FROM bot_config WHERE restaurant_id=?", (rid,)).fetchone()
-    conn.close()
-    d = dict(row)
-    try:
-        d["escalation_keywords"] = json.loads(d.get("escalation_keywords") or "[]")
-    except Exception:
-        d["escalation_keywords"] = []
-    d["auto_handoff_enabled"] = bool(d.get("auto_handoff_enabled", 1))
-    d["order_extraction_enabled"] = bool(d.get("order_extraction_enabled", 1))
-    d["memory_enabled"] = bool(d.get("memory_enabled", 1))
-    return d
-
-
-@app.get("/api/bot-config/corrections")
-async def list_bot_corrections(user=Depends(current_user)):
-    """List all corrections for this restaurant, newest first."""
-    conn = database.get_db()
-    rows = conn.execute(
-        "SELECT * FROM bot_corrections WHERE restaurant_id=? ORDER BY created_at DESC",
-        (user["restaurant_id"],)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/bot-config/corrections")
-async def add_bot_correction(data: dict, user=Depends(current_user)):
-    """Add a correction. Supports structured (trigger_text+correction_text) and legacy (text) formats."""
-    trigger_text    = (data.get("trigger_text") or "").strip()
-    correction_text = (data.get("correction_text") or "").strip()
-    legacy_text     = (data.get("text") or "").strip()
-
-    # Structured format takes priority
-    if trigger_text and correction_text:
-        display_text = f'إذا قال "{trigger_text[:60]}" → "{correction_text[:60]}"'
-    elif legacy_text:
-        display_text = legacy_text
-    else:
-        raise HTTPException(400, "trigger_text+correction_text or text is required")
-
-    rid = user["restaurant_id"]
-    added_by = user.get("name") or user.get("email") or ""
-    conn = database.get_db()
-
-    # Dedup: same trigger for same restaurant → update correction text
-    if trigger_text:
-        existing = conn.execute(
-            "SELECT id FROM bot_corrections WHERE restaurant_id=? AND trigger_text=?",
-            (rid, trigger_text)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE bot_corrections SET correction_text=?, text=?, is_active=1, added_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (correction_text, display_text, added_by, existing["id"])
-            )
-            conn.commit(); conn.close()
-            return {"ok": True, "deduped": True}
-    else:
-        existing = conn.execute(
-            "SELECT id, is_active FROM bot_corrections WHERE restaurant_id=? AND text=?",
-            (rid, display_text)
-        ).fetchone()
-        if existing:
-            if not existing["is_active"]:
-                conn.execute("UPDATE bot_corrections SET is_active=1, added_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                             (added_by, existing["id"]))
-                conn.commit()
-            conn.close()
-            return {"ok": True, "deduped": True}
-
-    conn.execute(
-        "INSERT INTO bot_corrections (id, restaurant_id, text, trigger_text, correction_text, added_by, is_active) VALUES (?,?,?,?,?,?,1)",
-        (str(uuid.uuid4()), rid, display_text, trigger_text, correction_text, added_by)
-    )
-    conn.commit(); conn.close()
-    return {"ok": True}
-
-
-@app.patch("/api/bot-config/corrections/{cid}")
-async def toggle_bot_correction(cid: str, data: dict, user=Depends(current_user)):
-    """Activate or deactivate a correction."""
-    conn = database.get_db()
-    row = conn.execute(
-        "SELECT id FROM bot_corrections WHERE id=? AND restaurant_id=?",
-        (cid, user["restaurant_id"])
-    ).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "Correction not found")
-    is_active = int(bool(data.get("is_active", True)))
-    conn.execute("UPDATE bot_corrections SET is_active=? WHERE id=?", (is_active, cid))
-    conn.commit()
-    conn.close()
-    return {"ok": True, "is_active": bool(is_active)}
-
-
-@app.delete("/api/bot-config/corrections/{cid}")
-async def delete_bot_correction(cid: str, user=Depends(current_user)):
-    """Permanently delete a correction."""
-    conn = database.get_db()
-    conn.execute(
-        "DELETE FROM bot_corrections WHERE id=? AND restaurant_id=?",
-        (cid, user["restaurant_id"])
-    )
-    conn.commit()
-    conn.close()
-    return {"ok": True}
 
 
 # ── SHIFT COMMANDS ────────────────────────────────────────────────────────────

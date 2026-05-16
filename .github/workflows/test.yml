@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      JWT_SECRET: ci-test-secret-key
+      OPENAI_API_KEY: sk-test-placeholder
+      SUPABASE_URL: https://placeholder.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: test-key
+      DB_PATH: ":memory:"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Order Brain — edit & remove (NUMBER 35)
+        run: python3 scripts/day31_order_edit_test.py
+
+      - name: Order Brain — repeat order (NUMBER 36)
+        run: python3 scripts/day32_repeat_order_test.py
+
+      - name: Order Brain — item notes (NUMBER 37)
+        run: python3 scripts/day33_item_notes_test.py
+
+      - name: Order Brain — delivery fee (NUMBER 38)
+        run: python3 scripts/day34_delivery_fee_test.py
+
+      - name: Order Brain — working hours (NUMBER 39)
+        run: python3 scripts/day35_working_hours_test.py
+
+      - name: Order Brain — delivery time (NUMBER 40)
+        run: python3 scripts/day36_delivery_time_test.py
+
+      - name: Order Brain — payment validation (NUMBER 41)
+        run: python3 scripts/day37_payment_validation_test.py
+
+      - name: Order Brain — sold-out guard (NUMBER 42)
+        run: python3 scripts/day38_soldout_guard_test.py
+
+      - name: Order Brain — quantity sanity (NUMBER 43)
+        run: python3 scripts/day39_qty_sanity_test.py

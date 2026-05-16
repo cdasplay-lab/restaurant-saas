@@ -1,0 +1,175 @@
+NUMBER 11 — Full E2E Platform Verification
+Run: 7113787 — 2026-04-25 13:43
+========================================================================
+
+CHANNEL-BY-CHANNEL RESULTS:
+Check                                         telegram  whatsapp  instagra  facebook 
+------------------------------------------------------------------------
+inbound accepted                                 ✅         ✅         ✅         ✅     
+customer created                                 ✅         ✅         ✅         ✅     
+correct restaurant                               ✅         ✅         ✅         ✅     
+conversation created                             ✅         ✅         ✅         ✅     
+correct channel                                  ✅         ✅         ✅         ✅     
+customer msg stored                              ✅         ✅         ✅         ✅     
+bot reply stored                                 ✅         ✅         ✅         ✅     
+outbound logged                                  ✅         ✅         ✅         ✅     
+dedup no-op                                      ✅         ✅         ✅         ✅     
+conv reused                                      ✅         ✅         ✅         ✅     
+order created                                    —         —         —         —     
+
+FULL RESULTS:
+========================================================================
+✅ SETUP R1 token
+✅ SETUP R2 token
+✅ [TELEGRAM] inbound accepted without exception
+✅ [TELEGRAM] customer created
+✅ [TELEGRAM] customer restaurant_id correct
+✅ [TELEGRAM] conversation created
+✅ [TELEGRAM] conversation.channel correct
+✅ [TELEGRAM] conversation.restaurant_id correct
+✅ [TELEGRAM] customer message stored
+✅ [TELEGRAM] bot reply stored
+✅ [TELEGRAM] bot reply non-empty
+✅ [TELEGRAM] outbound_message logged
+✅ [TELEGRAM] dedup: second identical event is no-op
+✅ [TELEGRAM] second message reuses same conversation
+✅ [WHATSAPP] inbound accepted without exception
+✅ [WHATSAPP] customer created
+✅ [WHATSAPP] customer restaurant_id correct
+✅ [WHATSAPP] conversation created
+✅ [WHATSAPP] conversation.channel correct
+✅ [WHATSAPP] conversation.restaurant_id correct
+✅ [WHATSAPP] customer message stored
+✅ [WHATSAPP] bot reply stored
+✅ [WHATSAPP] bot reply non-empty
+✅ [WHATSAPP] outbound_message logged
+✅ [WHATSAPP] dedup: second identical event is no-op
+✅ [WHATSAPP] second message reuses same conversation
+✅ [INSTAGRAM] inbound accepted without exception
+✅ [INSTAGRAM] customer created
+✅ [INSTAGRAM] customer restaurant_id correct
+✅ [INSTAGRAM] conversation created
+✅ [INSTAGRAM] conversation.channel correct
+✅ [INSTAGRAM] conversation.restaurant_id correct
+✅ [INSTAGRAM] customer message stored
+✅ [INSTAGRAM] bot reply stored
+✅ [INSTAGRAM] bot reply non-empty
+✅ [INSTAGRAM] outbound_message logged
+✅ [INSTAGRAM] dedup: second identical event is no-op
+✅ [INSTAGRAM] second message reuses same conversation
+✅ [FACEBOOK] inbound accepted without exception
+✅ [FACEBOOK] customer created
+✅ [FACEBOOK] customer restaurant_id correct
+✅ [FACEBOOK] conversation created
+✅ [FACEBOOK] conversation.channel correct
+✅ [FACEBOOK] conversation.restaurant_id correct
+✅ [FACEBOOK] customer message stored
+✅ [FACEBOOK] bot reply stored
+✅ [FACEBOOK] bot reply non-empty
+✅ [FACEBOOK] outbound_message logged
+✅ [FACEBOOK] dedup: second identical event is no-op
+✅ [FACEBOOK] second message reuses same conversation
+✅ [ORDER] Telegram order created in DB
+✅ [ORDER] WhatsApp order created in DB
+✅ [ORDER] Instagram order created in DB
+✅ [ORDER] Facebook order created in DB
+✅ [ORDER] telegram order_items stored
+✅ [ORDER] whatsapp order_items stored
+✅ [ORDER] instagram order_items stored
+✅ [ORDER] facebook order_items stored
+✅ [ORDER] Telegram customer.total_orders incremented
+✅ [ORDER] Duplicate order for same conv is skipped
+✅ [API] R1 GET /api/orders returns 200
+✅ [API] R2 GET /api/orders returns 200
+✅ [API] Telegram order visible in R1 orders API
+✅ [API] WhatsApp order visible in R1 orders API
+✅ [ISOLATION-ORDER] R1 cannot see R2 Instagram order
+✅ [API] Instagram order visible in R2 orders API
+✅ [ISOLATION-ORDER] R2 cannot see R1 Telegram order
+✅ [API] orders?status=pending filter works
+✅ [STATUS] pending→confirmed via advance
+✅ [STATUS] confirmed→preparing via advance
+✅ [STATUS] preparing→on_way
+✅ [STATUS] on_way→delivered
+✅ [STATUS] cannot advance past delivered (HTTP 400)
+✅ [STATUS] DB reflects delivered status
+✅ [STATUS] completed_orders > 0 in analytics after delivery
+✅ [STATUS] cannot cancel delivered order (HTTP 400)
+✅ [ANALYTICS] R1 overview returns
+✅ [ANALYTICS] R2 overview returns
+✅ [ANALYTICS] R1 total_orders >= 2 (tg+wa orders)
+✅ [ANALYTICS] R1 total_conversations >= 2 (tg+wa convs)
+✅ [ANALYTICS] R1 total_customers >= 2 (tg+wa customers)
+✅ [ANALYTICS] R2 total_orders >= 2 (ig+fb orders)
+✅ [ANALYTICS] R2 total_conversations >= 2 (ig+fb convs)
+✅ [ANALYTICS] R1 revenue > 0
+✅ [ANALYTICS] R2 revenue > 0
+✅ [ANALYTICS] R1 channel breakdown has telegram
+✅ [ANALYTICS] R1 channel breakdown has whatsapp
+✅ [ANALYTICS] R1 no instagram in channel breakdown
+✅ [ANALYTICS] R2 channel breakdown has instagram
+✅ [ANALYTICS] R2 channel breakdown has facebook
+✅ [ANALYTICS] R2 no telegram in channel breakdown
+✅ [ANALYTICS] R1 top products include برجر
+✅ [ANALYTICS] R1 top products do NOT include شاورما
+✅ [ANALYTICS] R2 top products include شاورما
+✅ [ANALYTICS] R2 top products do NOT include برجر
+✅ [NOTIF] R1 new_order notifications created
+✅ [NOTIF] R2 new_order notifications created
+✅ [NOTIF] R1 notifications only from R1
+✅ [NOTIF] Mark read sets unread_count=0
+✅ [HANDOFF] mode switch to human via API
+✅ [HANDOFF] DB reflects mode=human
+✅ [HANDOFF] bot did NOT reply in human mode
+✅ [HANDOFF] unread_count incremented for human-mode message
+✅ [HANDOFF] mode switch back to bot via API
+✅ [ERROR] orphaned telegram webhook handled (no crash)
+✅ [ERROR] orphaned instagram webhook handled (no crash)
+✅ [ERROR] outbound_messages logged for telegram
+✅ [ERROR] outbound error field is not null/missing
+✅ [ERROR] processed_events entries logged for dedup
+✅ [ISOLATION] R1 conversations API only R1 restaurant
+✅ [ISOLATION] R2 ig conversation NOT in R1 list
+✅ [ISOLATION] R1 tg conversation NOT in R2 list
+✅ [ISOLATION] R1 customers API does NOT include R2 instagram customer
+✅ [ISOLATION] R2 customers API does NOT include R1 telegram customer
+✅ [ISOLATION] R1 total_orders == 2 (tg+wa)
+✅ [ISOLATION] R2 total_orders == 2 (ig+fb)
+✅ [ISOLATION] R1 products no شاورما دجاج
+✅ [ISOLATION] R2 products no برجر كلاسيك
+✅ [DB] R1 orders >= 2
+✅ [DB] R2 orders >= 2
+✅ [DB] R1 customers >= 2
+✅ [DB] R2 customers >= 2
+✅ [DB] R1 conversations >= 2
+✅ [DB] R2 conversations >= 2
+✅ [DB] R1 messages >= 4 (customer+bot per conv×2)
+✅ [DB] R2 messages >= 4 (customer+bot per conv×2)
+✅ [DB] R1 outbound_messages >= 2
+✅ [DB] R2 outbound_messages >= 2
+✅ [DB] telegram order.restaurant_id correct
+✅ [DB] telegram order.channel == telegram
+✅ [DB] telegram order.conversation_id set
+✅ [DB] telegram order.customer_id set
+✅ [DB] telegram order.total == 20000
+
+========================================================================
+Total: 133/133 (100%)
+
+DATABASE PROOF:
+  R1 orders=2 customers=2 convs=2 msgs=9 outbound=4
+  R2 orders=2 customers=2 convs=2 msgs=8 outbound=4
+
+ANALYTICS PROOF:
+  R1 overview: orders=2 convs=2 custs=2 revenue=32000.0
+  R2 overview: orders=2 convs=2 custs=2 revenue=19000.0
+
+CROSS-TENANT ISOLATION:
+  R1 channels: {'whatsapp', 'telegram'}
+  R2 channels: {'facebook', 'instagram'}
+
+DUP SAFETY:
+  processed_events for R1: 5
+  orders for tg_conv (must be 1): 1
+
+✅ NUMBER 11 CLOSED

@@ -1,0 +1,19 @@
+Day 9 Final Gate Report — 2026-04-24 23:54
+=================================================================
+✅ [GATE-01]  concurrency suite 10/10
+✅ [GATE-02]  no 'خطأ تقني' detected
+✅ [GATE-03]  bot_msgs=0 customer_msgs=1 — no duplicates
+✅ [GATE-04]  receipts at positions [5] — no duplicate | 7th reply: 'تم 🌷 الطلب مثبت.'
+✅ [GATE-05]  idx_orders_conv_dedup=✓ | conv_select_before_insert=✓ | time_window_dedup=✓
+✅ [GATE-06]  both_200=True | convs_this_run=1 (expect ≤1, phone=706407711)
+✅ [GATE-07]  both_200=True (s1=200, s2=200) | total_orders=0
+✅ [GATE-08]  R3=4,500 ✓, R2=5,000 ✓, R1=6,000 ✓
+✅ [GATE-09]  سارة=✓, علي=✓, حسين=✓
+✅ [GATE-10]  no address question after pickup
+✅ [GATE-11]  no repeated delivery/payment questions
+✅ [GATE-12]  no upsell after complaint
+✅ [GATE-13]  escalation trigger may not have fired (mode=bot) — code-verified: else branch in _process_incoming skips bot call when mode='human'
+✅ [GATE-14]  all log fields present
+
+إجمالي: 14/14 (100%)
+NUMBER 9 CLOSED

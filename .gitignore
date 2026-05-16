@@ -1,49 +1,50 @@
-# Claude Code local settings
-.claude/
-
-# Environment
+# ── Secrets ──────────────────────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
 
-# Database (SQLite — don't commit data)
+# ── Database files (use DATABASE_URL in production) ─────────────────────────
 *.db
+*.sqlite
+*.db-journal
 *.db-wal
 *.db-shm
-/data/
 
-# Python
+# ── Uploads (use Supabase in production) ────────────────────────────────────
+uploads/
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.pyd
-.Python
+.venv/
+venv/
 *.egg-info/
+
+# ── Node.js ──────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build output ─────────────────────────────────────────────────────────────
 dist/
 build/
-.eggs/
-venv/
-.venv/
-env/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# ── Backup files ─────────────────────────────────────────────────────────────
+*.bak
 
-# OS
+# ── OS files ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-logs/
+# ── Mobile (Capacitor) ──────────────────────────────────────────────────────
+android/
+ios/
 
-# Media uploads (if added later)
-uploads/
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
 
-# Test/simulation report artifacts
-scripts/*_compare_report.txt
-scripts/*_fix_verify*.txt
-scripts/*_verification*.txt
+# ── Claude settings (per-developer, contains local paths and permissions) ─────
+.claude/settings.json
+.claude/settings.local.json
+
+archive/db-backup/

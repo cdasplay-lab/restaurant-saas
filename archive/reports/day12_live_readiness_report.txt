@@ -1,0 +1,60 @@
+NUMBER 12 — Super Admin Live Readiness & Channel Health
+Run: 7129476 — 2026-04-25 18:04
+========================================================================
+✅ SETUP R1 token
+✅ SETUP R2 token
+✅ SETUP super_admin token
+✅ 1.1 /health returns 200
+✅ 1.2 /health.status is ok|degraded
+✅ 1.3 /api/health returns 200
+✅ 1.4 /api/health has env block
+✅ 1.5 /api/health env fields present
+✅ 1.6 /api/health no secret values in env (all bool)
+✅ 1.7 /api/health has openai_configured flag
+✅ 1.8 /api/health has meta_configured flag
+✅ 2.1 live-readiness returns 200 for owner
+✅ 2.2 live-readiness has channels
+✅ 2.3 live-readiness has ai block
+✅ 2.4 live-readiness has needs_attention
+✅ 2.5 live-readiness has recommended_fix
+✅ 2.6 live-readiness scoped to own restaurant: got=rd1_7129476
+✅ 2.7 live-readiness no raw token in response
+✅ 3.1 channels/status returns 200
+✅ 3.2 channels/status has channels dict
+✅ 3.3 channels/status scoped to own restaurant
+✅ 4.1 /api/super/live-readiness returns 403 for owner: got HTTP 403
+✅ 4.2 /api/super/channel-health returns 403 for owner: got HTTP 403
+✅ 4.3 /api/super/live-readiness returns 401/403 without token: got HTTP 401
+✅ 5.1 super live-readiness returns 200
+✅ 5.2 has summary block
+✅ 5.3 has restaurants list
+✅ 5.4 summary has openai_configured
+✅ 5.5 summary has meta_configured
+✅ 5.6 R1 appears in results
+✅ 5.7 R2 appears in results
+✅ 5.8 R3 appears in results
+✅ 5.9 no raw bot token in super response
+✅ 6.1 R1 Telegram is ok or outbound_failed (has token, has failed send): got=outbound_failed
+✅ 6.2 R1 last_error populated from outbound_messages: got={'platform': 'telegram', 'error': 'Telegram: 403 Forbidden', 'created_at': '2026-04-25 15:04:37'}
+✅ 6.3 R2 Telegram not_enabled (no channel row): got=not_enabled
+✅ 6.4 R2 needs_attention == False (not_enabled is OK): needs_attention=False
+✅ 6.5 R3 WhatsApp missing_credentials (meta not configured): got=missing_credentials
+✅ 6.6 R3 has recommended_fix
+✅ 7.1 channel-health returns 200
+✅ 7.2 has needs_attention list
+✅ 7.3 has by_channel dict
+✅ 7.4 by_channel has telegram key
+✅ 7.5 by_channel has whatsapp key
+✅ 7.6 no raw bot token in channel-health
+✅ 8.1 R2 recommended_fix says no problems: got='لا توجد مشاكل'
+✅ 8.2 R3 recommended_fix is non-empty (has WA issue): got='أضف META_APP_ID/META_APP_SECRET لـ whatsapp'
+✅ 9.1 pipeline.orders_ok is bool
+✅ 9.2 pipeline.conversations_ok is bool
+✅ 10.1 R1 telegram last_inbound_at populated: got=2026-04-25 15:04:37
+✅ 10.2 R1 telegram last_outbound_at populated: got=2026-04-25 15:04:37
+✅ 10.3 R1 telegram last_error reflects failed outbound: got='Telegram: 403 Forbidden'
+✅ 10.4 R1 telegram status = outbound_failed when last send failed: got=outbound_failed
+
+========================================================================
+Total: 53/53 (100%)
+✅ NUMBER 12 CLOSED

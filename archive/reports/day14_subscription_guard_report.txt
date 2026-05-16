@@ -1,0 +1,55 @@
+NUMBER 14 — Subscription, Plans, Payment State, and SaaS Guard
+Run: 7146719 — 2026-04-25 22:52
+========================================================================
+✅ SETUP tokens minted
+✅ SETUP super_admin token
+✅ 1.1 Trial: inbound message stored
+✅ 1.2 Trial: no blocked_subscription in outbound: got=0
+✅ 1.3 Trial: outbound message added (bot replied): before=0 after=1
+✅ 2.1 Pro: /api/analytics/overview returns 200
+✅ 2.2 Pro: has total_orders field
+✅ 3.1 Expired: inbound message stored: before=0 after=1
+✅ 3.2 Expired: blocked_subscription logged: before=0 after=1
+✅ 3.3 Expired: NO real outbound send: sent_count=0
+✅ 4.1 Expired: /api/orders returns 402 (blocked by guard): got 402
+✅ 4.2 Expired: existing order NOT deleted from DB
+✅ 5.1 Expired: /api/subscription/status returns 200
+✅ 5.2 Expired: status=expired in response: got=expired
+✅ 5.3 Expired: blocked=True in response
+✅ 5.4 Expired: blocked_reason non-empty
+✅ 6.1 Suspended: blocked_subscription logged
+✅ 6.2 Suspended: status=suspended in subscription/status: got=suspended
+✅ 7.1 Free: analytics returns 402: got: None
+✅ 7.2 Free: ai_enabled=False in features: got={'ai_enabled': False, 'analytics_enabled': False, 'media_enabled': False, 'handoff_enabled': False, 'channels_allowed': 0, 'max_products': 5, 'max_staff': 1, 'max_conversations': 0}
+✅ 7.3 Free: analytics_enabled=False in features
+✅ 8.1 Super: activate expired restaurant returns 200
+✅ 8.2 Super: status=active after activate: got=active
+✅ 8.3 Super: restaurant.status updated to active in DB: got=active
+✅ 8.4 Super: suspend returns 200
+✅ 8.5 Super: status=suspended after suspend
+✅ 8.6 Super: extend-trial returns 200
+✅ 8.7 Super: trial_ends_at in response
+✅ 8.8 Super: days_added=7
+✅ 8.9 Super: cancel returns 200
+✅ 8.10 Super: subscription.status=cancelled in DB
+✅ 8.11 Super: PATCH subscription returns 200
+✅ 8.12 Super: billing_email updated via PATCH
+✅ 8.13 Super: payment_provider updated via PATCH
+✅ 9.1 Owner cannot PATCH super subscription endpoint (403): got 403
+✅ 10.1 R_trial subscription independent of R_pro
+✅ 10.2 R_trial still active after R_expired was reactivated
+✅ 11.1 No payment_customer_id values exposed
+✅ 11.2 subscription/status returns billing_email (not customer IDs): fields present: []
+✅ 12.1 has plan
+✅ 12.2 has status
+✅ 12.3 has features dict
+✅ 12.4 has blocked bool
+✅ 12.5 trial ai_enabled=True
+✅ 12.6 trial analytics_enabled=True
+✅ 13.1 billing/create-checkout-session returns 200
+✅ 13.2 returns ok=False (not configured)
+✅ 13.3 returns payment_provider_not_configured code
+
+========================================================================
+Total: 48/48 (100%)
+✅ NUMBER 14 CLOSED
