@@ -793,6 +793,9 @@ class OrderBrain:
         # 4. Customer name
         if not session.customer_name:
             name = _extract_name(msg)
+            # NUMBER 45B — context-aware: bot just asked for name, accept bare Arabic word
+            if not name and session.next_missing_field() == "customer_name":
+                name = _extract_bare_name(msg)
             if name:
                 session.customer_name = name
                 updated.append(f"customer_name={name}")
@@ -1171,6 +1174,33 @@ def _extract_qty_impl(msg: str, product_name: str) -> int:
 _NAME_STOP_WORDS = {"ورقمي", "ورقم", "وعنواني", "وعنوان", "وتوصيل", "واستلام", "وكاش", "وكارد",
                     "وهاتفي", "وهاتف", "ورقمه", "والموبايل", "والموبايلي", "وبايد",
                     "في", "من", "إلى", "الى", "هو", "هي", "على", "مع", "لو"}
+
+_BARE_NAME_SKIP = {
+    "تمام", "اوكي", "اوك", "نعم", "اه", "ايه", "لا", "لأ", "ما",
+    "كاش", "كارد", "توصيل", "استلام", "بطاقة", "نقد", "فلوس",
+    "شكرا", "شكراً", "هلا", "مرحبا", "سلام", "صح", "زين", "كلش",
+    "أريد", "اريد", "ابي", "أبي", "جيبلي", "خذلي", "أضيف", "اضيف",
+}
+
+def _extract_bare_name(msg: str) -> Optional[str]:
+    """NUMBER 45B — Accept bare Arabic name when context is customer_name step.
+    e.g. bot asks 'شنو اسمك؟', customer replies 'محمد' or 'محمد علي'.
+    """
+    words = msg.strip().split()
+    if not words or len(words) > 3:
+        return None
+    first = words[0]
+    if not re.match(r'^[؀-ۿ]{2,15}$', first):
+        return None
+    if first in _BARE_NAME_SKIP:
+        return None
+    # Accept two-word name if second word also looks like a name
+    if len(words) >= 2:
+        second = words[1]
+        if re.match(r'^[؀-ۿ]{2,12}$', second) and second not in _BARE_NAME_SKIP:
+            return f"{first} {second}"
+    return first
+
 
 def _extract_name(msg: str) -> Optional[str]:
     """Extract customer name from message. NUMBER 41B H5 — single word only, stop at space/conjunction."""
