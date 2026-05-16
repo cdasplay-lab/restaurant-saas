@@ -1624,6 +1624,12 @@ def _process_incoming(
                     action = "reply"
                     extracted_order = None
                 else:
+                    # Typing indicator — Telegram only, best-effort before GPT call
+                    if platform == "telegram":
+                        _send_telegram_typing(
+                            channel_data.get("bot_token", ""),
+                            channel_data.get("chat_id", ""),
+                        )
                     # Run AI bot (sync; timeout=30s is set on the OpenAI client)
                     result = bot.process_message(restaurant_id, conv_id, bot_input)
                     reply_text = result.get("reply", "")
@@ -1860,6 +1866,20 @@ def _classify_telegram_error(status_code: int, description: str) -> str:
     if status_code and status_code >= 500:
         return f"خطأ في خوادم Telegram ({status_code}) — أعد المحاولة لاحقاً"
     return f"Telegram API error ({status_code}): {description}"
+
+
+def _send_telegram_typing(bot_token: str, chat_id: str) -> None:
+    """Fire sendChatAction typing — non-blocking, best-effort."""
+    if not bot_token or not chat_id:
+        return
+    try:
+        with httpx.Client(timeout=3) as _c:
+            _c.post(
+                f"https://api.telegram.org/bot{bot_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+            )
+    except Exception:
+        pass  # typing indicator is best-effort — never block the reply
 
 
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
