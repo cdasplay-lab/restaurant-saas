@@ -968,7 +968,8 @@ def _extract_items(
             qty = _extract_qty(msg, name)
             # NUMBER 43 — Quantity sanity check: cap unreasonable values
             if qty > MAX_QTY:
-                session.qty_capped.append(name)
+                if name not in session.qty_capped:
+                    session.qty_capped.append(name)
                 updated.append(f"qty_capped:{name}:{qty}→{MAX_QTY}")
                 logger.info(f"[order_brain43] qty capped: {name} {qty}→{MAX_QTY}")
                 qty = MAX_QTY
@@ -1061,7 +1062,8 @@ def _extract_items(
                                 qty = qty2
                                 break
                 if qty > MAX_QTY:
-                    session.qty_capped.append(fname)
+                    if fname not in session.qty_capped:
+                        session.qty_capped.append(fname)
                     updated.append(f"qty_capped:{fname}:{qty}→{MAX_QTY}")
                     qty = MAX_QTY
                 existing = next((it for it in session.items if it.name == fname), None)
@@ -1100,7 +1102,8 @@ def _extract_items(
                 qty = _extract_qty(msg, fname)
                 # NUMBER 43 — Quantity sanity check on fuzzy path too
                 if qty > MAX_QTY:
-                    session.qty_capped.append(fname)
+                    if fname not in session.qty_capped:
+                        session.qty_capped.append(fname)
                     updated.append(f"qty_capped:{fname}:{qty}→{MAX_QTY}")
                     logger.info(f"[order_brain43] qty capped (fuzzy): {fname} {qty}→{MAX_QTY}")
                     qty = MAX_QTY
