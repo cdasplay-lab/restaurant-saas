@@ -134,6 +134,9 @@ class _PgConnection:
             sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
         # Replace ? with %s for psycopg2
         sql = sql.replace("?", "%s")
+        # Escape literal % in LIKE patterns so psycopg2 doesn't treat them as param placeholders
+        # e.g. LIKE '%✅%' → LIKE '%%✅%%'  (% not followed by s or another %)
+        sql = re.sub(r'%(?![s%])', '%%', sql)
         # Store timestamps as text in the same format as SQLite
         sql = sql.replace(
             "CURRENT_TIMESTAMP",
