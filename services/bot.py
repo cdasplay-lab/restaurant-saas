@@ -5,6 +5,7 @@ Handles conversation processing, order extraction, and escalation detection.
 import os
 import json
 import re
+import random
 import logging
 from typing import Optional
 
@@ -44,14 +45,19 @@ MENU_IMAGE_PHRASES = [
     "المنيو", "منيو", "menu", "المنو", "منو",
     "دزلي المنيو", "ارسل المنيو", "أرسل المنيو", "وين المنيو",
     "شنو عدكم", "شنو عندكم", "شو عندكم", "شوعندكم",
-    "الصور", "صور الاكل", "صور الأكل", "صور المنيو",
-    "صور", "صورة المنيو", "show menu", "send menu",
+    "صور الاكل", "صور الأكل", "صور المنيو", "صورة المنيو",
+    "show menu", "send menu",
     "أكلاتكم", "اكلاتكم", "اشو عدكم", "وش عندكم",
-    "قائمة", "قائمة الطعام", "قائمة الأكل", "الأصناف", "الاصناف",
+    "قائمة الطعام", "قائمة الأكل", "الأصناف", "الاصناف",
     "ايش عندكم", "إيش عندكم", "شو في عندكم", "عندكم شو",
-    "ابي اشوف", "أبي أشوف", "اريد اشوف", "أريد أشوف",
-    "الاكلات", "الأكلات", "وش في", "شنو في",
+    "ابي اشوف الاكل", "أبي أشوف الاكل", "اريد اشوف المنيو", "أريد أشوف المنيو",
+    "الاكلات", "الأكلات",
 ]
+# Single-word phrases that require word-boundary match (prevent "صور" inside "منصور" etc.)
+_MENU_WORD_BOUNDARY = {"منو", "menu", "قائمة"}
+# Negation prefixes — if any precede a menu phrase, do NOT trigger menu intent
+_MENU_NEGATION = ("ما اريد", "ما أريد", "مو اريد", "مو أريد", "لا اريد", "لا أريد",
+                  "ما منيو", "مو منيو", "بدون منيو", "ما المنيو", "مو المنيو")
 
 # Algorithm 6 — banned phrases list for post-response validation
 BANNED_PHRASES = [
@@ -749,12 +755,58 @@ def _get_async_client():
 
 # ── Menu image helpers ────────────────────────────────────────────────────────
 
+_PURE_GREETING_WORDS = (
+    "سلام", "هلا", "مرحبا", "مرحباً", "أهلين", "اهلين", "هاي",
+    "صباح الخير", "مساء الخير", "صباح النور", "مساء النور",
+    "السلام عليكم", "وعليكم السلام", "hello", "hi", "hey",
+)
+
+def _is_pure_greeting(message: str) -> bool:
+    """Return True when the message is ONLY a greeting with no order/question content."""
+    msg = message.strip()
+    if len(msg) > 40:
+        return False
+    ml = msg.lower()
+    return any(g.lower() in ml for g in _PURE_GREETING_WORDS)
+
+
+def _build_returning_customer_greeting(customer_name: str, last_order: str) -> str:
+    """Deterministic greeting for a returning customer with known history."""
+    name = customer_name.strip() if customer_name else ""
+    greetings = [
+        f"هلا {name} 🌷 زين جيت!",
+        f"أهلاً {name} 🌷 نورتنا!",
+        f"هلا وغلا {name} 🌷",
+    ] if name else ["هلا 🌷 زين جيت!", "أهلاً 🌷 نورتنا!"]
+    base = random.choice(greetings)
+    if last_order:
+        return f"{base}\nتريد نفس الطلب، {last_order}؟ أو تحب تشوف المنيو كامل؟"
+    return f"{base}\nشنو تحب تطلب اليوم؟"
+
+
 def _detect_menu_image_intent(message: str) -> bool:
-    """Return True if the customer is asking to see the menu or food photos."""
-    msg_lower = message.lower()
+    """Return True if the customer is explicitly asking to see the menu or food photos.
+    Guards: negation (ما اريد المنيو), word-boundary for short phrases (منو ≠ منصور).
+    """
+    import re as _re_menu
+    msg_lower = message.strip().lower()
+    # Negation check — whole-message level
+    if any(neg in msg_lower for neg in _MENU_NEGATION):
+        return False
     for phrase in MENU_IMAGE_PHRASES:
-        if phrase.lower() in msg_lower:
-            return True
+        p = phrase.lower()
+        if p not in msg_lower:
+            continue
+        # Word-boundary guard for short ambiguous phrases
+        if phrase in _MENU_WORD_BOUNDARY:
+            if not _re_menu.search(r'(?<![^\s،,،.])'  + _re_menu.escape(p) + r'(?![^\s،,،.])', msg_lower):
+                continue
+        # Negation guard: negation word appearing before this phrase
+        idx = msg_lower.index(p)
+        preceding = msg_lower[:idx]
+        if any(neg in preceding for neg in ("ما ", "مو ", "لا ", "بدون ")):
+            continue
+        return True
     return False
 
 
@@ -1171,8 +1223,31 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         )
         return {"reply": fallback, "action": "escalate", "extracted_order": None}
 
-    # Menu image intent — serve images before calling OpenAI
-    if _detect_menu_image_intent(customer_message):
+    # Menu image intent — skip if customer already has active order items (they're mid-order)
+    _has_active_order = _ob_session is not None and _ob_session.has_items()
+
+    # Context-aware greeting — returning customer with known name + history (skip GPT)
+    if (not _has_active_order
+            and _is_pure_greeting(customer_message)
+            and customer
+            and (customer.get("total_orders") or 0) >= 1
+            and customer.get("name")):
+        try:
+            _cg_conn = database.get_db()
+            try:
+                _cg_items = _get_last_order_items(_cg_conn, restaurant_id, customer["id"])
+                _cg_last = "، ".join(
+                    it["name"] + (f" ×{it['qty']}" if it.get("qty", 1) > 1 else "")
+                    for it in _cg_items[:2]
+                ) if _cg_items else ""
+            finally:
+                _cg_conn.close()
+        except Exception:
+            _cg_last = ""
+        _cg_reply = _build_returning_customer_greeting(customer["name"], _cg_last)
+        return {"reply": _cg_reply, "action": "reply", "extracted_order": None}
+
+    if not _has_active_order and _detect_menu_image_intent(customer_message):
         menu_imgs = _get_menu_images(restaurant_id, category_hint=customer_message)
         if menu_imgs:
             # Detect if asking about a specific category

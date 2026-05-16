@@ -89,7 +89,7 @@ def test_gpt_fallback_no_active_order():
             conn.__exit__ = MagicMock(return_value=False)
 
             try:
-                result = _bot.process_message("rest1", "conv1", "هلا")
+                result = _bot.process_message("rest1", "conv1", "شنو عندكم اليوم؟")
                 reply = result.get("reply", "")
                 # Should be Iraqi fallback, not English error
                 if "صار خطأ" in reply or "عذراً" in reply:
