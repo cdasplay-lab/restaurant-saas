@@ -1055,6 +1055,17 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                     _ob_session.phone = _mem_prefill_phone
                     logger.info(f"[ob-risk06] pre-filled phone='{_mem_prefill_phone}' conv={conversation_id}")
 
+            # NUMBER 45B — reset stale incomplete session when new greeting arrives
+            # prevents old "delivery + no address" session from hijacking new conversation
+            import time as _time_ob
+            if (not _ob_session.is_expired()
+                    and _ob_session.confirmation_status == "collecting"
+                    and (_time_ob.time() - _ob_session.updated_at) > 1800  # 30 min idle
+                    and _is_pure_greeting(customer_message)):
+                OrderBrain.clear_session(conversation_id)
+                _ob_session = OrderBrain.get_or_create(conversation_id, restaurant_id)
+                logger.info(f"[order_brain45b] stale session cleared on greeting conv={conversation_id}")
+
             OrderBrain.update_from_message(
                 _ob_session,
                 customer_message,
