@@ -24,6 +24,21 @@ except Exception as _ob_err:
     detect_frustration = lambda _m: False  # type: ignore[assignment]
     _ORDER_BRAIN_ENABLED = False
 
+# Delivery Zones — منطقة التوصيل (safe import)
+try:
+    from services.delivery_zones import (
+        match_area_to_zone,
+        is_area_in_range,
+        get_delivery_fee_for_area,
+        get_out_of_range_message,
+        get_covered_areas_list,
+        build_zone_reply,
+    )
+    _DELIVERY_ZONES_ENABLED = True
+except Exception as _dz_err:
+    logger.warning(f"[delivery_zones] import failed — zone-based delivery disabled: {_dz_err}")
+    _DELIVERY_ZONES_ENABLED = False
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ESCALATION_PHRASES_AR = [
@@ -1328,6 +1343,42 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         logger.info(f"[bot] FAQ cache hit — restaurant={restaurant_id}")
         return {"reply": _faq_answer, "action": "reply", "extracted_order": None}
 
+    # ── DELIVERY ZONE CHECK — "توصلون المنصور؟" / "أنا بالكرادة" ──────────────
+    if _DELIVERY_ZONES_ENABLED:
+        try:
+            _zones_raw = _settings_dict.get("delivery_zones") or ""
+            _zones_config = json.loads(_zones_raw) if isinstance(_zones_raw, str) and _zones_raw.strip() else (_zones_raw if isinstance(_zones_raw, dict) else None)
+            if _zones_config and _zones_config.get("zones"):
+                _zone_reply = build_zone_reply(customer_message, _zones_config)
+                if _zone_reply:
+                    logger.info(f"[bot] delivery zone hit — restaurant={restaurant_id}")
+                    return {"reply": _zone_reply, "action": "reply", "extracted_order": None}
+        except Exception as _dze:
+            logger.warning(f"[bot] delivery zone check failed: {_dze}")
+
+    # ── ZONE-BASED DELIVERY FEE — calculate fee from customer address ──────────
+    def _get_zone_delivery_fee(address_text: str, default_fee: int = 0) -> tuple:
+        """
+        Calculate delivery fee based on customer's address and configured zones.
+        Returns (fee: int, area_name: str or None, out_of_range: bool)
+        If no zones configured → returns (default_fee, None, False)
+        If area matches zone → returns (zone_fee, area_name, False)
+        If area not in any zone → returns (0, None, True)
+        """
+        if not _DELIVERY_ZONES_ENABLED:
+            return default_fee, None, False
+        try:
+            _zones_raw = _settings_dict.get("delivery_zones") or ""
+            _zones_config = json.loads(_zones_raw) if isinstance(_zones_raw, str) and _zones_raw.strip() else (_zones_raw if isinstance(_zones_raw, dict) else None)
+            if not _zones_config or not _zones_config.get("zones"):
+                return default_fee, None, False
+            fee, area_name = get_delivery_fee_for_area(address_text, _zones_config, default_fee)
+            if fee == -1:
+                return 0, None, True  # out of range
+            return fee, area_name, False
+        except Exception:
+            return default_fee, None, False
+
     # ── PRICE LOOKUP — answer "بكم X؟" directly from menu, no OpenAI ──────────
     _PRICE_TRIGGERS = ["بكم", "شسعر", "سعر", "ثمن", "كلفة", "بقد", "بكام",
                        "شكد سعر", "شكد ثمن", "كم سعر", "كم ثمنه", "كم كلفته"]
@@ -1628,9 +1679,16 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         # NUMBER 44A — GPT fallback: use deterministic next directive if order is active
         if _ob_session is not None and _ob_session.is_active():
             try:
-                _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
-                reply_text = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
-                logger.info(f"[bot44a-gpt-fallback] deterministic fallback used conv={conversation_id}")
+                # Zone-based delivery fee: check address against configured zones
+                _default_df = int((bot_cfg or {}).get("delivery_fee") or 0)
+                _addr_text = _ob_session.address or ""
+                _delivery_fee, _zone_area, _out_of_range = _get_zone_delivery_fee(_addr_text, _default_df)
+                if _out_of_range:
+                    reply_text = "عذراً 🙏 منطقتك خارج نطاق التوصيل — تكدر تستلم من المطعم مباشرة"
+                    logger.info(f"[bot44a] out-of-range zone — conv={conversation_id}")
+                else:
+                    reply_text = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
+                    logger.info(f"[bot44a-gpt-fallback] deterministic fallback used conv={conversation_id} fee={_delivery_fee} zone={_zone_area}")
             except Exception as _fe:
                 logger.warning(f"[bot44a-gpt-fallback] deterministic also failed: {_fe}")
                 reply_text = "عذراً 🙏 صار خطأ تقني، راجعنا بعد شوية"
@@ -1719,10 +1777,16 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         elif _tool_name == "update_order":
             try:
                 _unknown = _populate_ob_session_from_tool(_fc, finalize=False)
-                _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
-                reply_text = _backend_next_reply(
-                    _ob_session, _products_dicts, _unknown, fee=_delivery_fee
-                )
+                # Zone-based delivery fee: check address against configured zones
+                _default_df2 = int((bot_cfg or {}).get("delivery_fee") or 0)
+                _addr_text2 = _ob_session.address or ""
+                _delivery_fee2, _zone_area2, _out_of_range2 = _get_zone_delivery_fee(_addr_text2, _default_df2)
+                if _out_of_range2:
+                    reply_text = "عذراً 🙏 منطقتك خارج نطاق التوصيل — تكدر تستلم من المطعم مباشرة"
+                else:
+                    reply_text = _backend_next_reply(
+                        _ob_session, _products_dicts, _unknown, fee=_delivery_fee2
+                    )
                 _ob_save_state(conversation_id, _ob_session)
                 logger.info(
                     f"[tool] update_order → next_reply computed — "
@@ -1774,8 +1838,14 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
         and not _ob_soldout_reply
     ):
         try:
-            _delivery_fee = int((bot_cfg or {}).get("delivery_fee") or 0)
-            _c1_reply = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee)
+            # Zone-based delivery fee: check address against configured zones
+            _default_df3 = int((bot_cfg or {}).get("delivery_fee") or 0)
+            _addr_text3 = _ob_session.address or ""
+            _delivery_fee3, _zone_area3, _out_of_range3 = _get_zone_delivery_fee(_addr_text3, _default_df3)
+            if _out_of_range3:
+                _c1_reply = "عذراً 🙏 منطقتك خارج نطاق التوصيل — تكدر تستلم من المطعم مباشرة"
+            else:
+                _c1_reply = _backend_next_reply(_ob_session, _products_dicts, [], fee=_delivery_fee3)
             if _c1_reply:
                 reply_text = _c1_reply
                 _c1_fired = True
@@ -1829,7 +1899,19 @@ def process_message(restaurant_id: str, conversation_id: str, customer_message: 
                 import uuid as _uuid_mod
                 _order_num = str(_uuid_mod.uuid4())[:6].upper()
                 # NUMBER 38 — read delivery fee + min order from settings
-                _df = int((settings["delivery_fee"] if settings else None) or 0)
+                # Zone-based delivery fee: calculate from customer address
+                _df_default = int((settings["delivery_fee"] if settings else None) or 0)
+                _addr_for_zone = _ob_session.address or ""
+                _df_zone, _df_zone_area, _df_out_of_range = _get_zone_delivery_fee(_addr_for_zone, _df_default)
+                if _df_out_of_range and _ob_session.order_type == "delivery":
+                    _ob_session.confirmation_status = "collecting"
+                    reply_text = "عذراً 🙏 منطقتك خارج نطاق التوصيل — تكدر تستلم من المطعم مباشرة"
+                    _ob_save_state(conversation_id, _ob_session)
+                    logger.info(f"[order_brain38] out-of-range zone — conv={conversation_id}")
+                    # Skip the rest of confirmation logic
+                    _df = 0
+                else:
+                    _df = _df_zone
                 _mo = int((settings["min_order"]    if settings else None) or 0)
                 if _ob_session.is_below_min_order(_mo):
                     # Reject confirmation — tell customer the minimum
@@ -3804,8 +3886,37 @@ def _build_system_prompt(
     if delivery_time:
         prompt += f"\n## وقت التوصيل\nوقت التوصيل التقريبي: {delivery_time} — اذكره للزبون عند تأكيد الطلب.\n"
 
-    # Delivery fee
-    if delivery_fee and int(delivery_fee) > 0:
+    # Delivery fee — zone-aware if zones are configured
+    _zones_raw_prompt = settings.get("delivery_zones") or ""
+    _zones_cfg_prompt = None
+    try:
+        if isinstance(_zones_raw_prompt, str) and _zones_raw_prompt.strip():
+            _zones_cfg_prompt = json.loads(_zones_raw_prompt)
+        elif isinstance(_zones_raw_prompt, dict):
+            _zones_cfg_prompt = _zones_raw_prompt
+    except Exception:
+        pass
+
+    if _zones_cfg_prompt and _zones_cfg_prompt.get("zones"):
+        # Zone-based delivery — list all zones and fees
+        prompt += "\n## مناطق التوصيل والرسوم\n"
+        for _zp_zone in _zones_cfg_prompt["zones"]:
+            _zp_name = _zp_zone.get("name", "")
+            _zp_fee = int(_zp_zone.get("fee", 0))
+            _zp_areas = "، ".join(_zp_zone.get("areas", []))
+            _zp_mins = _zp_zone.get("estimated_minutes", 0)
+            if _zp_fee > 0:
+                prompt += f"- {_zp_name} ({_zp_areas}): رسوم التوصيل {_zp_fee:,} د.ع"
+            else:
+                prompt += f"- {_zp_name} ({_zp_areas}): التوصيل مجاني"
+            if _zp_mins:
+                prompt += f" — يوصل خلال ~{_zp_mins} دقيقة"
+            prompt += "\n"
+        _out_msg = _zones_cfg_prompt.get("out_of_range_message", "عذراً، المنطقة خارج نطاق التوصيل 🙏")
+        prompt += f"إذا سأل العميل عن منطقة مو بالقائمة → قله: {_out_msg}\n"
+        prompt += "إذا العميل ذكر منطجته → حدد رسوم التوصيل حسب المنطقة.\n"
+    elif delivery_fee and int(delivery_fee) > 0:
+        # No zones — flat fee
         prompt += f"\n## رسوم التوصيل\nرسوم التوصيل: {int(delivery_fee):,} د.ع — أضفها على مجموع الطلب وأعلم الزبون بها.\n"
 
     # Minimum order amount

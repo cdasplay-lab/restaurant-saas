@@ -603,6 +603,8 @@ def _migrate_db(conn):
         ("settings", "notify_chat_id", "TEXT DEFAULT ''"),
         # settings — delivery fee (Iraqi Dinar)
         ("settings", "delivery_fee", "INTEGER DEFAULT 0"),
+        # settings — delivery zones JSON (zone-based delivery fees per area)
+        ("settings", "delivery_zones", "TEXT DEFAULT ''"),
         # settings — minimum order amount (Iraqi Dinar)
         ("settings", "min_order", "INTEGER DEFAULT 0"),
         # settings — automated report: none / daily / weekly
