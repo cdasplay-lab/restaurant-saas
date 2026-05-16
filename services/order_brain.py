@@ -1219,10 +1219,25 @@ def _extract_address(msg: str) -> Optional[str]:
                         return area
                 return candidate
 
-    # Direct Iraqi area name mention
+    # NUMBER 45B — location-descriptor phrases capture full address (checked first
+    # so "منصور قرب المول" returns full text, not just the area name)
+    _LOC_INDICATORS = [
+        "قرب", "جنب", "أمام", "وراء", "خلف", "بجانب", "مقابل",
+        "بالقرب", "زقاق", "شارع", "حارة", "محلة", "طريق",
+    ]
+    if len(msg.strip()) >= 5 and any(ind in msg for ind in _LOC_INDICATORS):
+        return msg.strip()
+
+    # Direct Iraqi area name mention (with ال prefix)
     for area in _IRAQ_AREAS:
         if area in msg:
             return area
+
+    # NUMBER 45B — also try without ال prefix: "منصور" → matches "المنصور"
+    for area in _IRAQ_AREAS:
+        area_no_al = re.sub(r'^ال', '', area)
+        if len(area_no_al) >= 5 and area_no_al in msg:
+            return area  # return canonical form
 
     return None
 
